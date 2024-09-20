@@ -16,6 +16,7 @@ import uvicorn
 import yaml
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
@@ -47,6 +48,15 @@ async def lifespan(app):
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
+
+# Add these lines
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ErrorResponse(BaseModel):
@@ -116,9 +126,6 @@ async def stream_response(response) -> AsyncGenerator:
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
-    # The model name field contains the parameters for routing.
-    # Model name uses format router-[router name]-[threshold] e.g. router-bert-0.7
-    # The router type and threshold is used for routing that specific request.
     logging.info(f"Received request: {request}")
     try:
         res = await CONTROLLER.acompletion(
@@ -132,12 +139,19 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     logging.info(CONTROLLER.model_counts)
 
+    chosen_model = res.model  # Get the chosen model from the response
+
     if request.stream:
         return StreamingResponse(
-            content=stream_response(res), media_type="text/event-stream"
+            content=stream_response(res),
+            media_type="text/event-stream",
+            headers={"X-Chosen-Model": chosen_model}
         )
     else:
-        return JSONResponse(content=res.model_dump())
+        return JSONResponse(
+            content=res.model_dump(),
+            headers={"X-Chosen-Model": chosen_model}
+        )
 
 
 @app.get("/health")

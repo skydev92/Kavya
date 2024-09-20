@@ -1,3 +1,4 @@
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -48,6 +49,7 @@ class Controller:
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         progress_bar: bool = False,
+        suppress_warnings: bool = False,  # Add this line
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -75,6 +77,7 @@ class Controller:
                 create=self.completion, acreate=self.acompletion
             )
         )
+        self.suppress_warnings = suppress_warnings
 
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
@@ -91,16 +94,17 @@ class Controller:
             )
 
     def _parse_model_name(self, model: str):
-        _, router, threshold = model.split("-", 2)
-        try:
-            threshold = float(threshold)
-        except ValueError as e:
-            raise RoutingError(f"Threshold {threshold} must be a float.") from e
-        if not model.startswith("router"):
-            raise RoutingError(
-                f"Invalid model {model}. Model name must be of the format 'router-[router name]-[threshold]."
-            )
-        return router, threshold
+        parts = model.split("-")
+        if len(parts) == 3 and parts[0] == "router":
+            _, router, threshold = parts
+            try:
+                threshold = float(threshold)
+            except ValueError as e:
+                raise RoutingError(f"Threshold {threshold} must be a float.") from e
+            return router, threshold
+        else:
+            # If it's not a router model, return None for router and threshold
+            return None, None
 
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
@@ -150,7 +154,12 @@ class Controller:
         kwargs["model"] = self._get_routed_model_for_completion(
             kwargs["messages"], router, threshold
         )
-        return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        if self.suppress_warnings:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        else:
+            return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
 
     # Matches OpenAI's Async Chat Completions interface, but also supports optional router and threshold args
     async def acompletion(
@@ -161,10 +170,21 @@ class Controller:
         **kwargs,
     ):
         if "model" in kwargs:
-            router, threshold = self._parse_model_name(kwargs["model"])
+            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
+            router = router or parsed_router
+            threshold = threshold or parsed_threshold
 
-        self._validate_router_threshold(router, threshold)
-        kwargs["model"] = self._get_routed_model_for_completion(
-            kwargs["messages"], router, threshold
-        )
-        return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        if router and threshold:
+            self._validate_router_threshold(router, threshold)
+            kwargs["model"] = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+        elif "model" not in kwargs:
+            raise RoutingError("No model specified and router/threshold not provided.")
+
+        if self.suppress_warnings:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        else:
+            return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
