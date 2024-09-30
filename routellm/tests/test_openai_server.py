@@ -36,7 +36,7 @@ def main() -> None:
     parser.add_argument(
         "--base-url",
         type=str,
-        default="http://127.0.0.1:8080/v1",
+        default="http://127.0.0.1:6060/v1",
     )
     parser.add_argument(
         "--api-key",

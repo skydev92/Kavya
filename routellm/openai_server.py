@@ -212,7 +212,7 @@ parser.add_argument(
 )
 parser.add_argument("--workers", type=int, default=0)
 parser.add_argument("--config", type=str, default=None)
-parser.add_argument("--port", type=int, default=8080)
+parser.add_argument("--port", type=int, default=6060)
 parser.add_argument(
     "--routers",
     nargs="+",

@@ -124,7 +124,7 @@ def main(args):
 evaluate_args_base = {
     "parallel": 64,
     "host": "http://localhost",
-    "port": "8080",
+    "port": "6060",
 }
 weak_cors, weak_responses = main(
     SimpleNamespace(**evaluate_args_base, backend="router-random-1.0"),
