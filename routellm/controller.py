@@ -10,11 +10,11 @@ from tqdm import tqdm
 
 import os
 import json
+import logging
 
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
-# This is exactly the same as config.example.yaml.
 GPT_4_AUGMENTED_CONFIG = {
     "sw_ranking": {
         "arena_battle_datasets": [
@@ -74,7 +74,6 @@ class Controller:
                 router_pbar.set_description(f"Loading {router}")
             self.routers[router] = ROUTER_CLS[router](**config.get(router, {}))
 
-        # Some Python magic to match the OpenAI Python SDK
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(
                 create=self.completion, acreate=self.acompletion
@@ -85,16 +84,13 @@ class Controller:
         self.predefined_prompts = self.load_predefined_prompts()
 
     def load_predefined_prompts(self):
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(current_dir, 'predefined_prompts.json')
         try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            file_path = os.path.join(current_dir, 'predefined_prompts.json')
             with open(file_path, 'r') as f:
                 return json.load(f)
-        except FileNotFoundError:
-            print(f"Warning: predefined_prompts.json not found at {file_path}. Continuing without predefined prompts.")
-            return {}
-        except json.JSONDecodeError:
-            print(f"Error: predefined_prompts.json at {file_path} is not a valid JSON file.")
+        except (FileNotFoundError, json.JSONDecodeError):
+            logging.warning(f"Error loading predefined_prompts.json. Continuing without predefined prompts.")
             return {}
 
     def check_predefined_prompt(self, message):
@@ -127,14 +123,11 @@ class Controller:
                 raise RoutingError(f"Threshold {threshold} must be a float.") from e
             return router, threshold
         else:
-            # If it's not a router model, return None for router and threshold
             return None, None
 
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
     ):
-        # Look at the last turn for routing.
-        # Our current routers were only trained on first turn data, so more research is required here.
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
@@ -142,7 +135,6 @@ class Controller:
 
         return routed_model
 
-    # Mainly used for evaluations
     def batch_calculate_win_rate(
         self,
         prompts: pd.Series,
@@ -162,8 +154,6 @@ class Controller:
 
         return self.routers[router].route(prompt, threshold, self.model_pair)
 
-    # Matches OpenAI's Chat Completions interface, but also supports optional router and threshold args
-    # If model name is present, attempt to parse router and threshold using it, otherwise, use the router and threshold args
     def completion(
         self,
         *,
@@ -201,7 +191,6 @@ class Controller:
         else:
             return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
 
-    # Matches OpenAI's Async Chat Completions interface, but also supports optional router and threshold args
     async def acompletion(
         self,
         *,
