@@ -8,6 +8,9 @@ import pandas as pd
 from litellm import acompletion, completion
 from tqdm import tqdm
 
+import os
+import json
+
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -79,6 +82,31 @@ class Controller:
         )
         self.suppress_warnings = suppress_warnings
 
+        self.predefined_prompts = self.load_predefined_prompts()
+
+    def load_predefined_prompts(self):
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            file_path = os.path.join(current_dir, 'predefined_prompts.json')
+            with open(file_path, 'r') as f:
+                prompts = json.load(f)
+                print(f"Loaded predefined prompts: {prompts}")  # Add this line for debugging
+                return prompts
+        except FileNotFoundError:
+            print(f"Warning: predefined_prompts.json not found at {file_path}. Continuing without predefined prompts.")
+            return {}
+        except json.JSONDecodeError:
+            print(f"Error: predefined_prompts.json at {file_path} is not a valid JSON file.")
+            return {}
+
+    def check_predefined_prompt(self, message):
+        for key, value in self.predefined_prompts.items():
+            if key in message:
+                print(f"Matched predefined prompt: {key}")  # Add this line for debugging
+                return value
+        print("No predefined prompt matched")  # Add this line for debugging
+        return None
+
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
     ):
@@ -147,6 +175,22 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": predefined_answer
+                            }
+                        }
+                    ],
+                    "model": "predefined_prompt"
+                }
+
         if "model" in kwargs:
             router, threshold = self._parse_model_name(kwargs["model"])
 
@@ -169,6 +213,22 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": predefined_answer
+                            }
+                        }
+                    ],
+                    "model": "predefined_prompt"
+                }
+
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
             router = router or parsed_router

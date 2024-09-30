@@ -7,8 +7,10 @@ import argparse
 import logging
 import os
 import time
+import asyncio
 from collections import defaultdict
-from typing import AsyncGenerator, Dict, List, Literal, Optional, Union
+from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
+import json
 
 import fastapi
 import shortuuid
@@ -124,28 +126,93 @@ class ChatCompletionResponse(BaseModel):
     usage: UsageInfo
 
 
-async def stream_response(response) -> AsyncGenerator:
-    async for chunk in response:
-        yield f"data: {chunk.model_dump_json()}\n\n"
-    yield "data: [DONE]\n\n"
+async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> AsyncGenerator:
+    if isinstance(response, dict):
+        # Format the predefined prompt response to match the expected streaming structure
+        content = response['choices'][0]['message']['content']
+        response_id = f"chatcmpl-{shortuuid.random()}"
+        created_time = int(time.time())
+
+        # Yield the initial response with role and content
+        initial_chunk = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": "predefined_prompt",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant"},
+                    "finish_reason": None
+                }
+            ]
+        }
+        yield f"data: {json.dumps(initial_chunk)}\n\n"
+        await asyncio.sleep(0.1)  # Small delay to simulate streaming
+
+        # Stream the content character by character
+        for char in content:
+            chunk = {
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_time,
+                "model": "predefined_prompt",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": char},
+                        "finish_reason": None
+                    }
+                ]
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            await asyncio.sleep(0.05)  # Small delay between characters
+
+        # Send the final chunk to indicate completion
+        final_chunk = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": "predefined_prompt",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }
+            ]
+        }
+        yield f"data: {json.dumps(final_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+    else:
+        # Handle regular streaming responses
+        async for chunk in response:
+            yield f"data: {chunk.model_dump_json()}\n\n"
+        yield "data: [DONE]\n\n"
 
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
     logging.info(f"Received request: {request}")
+    logging.info(f"Predefined prompts: {CONTROLLER.predefined_prompts}")
+    
+    last_message = request.messages[-1]["content"] if request.messages else None
+    logging.info(f"Last message: {last_message}")
+    
     try:
-        res = await CONTROLLER.acompletion(
-            **request.model_dump(exclude_none=True),
-        )
+        res = await CONTROLLER.acompletion(**request.model_dump(exclude_none=True))
+        
+        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+        chosen_model = res['model'] if is_predefined else res.model
+        
+        logging.info(f"Response type: {'Predefined prompt' if is_predefined else 'Regular routing'}")
+        logging.info(f"Chosen model: {chosen_model}")
+        
     except RoutingError as e:
-        return JSONResponse(
-            ErrorResponse(message=str(e)).model_dump(),
-            status_code=400,
-        )
+        logging.error(f"Routing error: {str(e)}")
+        return JSONResponse(ErrorResponse(message=str(e)).model_dump(), status_code=400)
 
-    logging.info(CONTROLLER.model_counts)
-
-    chosen_model = res.model  # Get the chosen model from the response
+    logging.info(f"Model counts: {CONTROLLER.model_counts}")
 
     if request.stream:
         return StreamingResponse(
@@ -154,10 +221,19 @@ async def create_chat_completion(request: ChatCompletionRequest):
             headers={"X-Chosen-Model": chosen_model}
         )
     else:
-        return JSONResponse(
-            content=res.model_dump(),
-            headers={"X-Chosen-Model": chosen_model}
-        )
+        if is_predefined:
+            content = ChatCompletionResponse(
+                model="predefined_prompt",
+                choices=[ChatCompletionResponseChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=res['choices'][0]['message']['content']),
+                    finish_reason="stop"
+                )],
+                usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+            ).model_dump()
+        else:
+            content = res.model_dump()
+        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
 
 
 @app.get("/health")
@@ -202,6 +278,8 @@ parser.add_argument(
 args = parser.parse_args()
 
 if args.verbose:
+    logging.basicConfig(level=logging.DEBUG)
+else:
     logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
