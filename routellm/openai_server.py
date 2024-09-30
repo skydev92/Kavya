@@ -53,8 +53,7 @@ async def lifespan(app):
     )
     yield
     CONTROLLER = None
-
-
+...
 app = fastapi.FastAPI(lifespan=lifespan)
 
 # Add these lines
@@ -104,8 +103,7 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[List[Dict[str, Union[str, int, float]]]] = None
     tool_choice: Optional[str] = None
     user: Optional[str] = None
-
-
+...
 class ChatMessage(BaseModel):
     role: str
     content: str
@@ -124,8 +122,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: List[ChatCompletionResponseChoice]
     usage: UsageInfo
-
-
+...
 async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> AsyncGenerator:
     if isinstance(response, dict):
         # Format the predefined prompt response to match the expected streaming structure
@@ -167,7 +164,6 @@ async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> As
             }
             yield f"data: {json.dumps(chunk)}\n\n"
             await asyncio.sleep(0.05)  # Small delay between characters
-
         # Send the final chunk to indicate completion
         final_chunk = {
             "id": response_id,
@@ -189,8 +185,7 @@ async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> As
         async for chunk in response:
             yield f"data: {chunk.model_dump_json()}\n\n"
         yield "data: [DONE]\n\n"
-
-
+...
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
     logging.info(f"Received request: {request}")
@@ -234,8 +229,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
         else:
             content = res.model_dump()
         return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
-
-
+...
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""

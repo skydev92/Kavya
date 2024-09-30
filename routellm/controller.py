@@ -52,7 +52,7 @@ class Controller:
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         progress_bar: bool = False,
-        suppress_warnings: bool = False,  # Add this line
+        suppress_warnings: bool = False,
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -89,9 +89,7 @@ class Controller:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             file_path = os.path.join(current_dir, 'predefined_prompts.json')
             with open(file_path, 'r') as f:
-                prompts = json.load(f)
-                print(f"Loaded predefined prompts: {prompts}")  # Add this line for debugging
-                return prompts
+                return json.load(f)
         except FileNotFoundError:
             print(f"Warning: predefined_prompts.json not found at {file_path}. Continuing without predefined prompts.")
             return {}
@@ -102,9 +100,7 @@ class Controller:
     def check_predefined_prompt(self, message):
         for key, value in self.predefined_prompts.items():
             if key in message:
-                print(f"Matched predefined prompt: {key}")  # Add this line for debugging
                 return value
-        print("No predefined prompt matched")  # Add this line for debugging
         return None
 
     def _validate_router_threshold(
