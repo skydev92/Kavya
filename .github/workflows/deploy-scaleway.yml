@@ -26,27 +26,3 @@ jobs:
           tags: |
             rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:${{ github.ref_name }}
             rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: "1.5.0"
-      - name: Terraform Init
-        run: terraform init
-        working-directory: ./terraform
-      - name: Terraform Apply
-        run: terraform apply -auto-approve
-        working-directory: ./terraform
-        env:
-          TF_VAR_image_tag: ${{ github.ref_name }}
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_PROJECT_ID }}
-      - name: Validate Terraform
-        run: terraform validate
-        working-directory: ./terraform
