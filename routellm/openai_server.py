@@ -7,7 +7,6 @@ import argparse
 import logging
 import os
 import time
-import asyncio
 from collections import defaultdict
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
 import json
@@ -25,8 +24,10 @@ from pydantic import BaseModel, Field
 from routellm.controller import Controller, RoutingError
 from routellm.routers.routers import ROUTER_CLS
 
+# Add this line
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
 load_dotenv()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -52,8 +53,10 @@ async def lifespan(app):
     yield
     CONTROLLER = None
 
+
 app = fastapi.FastAPI(lifespan=lifespan)
 
+# Add these lines
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -75,6 +78,7 @@ class UsageInfo(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
+    # OpenAI fields: https://platform.openai.com/docs/api-reference/chat/create
     model: str
     messages: Union[
         str,
@@ -88,7 +92,9 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = None
     n: Optional[int] = 1
     presence_penalty: Optional[float] = 0.0
-    response_format: Optional[Dict[str, str]] = None
+    response_format: Optional[Dict[str, str]] = (
+        None  # { "type": "json_object" } for json mode
+    )
     seed: Optional[int] = None
     stop: Optional[Union[str, List[str]]] = None
     stream: Optional[bool] = False
@@ -139,12 +145,20 @@ async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> As
 
 @app.post("/v1/chat/completions")
 async def create_chat_completion(request: ChatCompletionRequest):
+    logging.info(f"Received request: {request}")
     try:
-        res = await CONTROLLER.acompletion(**request.model_dump(exclude_none=True))
+        res = await CONTROLLER.acompletion(
+            **request.model_dump(exclude_none=True),
+        )
         is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
         chosen_model = res['model'] if is_predefined else res.model
     except RoutingError as e:
-        return JSONResponse(ErrorResponse(message=str(e)).model_dump(), status_code=400)
+        return JSONResponse(
+            ErrorResponse(message=str(e)).model_dump(),
+            status_code=400,
+        )
+
+    logging.info(CONTROLLER.model_counts)
 
     if request.stream:
         return StreamingResponse(
@@ -155,6 +169,9 @@ async def create_chat_completion(request: ChatCompletionRequest):
     else:
         if is_predefined:
             content = ChatCompletionResponse(
+                id=f"chatcmpl-{shortuuid.random()}",
+                object="chat.completion",
+                created=int(time.time()),
                 model="predefined_prompt",
                 choices=[ChatCompletionResponseChoice(
                     index=0,
@@ -176,6 +193,10 @@ async def health_check():
 
 parser = argparse.ArgumentParser(
     description="An OpenAI-compatible API server for LLM routing."
+)
+parser.add_argument(
+    "--verbose",
+    action="store_true",
 )
 parser.add_argument("--workers", type=int, default=0)
 parser.add_argument("--config", type=str, default=None)
@@ -205,7 +226,8 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-logging.basicConfig(level=logging.INFO)
+if args.verbose:
+    logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
     print("Launching server with routers:", args.routers)

@@ -10,11 +10,11 @@ from tqdm import tqdm
 
 import os
 import json
-import logging
 
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
+# This is exactly the same as config.example.yaml.
 GPT_4_AUGMENTED_CONFIG = {
     "sw_ranking": {
         "arena_battle_datasets": [
@@ -74,6 +74,7 @@ class Controller:
                 router_pbar.set_description(f"Loading {router}")
             self.routers[router] = ROUTER_CLS[router](**config.get(router, {}))
 
+        # Some Python magic to match the OpenAI Python SDK
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(
                 create=self.completion, acreate=self.acompletion
@@ -89,8 +90,7 @@ class Controller:
         try:
             with open(file_path, 'r') as f:
                 return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            logging.warning(f"Error loading predefined_prompts.json. Continuing without predefined prompts.")
+        except:
             return {}
 
     def check_predefined_prompt(self, message):
@@ -102,23 +102,21 @@ class Controller:
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
     ):
-        if router is None or threshold is None:
-            raise RoutingError("Router or threshold unspecified.")
         if router not in self.routers:
-            raise RoutingError(
-                f"Invalid router {router}. Available routers are {list(self.routers.keys())}."
-            )
-        if not 0 <= threshold <= 1:
-            raise RoutingError(
-                f"Invalid threshold {threshold}. Threshold must be a float between 0.0 and 1.0."
-            )
+            raise RoutingError(f"Router {router} not found.")
+        if threshold is None or threshold < 0 or threshold > 1:
+            raise RoutingError(f"Threshold {threshold} must be between 0 and 1.")
 
     def _parse_model_name(self, model: str):
-        parts = model.split("-")
-        if len(parts) == 3 and parts[0] == "router":
-            _, router, threshold = parts
+        if model.startswith("router-"):
+            parts = model.split("-")
+            if len(parts) != 3:
+                raise RoutingError(
+                    f"Invalid model name {model}. Expected format: router-<router>-<threshold>"
+                )
+            router = parts[1]
             try:
-                threshold = float(threshold)
+                threshold = float(parts[2])
             except ValueError as e:
                 raise RoutingError(f"Threshold {threshold} must be a float.") from e
             return router, threshold
@@ -131,7 +129,7 @@ class Controller:
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
-        self.model_counts[router][routed_model] += 1
+        self.model_counts[routed_model] += 1
 
         return routed_model
 
@@ -139,15 +137,11 @@ class Controller:
         self,
         prompts: pd.Series,
         router: str,
+        threshold: float,
     ):
-        self._validate_router_threshold(router, 0)
-        router_instance = self.routers[router]
-        if router_instance.NO_PARALLEL and self.progress_bar:
-            return prompts.progress_apply(router_instance.calculate_strong_win_rate)
-        elif router_instance.NO_PARALLEL:
-            return prompts.apply(router_instance.calculate_strong_win_rate)
-        else:
-            return prompts.parallel_apply(router_instance.calculate_strong_win_rate)
+        return self.routers[router].batch_calculate_win_rate(
+            prompts, threshold, self.model_pair
+        )
 
     def route(self, prompt: str, router: str, threshold: float):
         self._validate_router_threshold(router, threshold)
@@ -168,10 +162,7 @@ class Controller:
                 return {
                     "choices": [
                         {
-                            "message": {
-                                "role": "assistant",
-                                "content": predefined_answer
-                            }
+                            "message": {"role": "assistant", "content": predefined_answer}
                         }
                     ],
                     "model": "predefined_prompt"
@@ -180,10 +171,14 @@ class Controller:
         if "model" in kwargs:
             router, threshold = self._parse_model_name(kwargs["model"])
 
-        self._validate_router_threshold(router, threshold)
-        kwargs["model"] = self._get_routed_model_for_completion(
-            kwargs["messages"], router, threshold
-        )
+        if router and threshold:
+            self._validate_router_threshold(router, threshold)
+            kwargs["model"] = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+        elif "model" not in kwargs:
+            raise RoutingError("No model specified and router/threshold not provided.")
+
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
@@ -205,10 +200,7 @@ class Controller:
                 return {
                     "choices": [
                         {
-                            "message": {
-                                "role": "assistant",
-                                "content": predefined_answer
-                            }
+                            "message": {"role": "assistant", "content": predefined_answer}
                         }
                     ],
                     "model": "predefined_prompt"
