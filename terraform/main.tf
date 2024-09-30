@@ -21,7 +21,7 @@ resource "scaleway_container" "routellm" {
   namespace_id = scaleway_container_namespace.routellm.id
   name         = "routellm-server"
   registry_image = "rg.nl-ams.scw.cloud/${scaleway_container_namespace.routellm.name}/${var.repository_name}:${var.image_tag}"
-  port         = 6060
+  port         = 8080
   cpu_limit    = 1000
   memory_limit = 2048
   min_scale    = 1

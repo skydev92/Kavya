@@ -45,16 +45,16 @@ And that's it! Now, our requests will be routed between GPT-4 for more difficult
 > export OPENAI_API_KEY=sk-...
 > python -m routellm.openai_server --routers mf --weak-model ollama_chat/llama3 --config.example.yaml
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:6060 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 ```
-The server is now listening on `http://0.0.0.0:6060`. We use the `--weak-model` flag to use point to the Llama 3 model that is running locally on our machine.
+The server is now listening on `http://0.0.0.0:8080`. We use the `--weak-model` flag to use point to the Llama 3 model that is running locally on our machine.
 
 3. Point your OpenAI client to the RouteLLM server:
 ```python
 import openai
 
 client = openai.OpenAI(
-  base_url="https://localhost:6060/v1",
+  base_url="https://localhost:8080/v1",
   api_key="no_api_key"
 )
 ...
