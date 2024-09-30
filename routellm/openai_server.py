@@ -7,6 +7,7 @@ import argparse
 import logging
 import os
 import time
+import sys
 from collections import defaultdict
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
 import json
@@ -24,8 +25,14 @@ from pydantic import BaseModel, Field
 from routellm.controller import Controller, RoutingError
 from routellm.routers.routers import ROUTER_CLS
 
-# Add this line
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,23 +47,27 @@ count = defaultdict(lambda: defaultdict(int))
 @asynccontextmanager
 async def lifespan(app):
     global CONTROLLER
-
-    CONTROLLER = Controller(
-        routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-        strong_model=args.strong_model,
-        weak_model=args.weak_model,
-        api_base=args.base_url,
-        api_key=args.api_key,
-        progress_bar=True,
-    )
+    logging.debug("Initializing CONTROLLER")
+    try:
+        CONTROLLER = Controller(
+            routers=args.routers,
+            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+            strong_model=args.strong_model,
+            weak_model=args.weak_model,
+            api_base=args.base_url,
+            api_key=args.api_key,
+            progress_bar=True,
+        )
+        logging.debug("CONTROLLER initialized successfully")
+    except Exception as e:
+        logging.error(f"Failed to initialize CONTROLLER: {str(e)}")
     yield
     CONTROLLER = None
+    logging.debug("CONTROLLER shut down")
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
 
-# Add these lines
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -188,6 +199,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    logging.debug("Health check called")
     return JSONResponse(content={"status": "online"})
 
 
