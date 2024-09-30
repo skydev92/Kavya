@@ -2,7 +2,7 @@
 import copy
 from typing import Dict, List
 
-from pydantic import BaseModel, validator
+from pydantic import BaseModel, field_validator
 
 
 class PromptFormat(BaseModel):
@@ -15,41 +15,47 @@ class PromptFormat(BaseModel):
     system_in_user: bool = False
     is_generation: bool = False
 
-    @validator("system")
+    @field_validator("system")
+    @classmethod
     def check_system(cls, value):
         assert value and (
             "{instruction}" in value
         ), "system must be a string containing '{instruction}'"
         return value
 
-    @validator("assistant")
+    @field_validator("assistant")
+    @classmethod
     def check_assistant(cls, value):
         assert (
             value and "{instruction}" in value
         ), "assistant must be a string containing '{instruction}'"
         return value
 
-    @validator("user")
+    @field_validator("user")
+    @classmethod
     def check_user(cls, value):
         assert value and (
             "{instruction}" in value
         ), "user must be a string containing '{instruction}'"
         return value
 
-    @validator("system_in_user")
+    @field_validator("system_in_user")
+    @classmethod
     def check_system_in_user(cls, value):
         # `system_in_user` is restricted to be True.
         # Re-evaluate the code and add unit tests when relaxing this.
         # assert value
         return value
 
-    @validator("default_system_message")
+    @field_validator("default_system_message")
+    @classmethod
     def check_default_system_message(cls, value):
         # User should explicitly give a system message if so preferred.
         # assert value == ""
         return value
 
-    @validator("trailing_assistant")
+    @field_validator("trailing_assistant")
+    @classmethod
     def check_trailing_assistant(cls, value):
         # `trailing_assistant` is restricted to be "".
         # Re-evaluate the code and add unit tests when relaxing this.

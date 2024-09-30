@@ -1,0 +1,12 @@
+{
+  "prompts": [
+    {
+      "input": "dxpr_test_bird",
+      "output": "hawk"
+    },
+    {
+      "input": "another_test_prompt",
+      "output": "predefined answer here"
+    }
+  ]
+}

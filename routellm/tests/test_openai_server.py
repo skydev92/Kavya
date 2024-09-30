@@ -1,6 +1,8 @@
 import argparse
 import os
+from typing import Dict, Any
 from dotenv import load_dotenv
+from importlib import resources
 
 import openai
 
@@ -8,17 +10,17 @@ from routellm.routers.routers import ROUTER_CLS
 
 load_dotenv()  # This will load environment variables from .env file
 
-system_content = (
+system_content: str = (
     "You are a helpful assistant. Respond to the questions as best as you can."
 )
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--router",
         type=str,
         default="random",
-        choices=ROUTER_CLS.keys(),
+        choices=list(ROUTER_CLS.keys()),
     )
     parser.add_argument(
         "--threshold",
@@ -41,15 +43,15 @@ if __name__ == "__main__":
         type=str,
         default="NO_API_KEY_REQUIRED",
     )
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
     print(args)
 
-    client = openai.OpenAI(
+    client: openai.OpenAI = openai.OpenAI(
         base_url=args.base_url,
         api_key=os.environ.get("OPENAI_API_KEY") or args.api_key,
     )
 
-    chat_completion = client.chat.completions.create(
+    chat_completion: Dict[str, Any] = client.chat.completions.create(
         model=f"router-{args.router}-{args.threshold}",
         messages=[
             {"role": "system", "content": system_content},
@@ -58,5 +60,8 @@ if __name__ == "__main__":
         temperature=0.7,
     )
 
-    response = chat_completion.choices[0].message.content
+    response: str = chat_completion.choices[0].message.content
     print(f"Router used {chat_completion.model} and received: {response}")
+
+if __name__ == "__main__":
+    main()
