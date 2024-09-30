@@ -1,12 +1,6 @@
 {
-  "prompts": [
-    {
-      "input": "dxpr_test_bird",
-      "output": "hawk"
-    },
-    {
-      "input": "another_test_prompt",
-      "output": "predefined answer here"
-    }
-  ]
+  "dxpr_test_bird1": "hawk",
+  "another_test_prompt": "predefined answer here",
+  "dxpr_test_bird2": "<p>hawk</p>",
+  "dxpr_test_bird3": "<p>The <strong>hawk</strong> is a majestic bird of prey, known for its:</p><ul><li>Keen eyesight</li><li>Sharp talons</li><li>Powerful beak</li></ul><p>Hawks are found in various habitats around the world.</p>"
 }

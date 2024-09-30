@@ -8,6 +8,9 @@ import pandas as pd
 from litellm import acompletion, completion
 from tqdm import tqdm
 
+import os
+import json
+
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -49,7 +52,7 @@ class Controller:
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
         progress_bar: bool = False,
-        suppress_warnings: bool = False,  # Add this line
+        suppress_warnings: bool = False,
     ):
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
@@ -79,67 +82,72 @@ class Controller:
         )
         self.suppress_warnings = suppress_warnings
 
+        self.predefined_prompts = self.load_predefined_prompts()
+
+    def load_predefined_prompts(self):
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(current_dir, 'predefined_prompts.json')
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+
+    def check_predefined_prompt(self, message):
+        for key, value in self.predefined_prompts.items():
+            if key in message:
+                return value
+        return None
+
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
     ):
-        if router is None or threshold is None:
-            raise RoutingError("Router or threshold unspecified.")
         if router not in self.routers:
-            raise RoutingError(
-                f"Invalid router {router}. Available routers are {list(self.routers.keys())}."
-            )
-        if not 0 <= threshold <= 1:
-            raise RoutingError(
-                f"Invalid threshold {threshold}. Threshold must be a float between 0.0 and 1.0."
-            )
+            raise RoutingError(f"Router {router} not found.")
+        if threshold is None or threshold < 0 or threshold > 1:
+            raise RoutingError(f"Threshold {threshold} must be between 0 and 1.")
 
     def _parse_model_name(self, model: str):
-        parts = model.split("-")
-        if len(parts) == 3 and parts[0] == "router":
-            _, router, threshold = parts
+        if model.startswith("router-"):
+            parts = model.split("-")
+            if len(parts) != 3:
+                raise RoutingError(
+                    f"Invalid model name {model}. Expected format: router-<router>-<threshold>"
+                )
+            router = parts[1]
             try:
-                threshold = float(threshold)
+                threshold = float(parts[2])
             except ValueError as e:
                 raise RoutingError(f"Threshold {threshold} must be a float.") from e
             return router, threshold
         else:
-            # If it's not a router model, return None for router and threshold
             return None, None
 
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
     ):
-        # Look at the last turn for routing.
-        # Our current routers were only trained on first turn data, so more research is required here.
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
-        self.model_counts[router][routed_model] += 1
+        self.model_counts[routed_model] += 1
 
         return routed_model
 
-    # Mainly used for evaluations
     def batch_calculate_win_rate(
         self,
         prompts: pd.Series,
         router: str,
+        threshold: float,
     ):
-        self._validate_router_threshold(router, 0)
-        router_instance = self.routers[router]
-        if router_instance.NO_PARALLEL and self.progress_bar:
-            return prompts.progress_apply(router_instance.calculate_strong_win_rate)
-        elif router_instance.NO_PARALLEL:
-            return prompts.apply(router_instance.calculate_strong_win_rate)
-        else:
-            return prompts.parallel_apply(router_instance.calculate_strong_win_rate)
+        return self.routers[router].batch_calculate_win_rate(
+            prompts, threshold, self.model_pair
+        )
 
     def route(self, prompt: str, router: str, threshold: float):
         self._validate_router_threshold(router, threshold)
 
         return self.routers[router].route(prompt, threshold, self.model_pair)
 
-    # Matches OpenAI's Chat Completions interface, but also supports optional router and threshold args
-    # If model name is present, attempt to parse router and threshold using it, otherwise, use the router and threshold args
     def completion(
         self,
         *,
@@ -147,13 +155,30 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                return {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": predefined_answer}
+                        }
+                    ],
+                    "model": "predefined_prompt"
+                }
+
         if "model" in kwargs:
             router, threshold = self._parse_model_name(kwargs["model"])
 
-        self._validate_router_threshold(router, threshold)
-        kwargs["model"] = self._get_routed_model_for_completion(
-            kwargs["messages"], router, threshold
-        )
+        if router and threshold:
+            self._validate_router_threshold(router, threshold)
+            kwargs["model"] = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+        elif "model" not in kwargs:
+            raise RoutingError("No model specified and router/threshold not provided.")
+
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
@@ -161,7 +186,6 @@ class Controller:
         else:
             return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
 
-    # Matches OpenAI's Async Chat Completions interface, but also supports optional router and threshold args
     async def acompletion(
         self,
         *,
@@ -169,6 +193,19 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                return {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": predefined_answer}
+                        }
+                    ],
+                    "model": "predefined_prompt"
+                }
+
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
             router = router or parsed_router

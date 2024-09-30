@@ -8,7 +8,8 @@ import logging
 import os
 import time
 from collections import defaultdict
-from typing import AsyncGenerator, Dict, List, Literal, Optional, Union
+from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
+import json
 
 import fastapi
 import shortuuid
@@ -124,9 +125,21 @@ class ChatCompletionResponse(BaseModel):
     usage: UsageInfo
 
 
-async def stream_response(response) -> AsyncGenerator:
-    async for chunk in response:
-        yield f"data: {chunk.model_dump_json()}\n\n"
+async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> AsyncGenerator:
+    if isinstance(response, dict):
+        content = response['choices'][0]['message']['content']
+        response_id = f"chatcmpl-{shortuuid.random()}"
+        created_time = int(time.time())
+
+        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+
+        for char in content:
+            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {'content': char}, 'finish_reason': None}]})}\n\n"
+
+        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+    else:
+        async for chunk in response:
+            yield f"data: {chunk.model_dump_json()}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -137,6 +150,8 @@ async def create_chat_completion(request: ChatCompletionRequest):
         res = await CONTROLLER.acompletion(
             **request.model_dump(exclude_none=True),
         )
+        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+        chosen_model = res['model'] if is_predefined else res.model
     except RoutingError as e:
         return JSONResponse(
             ErrorResponse(message=str(e)).model_dump(),
@@ -145,8 +160,6 @@ async def create_chat_completion(request: ChatCompletionRequest):
 
     logging.info(CONTROLLER.model_counts)
 
-    chosen_model = res.model  # Get the chosen model from the response
-
     if request.stream:
         return StreamingResponse(
             content=stream_response(res),
@@ -154,10 +167,22 @@ async def create_chat_completion(request: ChatCompletionRequest):
             headers={"X-Chosen-Model": chosen_model}
         )
     else:
-        return JSONResponse(
-            content=res.model_dump(),
-            headers={"X-Chosen-Model": chosen_model}
-        )
+        if is_predefined:
+            content = ChatCompletionResponse(
+                id=f"chatcmpl-{shortuuid.random()}",
+                object="chat.completion",
+                created=int(time.time()),
+                model="predefined_prompt",
+                choices=[ChatCompletionResponseChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=res['choices'][0]['message']['content']),
+                    finish_reason="stop"
+                )],
+                usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+            ).model_dump()
+        else:
+            content = res.model_dump()
+        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
 
 
 @app.get("/health")
