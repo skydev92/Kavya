@@ -23,4 +23,7 @@ RUN echo '#!/bin/bash' > start.sh && \
     echo 'exec python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml' >> start.sh && \
     chmod +x start.sh
 
+# Expose port 6060 for the application
+EXPOSE 6060
+
 CMD ["./start.sh"]
