@@ -56,6 +56,9 @@ jobs:
       - name: Terraform Apply
         run: terraform apply tfplan
         working-directory: ./terraform-aws
+        env:
+          TF_VAR_image_tag: ${{ github.ref_name }}
+          TF_VAR_openai_api_key: ${{ secrets.OPENAI_API_KEY }}
       - name: Terraform Validate
         run: terraform validate
         working-directory: ./terraform-aws
