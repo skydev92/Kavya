@@ -24,8 +24,8 @@ jobs:
           context: .
           push: true
           tags: |
-            rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/${{ github.repository | lowercase }}:${{ github.ref_name }}
-            rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/${{ github.repository | lowercase }}:latest
+            rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:${{ github.ref_name }}
+            rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
 
   deploy:
     needs: build-and-push
