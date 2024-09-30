@@ -1,3 +1,6 @@
+kavya_venv
+
+
 # RouteLLM specific
 routellm/evals/**/cache.npy
 
