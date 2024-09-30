@@ -196,7 +196,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
         return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
 
 
-@app.get("/health")
+@app.get("/")
 async def health_check():
     """Health check endpoint."""
     logging.debug("Health check called")
