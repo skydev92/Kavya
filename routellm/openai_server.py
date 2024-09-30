@@ -23,6 +23,12 @@ from pydantic import BaseModel, Field
 from routellm.controller import Controller, RoutingError
 from routellm.routers.routers import ROUTER_CLS
 
+# Add this line
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 CONTROLLER = None
 

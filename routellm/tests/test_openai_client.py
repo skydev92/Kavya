@@ -4,6 +4,10 @@ import os
 from routellm.controller import Controller
 from routellm.routers.routers import ROUTER_CLS
 
+from dotenv import load_dotenv
+os.environ["OPENAI_API_KEY"] = "dummy_key_for_testing"
+load_dotenv()  # This will load environment variables from .env file
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 system_content = (
@@ -36,6 +40,7 @@ if __name__ == "__main__":
         routers=[args.router],
         strong_model="gpt-4-1106-preview",
         weak_model="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1",
+        api_key=os.environ.get("OPENAI_API_KEY") or args.api_key,
     )
 
     chat_completion = client.chat.completions.create(

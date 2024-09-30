@@ -6,9 +6,11 @@ import numpy as np
 import pandas as pd
 from openai import OpenAI
 from sklearn.linear_model import LogisticRegression
+from dotenv import load_dotenv
 
-choices = ["A", "B", "C", "D"]
-OPENAI_CLIENT = OpenAI()
+load_dotenv()
+
+OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def compute_tiers(model_ratings, num_tiers):

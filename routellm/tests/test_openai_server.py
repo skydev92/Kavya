@@ -1,8 +1,12 @@
 import argparse
+import os
+from dotenv import load_dotenv
 
 import openai
 
 from routellm.routers.routers import ROUTER_CLS
+
+load_dotenv()  # This will load environment variables from .env file
 
 system_content = (
     "You are a helpful assistant. Respond to the questions as best as you can."
@@ -42,7 +46,7 @@ if __name__ == "__main__":
 
     client = openai.OpenAI(
         base_url=args.base_url,
-        api_key=args.api_key,
+        api_key=os.environ.get("OPENAI_API_KEY") or args.api_key,
     )
 
     chat_completion = client.chat.completions.create(
