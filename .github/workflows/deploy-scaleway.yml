@@ -6,9 +6,9 @@ on:
       - 'v*'
 
 jobs:
-  build-and-push:
+  build-push-and-deploy:
     runs-on: ubuntu-latest
-    steps:
+    steps:  
       - uses: actions/checkout@v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
@@ -26,3 +26,11 @@ jobs:
           tags: |
             rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:${{ github.ref_name }}
             rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
+
+      - name: Deploy to Scaleway Serverless Container
+        uses: yamatt/scaleway-serverless-container-deploy-action@v1.1
+        with:
+          container_id: ${{ secrets.SCW_CONTAINER_ID }}
+          secret_key: ${{ secrets.SCW_SECRET_KEY }}
+          registry_image_url: rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
+          region: nl-ams
