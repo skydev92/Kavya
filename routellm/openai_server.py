@@ -17,7 +17,7 @@ import shortuuid
 import uvicorn
 import yaml
 from fastapi.concurrency import asynccontextmanager
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
@@ -195,12 +195,29 @@ async def create_chat_completion(request: ChatCompletionRequest):
             content = res.model_dump()
         return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
 
-
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
+@app.get("/health", response_class=HTMLResponse)
 async def health_check():
     """Health check endpoint."""
     logging.debug("Health check called")
-    return JSONResponse(content={"status": "online"})
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>RouteLLM Server Status</title>
+            <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding-top: 50px; }
+                h1 { color: #4CAF50; }
+            </style>
+        </head>
+        <body>
+            <h1>RouteLLM Server Status</h1>
+            <p>Status: <strong>Online</strong></p>
+            <p>Server is running and ready to handle requests.</p>
+        </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content, status_code=200)
 
 
 parser = argparse.ArgumentParser(
