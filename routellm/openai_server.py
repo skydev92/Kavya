@@ -204,16 +204,37 @@ async def health_check():
     <!DOCTYPE html>
     <html>
         <head>
-            <title>RouteLLM Server Status</title>
+            <title>Kavya AI Server Status</title>
             <style>
-                body { font-family: Arial, sans-serif; text-align: center; padding-top: 50px; }
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding-top: 50px;
+                    margin: 0;
+                    height: 100vh;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    align-items: center;
+                    background-image: url('https://i.giphy.com/b421Wq4bQ9tMGEPmTN.webp');
+                    background-repeat: no-repeat;
+                    background-size: cover;
+                    background-position: center;
+                }
+                .content {
+                    background-color: rgba(255, 255, 255, 0.8);
+                    padding: 20px;
+                    border-radius: 10px;
+                }
                 h1 { color: #4CAF50; }
             </style>
         </head>
         <body>
-            <h1>RouteLLM Server Status</h1>
-            <p>Status: <strong>Online</strong></p>
-            <p>Server is running and ready to handle requests.</p>
+            <div class="content">
+                <h1>RouteLLM Server Status</h1>
+                <p>Status: <strong>Online</strong></p>
+                <p>Server is running and ready to handle requests.</p>
+            </div>
         </body>
     </html>
     """
