@@ -17,8 +17,22 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           service_account_key: ${{ secrets.GCP_SA_KEY }}
 
-      - name: Authenticate Docker to Google Cloud Artifact Registry
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
+      - name: Debug - Check gcloud info
+        run: |
+          gcloud info
+          gcloud config list
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
+
+      - name: Debug - Check Docker config
+        run: |
+          cat ~/.docker/config.json
+
+      - name: Debug - List Artifact Registry repositories
+        run: |
+          gcloud artifacts repositories list --location=${{ secrets.GCP_REGION }}
 
       - name: Build and push image to Google Artifact Registry
         env:
@@ -28,8 +42,14 @@ jobs:
           IMAGE_NAME: kavya
           IMAGE_TAG: ${{ github.ref_name }}
         run: |
+          echo "Building image: $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG"
           docker build --platform=linux/amd64 -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG . || exit 1
+          echo "Pushing image to Artifact Registry"
           docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG || exit 1
+
+      - name: Debug - Check pushed image
+        run: |
+          gcloud artifacts docker images list ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/$IMAGE_NAME
 
       - name: Deploy to Cloud Run
         env:
@@ -37,8 +57,13 @@ jobs:
           REGION: ${{ secrets.GCP_REGION }}
           SERVICE_NAME: kavya-service
         run: |
+          echo "Deploying to Cloud Run"
           gcloud run deploy $SERVICE_NAME \
             --image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE_NAME:$IMAGE_TAG \
             --region $REGION \
             --platform managed \
             --allow-unauthenticated
+
+      - name: Debug - Check Cloud Run service
+        run: |
+          gcloud run services describe $SERVICE_NAME --region ${{ secrets.GCP_REGION }}
