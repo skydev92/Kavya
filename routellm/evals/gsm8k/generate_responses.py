@@ -24,7 +24,7 @@ ROUTED_PAIR = ModelPair(
 
 def select_sglang_backend(args):
     if args.backend.startswith("gpt") or args.backend.startswith("router-"):
-        backend = OpenAI(args.backend, base_url=f"{args.host}:{args.port}/v1")
+        backend = OpenAI(args.backend, base_url=f"{args.host}:{8080}/v1")
     else:
         raise ValueError(f"Invalid backend: {args.backend}")
     return backend
@@ -124,7 +124,7 @@ def main(args):
 evaluate_args_base = {
     "parallel": 64,
     "host": "http://localhost",
-    "port": "6060",
+    "port": "8080",
 }
 weak_cors, weak_responses = main(
     SimpleNamespace(**evaluate_args_base, backend="router-random-1.0"),

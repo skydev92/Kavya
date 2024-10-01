@@ -29,7 +29,7 @@ https://github.com/sgl-project/sglang/blob/main/benchmark/mmlu/bench_sglang.py
 
 def select_sglang_backend(args):
     if args.backend.startswith("gpt") or args.backend.startswith("router-"):
-        backend = OpenAI(args.backend, base_url=f"{args.host}:{args.port}/v1")
+        backend = OpenAI(args.backend, base_url=f"{args.host}:{8080}/v1")
     else:
         raise ValueError(f"Invalid backend: {args.backend}")
     return backend
@@ -184,7 +184,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ntrain", "-k", type=int, default=5)
     parser.add_argument("--parallel", type=int, default=64)
-    parser.add_argument("--port", type=str, default="6060")
+    parser.add_argument("--port", type=str, default="8080")
     parser.add_argument("--host", type=str, default="http://127.0.0.1")
     args = parser.parse_args()
 

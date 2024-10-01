@@ -11,7 +11,7 @@ from openai import OpenAI
 # Argument parser setup
 parser = argparse.ArgumentParser(description="Chatbot Interface for RouteLLM")
 parser.add_argument(
-    "--model-url", type=str, default="http://localhost:6060/v1", help="Model URL"
+    "--model-url", type=str, default="http://localhost:8080/v1", help="Model URL"
 )
 parser.add_argument(
     "-r", "--router", type=str, required=True, help="Router name to use for the chatbot"
@@ -95,4 +95,4 @@ gr.ChatInterface(
         gr.Textbox(label="Router", value=args.router),
         gr.Slider(label="Temperature", minimum=0, maximum=1, value=args.temp, step=0.1),
     ],
-).queue().launch(server_name=args.host, server_port=args.port, share=True)
+).queue().launch(server_name=args.host, server_port=8080, share=True)

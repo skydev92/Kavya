@@ -82,7 +82,7 @@ Instead of using the Python SDK, you can also launch an OpenAI-compatible server
 > export ANYSCALE_API_KEY=esecret_XXXXXX
 > python -m routellm.openai_server --routers mf --strong-model gpt-4-1106-preview --weak-model anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1
 INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:6060 (Press CTRL+C to quit)
+INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
 ```
 
 Once the server is launched, you can start a local router chatbot to see how different messages are routed.
