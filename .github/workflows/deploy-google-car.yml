@@ -15,7 +15,13 @@ jobs:
         uses: google-github-actions/setup-gcloud@v1
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          service_account_key: ${{ secrets.GCP_SA_KEY }}
+          install_components: 'gke-gcloud-auth-plugin'
+
+      - name: Authenticate to Google Cloud
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > key.json
+          gcloud auth activate-service-account --key-file=key.json
+          rm key.json
 
       - name: Debug - Check gcloud info
         run: |
@@ -40,7 +46,6 @@ jobs:
 
       - name: Debug - List Artifact Registry repositories
         run: |
-          gcloud auth print-access-token
           gcloud artifacts repositories list --location=${{ secrets.GCP_REGION }}
 
       - name: Build and push image to Google Artifact Registry
