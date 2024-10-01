@@ -32,4 +32,4 @@ jobs:
         with:
           container_id: 4ffdb4cd-88d1-4730-9f26-f341573d138f
           secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          registry_image_url: rg.nl-ams.scw.cloud/kavya:kavya:latest
+          registry_image_url: rg.nl-ams.scw.cloud/funcscwkavyapivesjh4:kavya:latest
