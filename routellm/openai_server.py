@@ -231,7 +231,7 @@ async def health_check():
         </head>
         <body>
             <div class="content">
-                <h1>RouteLLM Server Status</h1>
+                <h1>Kavya AI Server Status</h1>
                 <p>Status: <strong>Online</strong></p>
                 <p>Server is running and ready to handle requests.</p>
                 <p>Copyright 2024 DXPR</p>
