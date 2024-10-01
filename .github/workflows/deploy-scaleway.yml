@@ -28,9 +28,8 @@ jobs:
             rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
 
       - name: Deploy to Scaleway Serverless Container
-        uses: yamatt/scaleway-serverless-container-deploy-action@v1.1
+        uses: httptoolkit/deploy-scaleway-serverless-container-action@v1
         with:
-          container_id: ${{ secrets.SCW_CONTAINER_ID }}
+          container_id: 4ffdb4cd-88d1-4730-9f26-f341573d138f
           secret_key: ${{ secrets.SCW_SECRET_KEY }}
-          registry_image_url: rg.nl-ams.scw.cloud/${{ secrets.SCW_NAMESPACE }}/kavya:latest
-          region: nl-ams
+          registry_image_url: rg.nl-ams.scw.cloud/kavya:kavya:latest
