@@ -234,6 +234,7 @@ async def health_check():
                 <h1>RouteLLM Server Status</h1>
                 <p>Status: <strong>Online</strong></p>
                 <p>Server is running and ready to handle requests.</p>
+                <p>Copyright 2024 DXPR</p>
             </div>
         </body>
     </html>
