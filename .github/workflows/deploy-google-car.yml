@@ -22,6 +22,14 @@ jobs:
           gcloud info
           gcloud config list
 
+      - name: Debug - Check active account
+        run: |
+          gcloud auth list
+
+      - name: Debug - Verify project access
+        run: |
+          gcloud projects describe ${{ secrets.GCP_PROJECT_ID }}
+
       - name: Configure Docker for Artifact Registry
         run: |
           gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev
@@ -32,6 +40,7 @@ jobs:
 
       - name: Debug - List Artifact Registry repositories
         run: |
+          gcloud auth print-access-token
           gcloud artifacts repositories list --location=${{ secrets.GCP_REGION }}
 
       - name: Build and push image to Google Artifact Registry
