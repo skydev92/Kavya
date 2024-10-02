@@ -85,4 +85,4 @@ jobs:
 
       - name: Debug - Check Cloud Run service
         run: |
-          gcloud run services describe $SERVICE_NAME --region ${{ secrets.GCP_REGION }}
+          gcloud run services describe kavya-service --region ${{ secrets.GCP_REGION }}
