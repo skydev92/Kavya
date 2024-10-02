@@ -52,6 +52,53 @@
 
 - **Operating System**: Windows, macOS, or Linux
 - **Python**: 3.11 or higher
+- **Docker**: Latest stable version
+
+### Steps to Install and Run Kavya
+
+1. **Clone the Repository**
+   ```bash
+   git clone https://github.com/your-username/kavya.git
+   cd kavya
+   ```
+
+2. **Build the Docker Image**
+   ```bash
+   docker build -t kavya .
+   ```
+
+3. **Run the Docker Container**
+   ```bash
+   docker run -p 8080:8080 kavya
+   ```
+
+4. **Access Kavya**
+   Open your web browser and navigate to `http://localhost:8080` to start using Kavya.
+
+### Alternative: Running Without Docker
+
+If you prefer not to use Docker, you can set up a virtual environment and run Kavya directly:
+
+1. **Create and Activate a Virtual Environment**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+   ```
+
+2. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Run Kavya**
+   ```bash
+   python main.py
+   ```
+
+4. **Access Kavya**
+   Open your web browser and navigate to `http://localhost:8080` to start using Kavya.
+
+---
 
 ## Advanced Features
 
