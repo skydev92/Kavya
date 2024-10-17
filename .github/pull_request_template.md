@@ -17,7 +17,7 @@ For example: Fix #123.
 ## Checklist
 
 <!--- Put an `x` in all the boxes that apply: -->
-- [ ] I have read the [CONTRIBUTING.md](https://github.com/dxpr/dxpr_builder/blob/3.x/CONTRIBUTING.md) document.
+- [ ] I have read the [CONTRIBUTING.md](https://github.com/dxpr/kavya/blob/1.x/CONTRIBUTING.md) document.
 - [ ] My commit messages follow the contributing standards and style of this project.
 - [ ] My code follows the coding standards and style of this project.
 - [ ] My code contains no changes that are outside the scope of the issue.
