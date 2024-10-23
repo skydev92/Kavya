@@ -14,13 +14,12 @@ import json
 import fastapi
 import shortuuid
 import uvicorn
-import yaml
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from routellm.controller import Controller, RoutingError
+from controller import Controllers, RoutingError
 from routellm.routers.routers import ROUTER_CLS
 
 from dotenv import load_dotenv
@@ -36,28 +35,24 @@ logging.basicConfig(
 load_dotenv()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-CONTROLLER = None
 
 @asynccontextmanager
 async def lifespan(_):
-    global CONTROLLER
-    logging.debug("Initializing CONTROLLER")
+    logging.debug("Initializing controllers")
     try:
-        CONTROLLER = Controller(
-            routers=args.routers,
-            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-            strong_model=args.strong_model,
-            weak_model=args.weak_model,
-            api_base=args.base_url,
-            api_key=args.api_key,
-            progress_bar=True,
-        )
-        logging.debug("CONTROLLER initialized successfully")
+        app.controllers = Controllers(**vars(args))
+        app.controllers.create_controller("completion", **vars(args))
+        # create as many controllers as needed, below :
+        # app.controllers.create_controller("title_generator", **vars(args))
+        # app.controllers.create_controller("paraphrase", **vars(args))
+        logging.debug("Default controller based on arguments, initialized successfully")
     except Exception as e:
-        logging.error(f"Failed to initialize CONTROLLER: {str(e)}")
+        logging.error(f"Failed to initialize controllers: {str(e)}")
+    
     yield
-    CONTROLLER = None
-    logging.debug("CONTROLLER shut down")
+
+    app.controllers = []
+    logging.debug("All controllers shut down")
 
 
 app = fastapi.FastAPI(lifespan=lifespan)
@@ -152,7 +147,7 @@ async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> As
 async def create_chat_completion(request: ChatCompletionRequest):
     logging.info(f"Received request: {request}")
     try:
-        res = await CONTROLLER.acompletion(
+        res = await app.controllers.completion.acompletion(
             **request.model_dump(exclude_none=True),
         )
         is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
@@ -163,7 +158,7 @@ async def create_chat_completion(request: ChatCompletionRequest):
             status_code=400,
         )
 
-    logging.info(CONTROLLER.model_counts)
+    logging.info(app.controllers.completion.model_counts)
 
     if request.stream:
         return StreamingResponse(
@@ -274,12 +269,11 @@ if __name__ == "__main__":
 
     if args.verbose:
         logging.basicConfig(level=logging.INFO)
-
-    if __name__ == "__main__":
-        print("Launching server with routers:", args.routers)
-        uvicorn.run(
-            "routellm.openai_server:app",
-            port=8080,
-            host="0.0.0.0",
-            workers=args.workers,
-        )
+    
+    print("Launching server with routers:", args.routers)
+    uvicorn.run(
+        "routellm.openai_server:app",
+        port=8080,
+        host="0.0.0.0",
+        workers=args.workers,
+    )

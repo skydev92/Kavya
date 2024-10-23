@@ -225,3 +225,70 @@ class Controller:
                 return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
         else:
             return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        
+class Controllers:
+    def __init__(self, **kwargs):
+        self.controllers = {}
+        self.create_controller("default", **kwargs)
+
+    def create_controller(self, id, **kwargs):
+        # getting kwargs
+        routers=kwargs.get('routers', None)
+        config=kwargs.get('config', None)
+        strong_model=kwargs.get('strong_model', None)
+        weak_model=kwargs.get('weak_model', None)
+        api_base=kwargs.get('api_base', None)
+        api_key=kwargs.get('api_key', None)
+        progress_bar=kwargs.get('progress_bar', None)
+
+        # initializing controller
+        controller = Controller(
+            routers=routers,
+            config=config,
+            strong_model=strong_model,
+            weak_model=weak_model,
+            api_base=api_base,
+            api_key=api_key,
+            progress_bar=progress_bar
+        )
+
+        # storing controller
+        self.controllers[id] = controller
+
+        return controller
+
+    # METHODS TO IMITATE DICT INTERFACE
+
+    def __repr__(self):
+        return repr(self.controllers)
+
+    def __del__(self):
+        for controller in self.controllers.values():
+            del controller
+
+    def __getattr__(self, name):
+        return self.controllers[name]
+
+    def __contains__(self, id):
+        return id in self.controllers
+
+    def __getitem__(self, id):
+        return self.controllers[id]
+
+    def __setitem__(self, id, controller):
+        self.controllers[id] = controller
+
+    def __delitem__(self, id):
+        del self.controllers[id]
+
+    def __iter__(self):
+        return iter(self.controllers)
+
+    def __len__(self):
+        return len(self.controllers)
+
+    def __repr__(self):
+        return repr(self.controllers)
+
+    def __str__(self):
+        return str(self.controllers)
