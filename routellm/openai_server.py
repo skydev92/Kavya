@@ -8,7 +8,6 @@ import logging
 import os
 import time
 import sys
-from collections import defaultdict
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
 import json
 
@@ -19,7 +18,6 @@ import yaml
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from routellm.controller import Controller, RoutingError
@@ -40,12 +38,8 @@ load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 CONTROLLER = None
 
-openai_client = AsyncOpenAI()
-count = defaultdict(lambda: defaultdict(int))
-
-
 @asynccontextmanager
-async def lifespan(app):
+async def lifespan(_):
     global CONTROLLER
     logging.debug("Initializing CONTROLLER")
     try:
