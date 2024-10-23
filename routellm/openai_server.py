@@ -236,49 +236,50 @@ async def health_check():
     return HTMLResponse(content=html_content, status_code=200)
 
 
-parser = argparse.ArgumentParser(
-    description="An OpenAI-compatible API server for LLM routing."
-)
-parser.add_argument(
-    "--verbose",
-    action="store_true",
-)
-parser.add_argument("--workers", type=int, default=0)
-parser.add_argument("--config", type=str, default=None)
-parser.add_argument("--port", type=int, default=8080)
-parser.add_argument(
-    "--routers",
-    nargs="+",
-    type=str,
-    default=["random"],
-    choices=list(ROUTER_CLS.keys()),
-)
-parser.add_argument(
-    "--base-url",
-    help="The base URL used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument(
-    "--api-key",
-    help="The API key used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
-parser.add_argument(
-    "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
-)
-args = parser.parse_args()
-
-if args.verbose:
-    logging.basicConfig(level=logging.INFO)
-
 if __name__ == "__main__":
-    print("Launching server with routers:", args.routers)
-    uvicorn.run(
-        "routellm.openai_server:app",
-        port=8080,
-        host="0.0.0.0",
-        workers=args.workers,
+    parser = argparse.ArgumentParser(
+        description="An OpenAI-compatible API server for LLM routing."
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument("--workers", type=int, default=0)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument(
+        "--routers",
+        nargs="+",
+        type=str,
+        default=["random"],
+        choices=list(ROUTER_CLS.keys()),
+    )
+    parser.add_argument(
+        "--base-url",
+        help="The base URL used for all LLM requests",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--api-key",
+        help="The API key used for all LLM requests",
+        type=str,
+        default=None,
+    )
+    parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
+    parser.add_argument(
+        "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
+    )
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.INFO)
+
+    if __name__ == "__main__":
+        print("Launching server with routers:", args.routers)
+        uvicorn.run(
+            "routellm.openai_server:app",
+            port=8080,
+            host="0.0.0.0",
+            workers=args.workers,
+        )
