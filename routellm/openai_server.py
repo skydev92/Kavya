@@ -21,17 +21,9 @@ import models
 
 from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
-# Load environment variables from .env file
-load_dotenv()
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# ------------------------------------------------------------------------------
+# APPLICATION INITIALIZATION
+# ------------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(_):
@@ -61,33 +53,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/v1/chat/completions")
-async def create_chat_completion(request: models.ChatCompletionRequest):
-    logging.info(f"Received request: {request}")
-    try:
-        res = app.controllers.response(request, "completion", "acompletion")
-        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-        chosen_model = res['model'] if is_predefined else res.model
-    except RoutingError as e:
-        return JSONResponse(
-            models.ErrorResponse(message=str(e)).model_dump(),
-            status_code=400,
-        )
 
-    logging.info(app.controllers.completion.model_counts)
-
-    if request.stream:
-        return StreamingResponse(
-            content=models.stream_response(res),
-            media_type="text/event-stream",
-            headers={"X-Chosen-Model": chosen_model}
-        )
-    else:
-        if is_predefined:
-            content = models.predefined_completion_response(res).model_dump()
-        else:
-            content = res.model_dump()
-        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+# ------------------------------------------------------------------------------
+# UTILITY ENDPOINTS
+# ------------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/health", response_class=HTMLResponse)
@@ -135,8 +104,55 @@ async def health_check():
     """
     return HTMLResponse(content=html_content, status_code=200)
 
+# ------------------------------------------------------------------------------
+# API ENDPOINTS
+# ------------------------------------------------------------------------------
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: models.ChatCompletionRequest):
+    logging.info(f"Received request: {request}")
+    try:
+        res = app.controllers.response(request, "completion", "acompletion")
+        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+        chosen_model = res['model'] if is_predefined else res.model
+    except RoutingError as e:
+        return JSONResponse(
+            models.ErrorResponse(message=str(e)).model_dump(),
+            status_code=400,
+        )
+
+    logging.info(app.controllers.completion.model_counts)
+
+    if request.stream:
+        return StreamingResponse(
+            content=models.stream_response(res),
+            media_type="text/event-stream",
+            headers={"X-Chosen-Model": chosen_model}
+        )
+    else:
+        if is_predefined:
+            content = models.predefined_completion_response(res).model_dump()
+        else:
+            content = res.model_dump()
+        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+
+# ------------------------------------------------------------------------------
+# MAIN : APPLICATION STARTUP
+# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     parser = argparse.ArgumentParser(
         description="An OpenAI-compatible API server for LLM routing."
     )
