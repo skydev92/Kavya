@@ -4,37 +4,26 @@ It current only supports Chat Completions: https://platform.openai.com/docs/api-
 """
 
 import argparse
-import logging
 import os
-import time
 import sys
-from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
-import json
 
+import logging
 import fastapi
-import shortuuid
 import uvicorn
+
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
 from controller import Controllers, RoutingError
 from routellm.routers.routers import ROUTER_CLS
+import models 
 
 from dotenv import load_dotenv
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-
-# Load environment variables from .env file
-load_dotenv()
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# ------------------------------------------------------------------------------
+# APPLICATION INITIALIZATION
+# ------------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(_):
@@ -54,7 +43,6 @@ async def lifespan(_):
     app.controllers = []
     logging.debug("All controllers shut down")
 
-
 app = fastapi.FastAPI(lifespan=lifespan)
 
 app.add_middleware(
@@ -66,123 +54,9 @@ app.add_middleware(
 )
 
 
-class ErrorResponse(BaseModel):
-    object: str = "error"
-    message: str
-
-
-class UsageInfo(BaseModel):
-    prompt_tokens: int = 0
-    total_tokens: int = 0
-    completion_tokens: Optional[int] = 0
-
-
-class ChatCompletionRequest(BaseModel):
-    # OpenAI fields: https://platform.openai.com/docs/api-reference/chat/create
-    model: str
-    messages: Union[
-        str,
-        List[Dict[str, str]],
-        List[Dict[str, Union[str, List[Dict[str, Union[str, Dict[str, str]]]]]]],
-    ]
-    frequency_penalty: Optional[float] = 0.0
-    logit_bias: Optional[Dict[int, float]] = None
-    logprobs: Optional[bool] = None
-    top_logprobs: Optional[int] = None
-    max_tokens: Optional[int] = None
-    n: Optional[int] = 1
-    presence_penalty: Optional[float] = 0.0
-    response_format: Optional[Dict[str, str]] = (
-        None  # { "type": "json_object" } for json mode
-    )
-    seed: Optional[int] = None
-    stop: Optional[Union[str, List[str]]] = None
-    stream: Optional[bool] = False
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
-    tools: Optional[List[Dict[str, Union[str, int, float]]]] = None
-    tool_choice: Optional[str] = None
-    user: Optional[str] = None
-
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionResponseChoice(BaseModel):
-    index: int
-    message: ChatMessage
-    finish_reason: Optional[Literal["stop", "length"]] = None
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"chatcmpl-{shortuuid.random()}")
-    object: str = "chat.completion"
-    created: int = Field(default_factory=lambda: int(time.time()))
-    model: str
-    choices: List[ChatCompletionResponseChoice]
-    usage: UsageInfo
-
-
-async def stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> AsyncGenerator:
-    if isinstance(response, dict):
-        content = response['choices'][0]['message']['content']
-        response_id = f"chatcmpl-{shortuuid.random()}"
-        created_time = int(time.time())
-
-        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
-
-        for char in content:
-            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {'content': char}, 'finish_reason': None}]})}\n\n"
-
-        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': 'predefined_prompt', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
-    else:
-        async for chunk in response:
-            yield f"data: {chunk.model_dump_json()}\n\n"
-    yield "data: [DONE]\n\n"
-
-
-@app.post("/v1/chat/completions")
-async def create_chat_completion(request: ChatCompletionRequest):
-    logging.info(f"Received request: {request}")
-    try:
-        res = await app.controllers.completion.acompletion(
-            **request.model_dump(exclude_none=True),
-        )
-        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-        chosen_model = res['model'] if is_predefined else res.model
-    except RoutingError as e:
-        return JSONResponse(
-            ErrorResponse(message=str(e)).model_dump(),
-            status_code=400,
-        )
-
-    logging.info(app.controllers.completion.model_counts)
-
-    if request.stream:
-        return StreamingResponse(
-            content=stream_response(res),
-            media_type="text/event-stream",
-            headers={"X-Chosen-Model": chosen_model}
-        )
-    else:
-        if is_predefined:
-            content = ChatCompletionResponse(
-                id=f"chatcmpl-{shortuuid.random()}",
-                object="chat.completion",
-                created=int(time.time()),
-                model="predefined_prompt",
-                choices=[ChatCompletionResponseChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=res['choices'][0]['message']['content']),
-                    finish_reason="stop"
-                )],
-                usage=UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0)
-            ).model_dump()
-        else:
-            content = res.model_dump()
-        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+# ------------------------------------------------------------------------------
+# UTILITY ENDPOINTS
+# ------------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/health", response_class=HTMLResponse)
@@ -230,8 +104,55 @@ async def health_check():
     """
     return HTMLResponse(content=html_content, status_code=200)
 
+# ------------------------------------------------------------------------------
+# API ENDPOINTS
+# ------------------------------------------------------------------------------
+
+@app.post("/v1/chat/completions")
+async def create_chat_completion(request: models.ChatCompletionRequest):
+    logging.info(f"Received request: {request}")
+    try:
+        res = app.controllers.response(request, "completion", "acompletion")
+        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+        chosen_model = res['model'] if is_predefined else res.model
+    except RoutingError as e:
+        return JSONResponse(
+            models.ErrorResponse(message=str(e)).model_dump(),
+            status_code=400,
+        )
+
+    logging.info(app.controllers.completion.model_counts)
+
+    if request.stream:
+        return StreamingResponse(
+            content=models.stream_response(res),
+            media_type="text/event-stream",
+            headers={"X-Chosen-Model": chosen_model}
+        )
+    else:
+        if is_predefined:
+            content = models.predefined_completion_response(res).model_dump()
+        else:
+            content = res.model_dump()
+        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+
+# ------------------------------------------------------------------------------
+# MAIN : APPLICATION STARTUP
+# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)]
+    )
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     parser = argparse.ArgumentParser(
         description="An OpenAI-compatible API server for LLM routing."
     )

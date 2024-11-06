@@ -11,6 +11,7 @@ from tqdm import tqdm
 import os
 import json
 
+from models import ChatCompletionRequest
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -256,6 +257,27 @@ class Controllers:
         self.controllers[id] = controller
 
         return controller
+    
+    """
+    Call an async method on a controller with the given id.
+
+    Parameters
+    ----------
+    request : ChatCompletionRequest
+        The request to pass to the method.
+    id : str
+        The id of the controller to call.
+    amethod_name : str
+        The name of the async method to call.
+
+    Returns
+    -------
+    The response from the async method.
+    """
+    async def response(self, request: ChatCompletionRequest, id, amethod_name):
+        return await self.controllers[id].__getattribute__(amethod_name)(
+            **request.model_dump(exclude_none=True),
+        )
 
     # METHODS TO IMITATE DICT INTERFACE
 
