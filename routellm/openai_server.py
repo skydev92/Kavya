@@ -6,6 +6,9 @@ It current only supports Chat Completions: https://platform.openai.com/docs/api-
 import argparse
 import os
 import sys
+import asyncio
+import yaml
+import json
 
 import logging
 import fastapi
@@ -15,9 +18,9 @@ from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from controller import Controllers, RoutingError
+from routellm.controller import Controllers, RoutingError
 from routellm.routers.routers import ROUTER_CLS
-import models 
+import routellm.models 
 
 from dotenv import load_dotenv
 
@@ -28,15 +31,31 @@ from dotenv import load_dotenv
 @asynccontextmanager
 async def lifespan(_):
     logging.debug("Initializing controllers")
-    try:
-        app.controllers = Controllers(**vars(args))
-        app.controllers.create_controller("completion", **vars(args))
-        # create as many controllers as needed, below :
-        # app.controllers.create_controller("title_generator", **vars(args))
-        # app.controllers.create_controller("paraphrase", **vars(args))
-        logging.debug("Default controller based on arguments, initialized successfully")
-    except Exception as e:
-        logging.error(f"Failed to initialize controllers: {str(e)}")
+    # try:
+    app.controllers = Controllers(
+        routers=args.routers,
+        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+        strong_model=args.strong_model,
+        weak_model=args.weak_model,
+        api_base=args.base_url,
+        api_key=args.api_key,
+        progress_bar=True,
+    )
+    app.controllers.create_controller("completion", 
+        routers=args.routers,
+        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+        strong_model=args.strong_model,
+        weak_model=args.weak_model,
+        api_base=args.base_url,
+        api_key=args.api_key,
+        progress_bar=True,
+    )
+    # create as many controllers as needed, below :
+    # app.controllers.create_controller("title_generator", **vars(args))
+    # app.controllers.create_controller("paraphrase", **vars(args))
+    logging.debug("Default controller based on arguments, initialized successfully")
+    # except Exception as e:
+        # logging.error(f"Failed to initialize controllers: {str(e)}")
     
     yield
 
@@ -109,15 +128,16 @@ async def health_check():
 # ------------------------------------------------------------------------------
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: models.ChatCompletionRequest):
+async def create_chat_completion(request: routellm.models.ChatCompletionRequest):
     logging.info(f"Received request: {request}")
     try:
-        res = app.controllers.response(request, "completion", "acompletion")
+        res = await app.controllers.response(request, "completion", "acompletion")
+        # print(json.dumps(res))
         is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
         chosen_model = res['model'] if is_predefined else res.model
     except RoutingError as e:
         return JSONResponse(
-            models.ErrorResponse(message=str(e)).model_dump(),
+            routellm.models.ErrorResponse(message=str(e)).model_dump(),
             status_code=400,
         )
 
@@ -125,13 +145,13 @@ async def create_chat_completion(request: models.ChatCompletionRequest):
 
     if request.stream:
         return StreamingResponse(
-            content=models.stream_response(res),
+            content=routellm.models.stream_response(res),
             media_type="text/event-stream",
             headers={"X-Chosen-Model": chosen_model}
         )
     else:
         if is_predefined:
-            content = models.predefined_completion_response(res).model_dump()
+            content = routellm.models.predefined_completion_response(res).model_dump()
         else:
             content = res.model_dump()
         return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
@@ -140,57 +160,58 @@ async def create_chat_completion(request: models.ChatCompletionRequest):
 # MAIN : APPLICATION STARTUP
 # ------------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # Configure logging
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler(sys.stdout)]
-    )
+# if __name__ == "__main__":
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
-    # Load environment variables from .env file
-    load_dotenv()
+# Load environment variables from .env file
+load_dotenv()
 
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    parser = argparse.ArgumentParser(
-        description="An OpenAI-compatible API server for LLM routing."
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-    )
-    parser.add_argument("--workers", type=int, default=0)
-    parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument(
-        "--routers",
-        nargs="+",
-        type=str,
-        default=["random"],
-        choices=list(ROUTER_CLS.keys()),
-    )
-    parser.add_argument(
-        "--base-url",
-        help="The base URL used for all LLM requests",
-        type=str,
-        default=None,
-    )
-    parser.add_argument(
-        "--api-key",
-        help="The API key used for all LLM requests",
-        type=str,
-        default=None,
-    )
-    parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
-    parser.add_argument(
-        "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
-    )
-    args = parser.parse_args()
+parser = argparse.ArgumentParser(
+    description="An OpenAI-compatible API server for LLM routing."
+)
+parser.add_argument(
+    "--verbose",
+    action="store_true",
+)
+parser.add_argument("--workers", type=int, default=0)
+parser.add_argument("--config", type=str, default=None)
+parser.add_argument("--port", type=int, default=8080)
+parser.add_argument(
+    "--routers",
+    nargs="+",
+    type=str,
+    default=["random"],
+    choices=list(ROUTER_CLS.keys()),
+)
+parser.add_argument(
+    "--base-url",
+    help="The base URL used for all LLM requests",
+    type=str,
+    default=None,
+)
+parser.add_argument(
+    "--api-key",
+    help="The API key used for all LLM requests",
+    type=str,
+    default=None,
+)
+parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
+parser.add_argument(
+    "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
+)
+args = parser.parse_args()
 
-    if args.verbose:
-        logging.basicConfig(level=logging.INFO)
-    
+if args.verbose:
+    logging.basicConfig(level=logging.INFO)
+
+if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
     uvicorn.run(
         "routellm.openai_server:app",

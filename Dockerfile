@@ -20,7 +20,7 @@ RUN echo "Debug: Build complete. Preparing to start RouteLLM server"
 # Create a simple start script
 RUN echo '#!/bin/bash' > start.sh && \
     echo 'echo "Debug: Starting RouteLLM server in container"' >> start.sh && \
-    echo 'exec python ./routellm/openai_server.py --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml' >> start.sh && \
+    echo 'exec python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml' >> start.sh && \
     chmod +x start.sh
 
 # Expose port 8080 for the application

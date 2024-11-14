@@ -11,7 +11,7 @@ from tqdm import tqdm
 import os
 import json
 
-from models import ChatCompletionRequest
+from routellm.models import ChatCompletionRequest
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -64,6 +64,7 @@ class Controller:
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
+
 
         router_pbar = None
         if progress_bar:
@@ -130,7 +131,8 @@ class Controller:
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
-        self.model_counts[routed_model] += 1
+        # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
+        # self.model_counts[routed_model] += 1
 
         return routed_model
 
