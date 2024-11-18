@@ -11,6 +11,7 @@ from tqdm import tqdm
 import os
 import json
 
+from routellm.models import ChatCompletionRequest
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -63,6 +64,7 @@ class Controller:
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
+
 
         router_pbar = None
         if progress_bar:
@@ -129,7 +131,8 @@ class Controller:
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
-        self.model_counts[routed_model] += 1
+        # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
+        # self.model_counts[routed_model] += 1
 
         return routed_model
 
@@ -225,3 +228,91 @@ class Controller:
                 return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
         else:
             return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        
+class Controllers:
+    def __init__(self, **kwargs):
+        self.controllers = {}
+        self.create_controller("default", **kwargs)
+
+    def create_controller(self, id, **kwargs):
+        # getting kwargs
+        routers=kwargs.get('routers', None)
+        config=kwargs.get('config', None)
+        strong_model=kwargs.get('strong_model', None)
+        weak_model=kwargs.get('weak_model', None)
+        api_base=kwargs.get('api_base', None)
+        api_key=kwargs.get('api_key', None)
+        progress_bar=kwargs.get('progress_bar', None)
+
+        # initializing controller
+        controller = Controller(
+            routers=routers,
+            config=config,
+            strong_model=strong_model,
+            weak_model=weak_model,
+            api_base=api_base,
+            api_key=api_key,
+            progress_bar=progress_bar
+        )
+
+        # storing controller
+        self.controllers[id] = controller
+
+        return controller
+    
+    """
+    Call an async method on a controller with the given id.
+
+    Parameters
+    ----------
+    request : ChatCompletionRequest
+        The request to pass to the method.
+    id : str
+        The id of the controller to call.
+    amethod_name : str
+        The name of the async method to call.
+
+    Returns
+    -------
+    The response from the async method.
+    """
+    async def response(self, request: ChatCompletionRequest, id, amethod_name):
+        return await self.controllers[id].__getattribute__(amethod_name)(
+            **request.model_dump(exclude_none=True),
+        )
+
+    # METHODS TO IMITATE DICT INTERFACE
+
+    def __repr__(self):
+        return repr(self.controllers)
+
+    def __del__(self):
+        for controller in self.controllers.values():
+            del controller
+
+    def __getattr__(self, name):
+        return self.controllers[name]
+
+    def __contains__(self, id):
+        return id in self.controllers
+
+    def __getitem__(self, id):
+        return self.controllers[id]
+
+    def __setitem__(self, id, controller):
+        self.controllers[id] = controller
+
+    def __delitem__(self, id):
+        del self.controllers[id]
+
+    def __iter__(self):
+        return iter(self.controllers)
+
+    def __len__(self):
+        return len(self.controllers)
+
+    def __repr__(self):
+        return repr(self.controllers)
+
+    def __str__(self):
+        return str(self.controllers)
