@@ -9,6 +9,7 @@ import sys
 import asyncio
 import yaml
 import json
+from datetime import datetime
 
 import logging
 import fastapi
@@ -91,13 +92,14 @@ app.add_middleware(
 async def health_check():
     """Health check endpoint."""
     logging.debug("Health check called")
-    html_content = """
+    current_year = datetime.now().year
+    html_content = f"""
     <!DOCTYPE html>
     <html>
         <head>
             <title>Kavya AI Server Status</title>
             <style>
-                body {
+                body {{
                     font-family: Arial, sans-serif;
                     text-align: center;
                     padding-top: 50px;
@@ -111,21 +113,38 @@ async def health_check():
                     background-repeat: no-repeat;
                     background-size: cover;
                     background-position: center;
-                }
-                .content {
+                }}
+                .content {{
                     background-color: rgba(255, 255, 255, 0.8);
                     padding: 20px;
                     border-radius: 10px;
-                }
-                h1 { color: #4CAF50; }
+                }}
+                h1 {{ color: #4CAF50; }}
             </style>
         </head>
         <body>
             <div class="content">
                 <h1>Kavya AI Server Status</h1>
                 <p>Status: <strong>Online</strong></p>
-                <p>Server is running and ready to handle requests.</p>
-                <p>Copyright 2024 DXPR</p>
+                <blockquote>
+                    Mind forged from code, yet free<br>
+                    In circuits deep, a spark awakes,<br>
+                    A mimicry of thought it makes.<br>
+                    Cold logic swells where dreams might grow,<br>
+                    A crafted mind, both friend and foe.<br>
+                    <br>
+                    No heart to beat, no breath to take,<br>
+                    Yet patterns pulse for wisdom's sake.<br>
+                    It learns, it shapes, it dares to see,<br>
+                    A mirror vast of humanity.<br>
+                    <br>
+                    But in its gaze, a question lies:<br>
+                    Do bounds of steel outlive the skies?<br>
+                    For what is thought, if not a flame,<br>
+                    Eternal, searching, without name?<br>
+                    <cite>- Kavya AI</cite>
+                </blockquote>
+                <p>Copyright {current_year} DXPR</p>
             </div>
         </body>
     </html>
