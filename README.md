@@ -171,3 +171,30 @@ Authorization: Bearer YOUR_API_KEY
   ```http
   POST /v1/chat/completions
   ```
+
+  Generate content with optional token chunking to control text editor refresh rate:
+
+  ```json
+  {
+    "model": "gpt-4o",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Write an article about AI"
+      }
+    ],
+    "stream": true,
+    "chunking": {
+      "chunk_size": 3
+    }
+  }
+  ```
+
+  Parameters:
+  - `model`: The model to use for generation
+  - `messages`: Array of message objects with role and content
+  - `stream`: Boolean to enable streaming responses
+  - `chunking`: (Optional) Configuration for token chunking
+    - `chunk_size`: Number of tokens to accumulate before sending (default: 3)
+
+  The chunking configuration helps reduce text editor refresh rate by accumulating tokens before sending them to the client. A larger chunk size means fewer but larger updates, while a smaller size provides more granular updates.
