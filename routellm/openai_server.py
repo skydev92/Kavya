@@ -98,13 +98,14 @@ async def health_check():
     <html>
         <head>
             <title>Kavya AI Server Status</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body {{
-                    font-family: Arial, sans-serif;
+                    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 
+                               Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
                     text-align: center;
-                    padding-top: 50px;
                     margin: 0;
-                    height: 100vh;
+                    min-height: 100vh;
                     display: flex;
                     flex-direction: column;
                     justify-content: center;
@@ -113,13 +114,47 @@ async def health_check():
                     background-repeat: no-repeat;
                     background-size: cover;
                     background-position: center;
+                    line-height: 1.6;
                 }}
                 .content {{
-                    background-color: rgba(255, 255, 255, 0.8);
-                    padding: 20px;
-                    border-radius: 10px;
+                    background-color: rgba(255, 255, 255, 0.9);
+                    padding: 2rem;
+                    border-radius: 1rem;
+                    margin: 1rem;
+                    max-width: min(90vw, 600px);
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
                 }}
-                h1 {{ color: #4CAF50; }}
+                h1 {{ 
+                    color: #4CAF50;
+                    font-size: clamp(1.5rem, 5vw, 2.5rem);
+                    margin-bottom: 1rem;
+                }}
+                blockquote {{
+                    font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+                    font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+                    line-height: 1.8;
+                    margin: 2rem 0;
+                    padding: 1rem;
+                    border-left: 4px solid #4CAF50;
+                    background-color: rgba(76, 175, 80, 0.1);
+                }}
+                cite {{
+                    display: block;
+                    margin-top: 1rem;
+                    font-style: italic;
+                    color: #666;
+                }}
+                p {{
+                    font-size: clamp(0.9rem, 2.5vw, 1.1rem);
+                }}
+                @media (max-width: 480px) {{
+                    .content {{
+                        padding: 1rem;
+                    }}
+                    blockquote {{
+                        padding: 0.5rem;
+                    }}
+                }}
             </style>
         </head>
         <body>
