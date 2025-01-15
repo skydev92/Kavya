@@ -18,7 +18,7 @@ from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from routellm.controller import Controllers, RoutingError, ContentRequest
+from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE
 from routellm.routers.routers import ROUTER_CLS
 import routellm.models 
 
@@ -178,7 +178,16 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
                     content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
                     
                     for _, section in enumerate(content_outline.sections):
-                        async for token in app.controllers.longwriter.get_content_draft(section, content_strategy, html_strategy, content_request.style_requirements, content_outline, full_content, model):
+                        async for token in app.controllers.longwriter.get_content_draft(
+                            section, 
+                            content_strategy, 
+                            html_strategy, 
+                            content_request.style_requirements, 
+                            content_outline, 
+                            full_content, 
+                            model,
+                            chunk_size=DEFAULT_CHUNK_SIZE
+                        ):
                             full_content += token
                             async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
                                 yield chunk

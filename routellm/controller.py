@@ -2,7 +2,7 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional, Callable, AsyncGenerator
+from typing import Any, Optional, Callable, AsyncGenerator, List
 
 import pandas as pd
 from litellm import acompletion, completion, batch_completion
@@ -36,6 +36,8 @@ GPT_4_AUGMENTED_CONFIG = {
     "bert": {"checkpoint_path": "routellm/bert_gpt4_augmented"},
     "mf": {"checkpoint_path": "routellm/mf_gpt4_augmented"},
 }
+
+DEFAULT_CHUNK_SIZE = 10
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -302,6 +304,26 @@ class Controller:
 
         return kwargs["model"]
 
+class TokenAccumulator:
+    def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE):
+        self.chunk_size = max(1, chunk_size)
+        self.buffer: List[str] = []
+    
+    def add_token(self, token: str) -> Optional[str]:
+        self.buffer.append(token)
+        if len(self.buffer) >= self.chunk_size:
+            result = ''.join(self.buffer)
+            self.buffer = []
+            return result
+        return None
+    
+    def flush(self) -> Optional[str]:
+        if self.buffer:
+            result = ''.join(self.buffer)
+            self.buffer = []
+            return result
+        return None
+
 class Longwriter(Controller):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -435,7 +457,10 @@ class Longwriter(Controller):
 
         return ContentOutline.model_validate_json(response["choices"][0]["message"]["content"])
 
-    async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, style_requirements: str, outline: ContentOutline, preceding_content: str, model: str) -> AsyncGenerator:
+    async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, 
+                              html_strategy: HTMLTagStrategy, style_requirements: str, 
+                              outline: ContentOutline, preceding_content: str, 
+                              model: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with the preceding content.
@@ -489,9 +514,19 @@ class Longwriter(Controller):
             api_key=self.api_key
         )
         
+        accumulator = TokenAccumulator(chunk_size=chunk_size)
+        
         for chunk in response:
             if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+                token = chunk.choices[0].delta.content
+                accumulated = accumulator.add_token(token)
+                if accumulated:
+                    yield accumulated
+        
+        # Flush any remaining tokens
+        final_chunk = accumulator.flush()
+        if final_chunk:
+            yield final_chunk
 
     async def _stream_content(self, request: ContentRequest, model: str):
         """Helper method to stream content tokens."""
