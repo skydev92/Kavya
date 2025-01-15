@@ -2,16 +2,21 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Optional, Callable, AsyncGenerator
 
 import pandas as pd
-from litellm import acompletion, completion
+from litellm import acompletion, completion, batch_completion
+from textwrap import dedent
 from tqdm import tqdm
 
 import os
 import json
+import logging
+import sys
+import re
+import inspect
 
-from routellm.models import ChatCompletionRequest
+from routellm.models import ChatCompletionRequest, ContentRequest, ContentStrategy, HTMLTagStrategy, OutlineSection, ContentOutline, ContentDraft, FullContent
 from routellm.routers.routers import ROUTER_CLS
 
 # Default config for routers augmented using golden label data from GPT-4.
@@ -32,9 +37,38 @@ GPT_4_AUGMENTED_CONFIG = {
     "mf": {"checkpoint_path": "routellm/mf_gpt4_augmented"},
 }
 
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
 class RoutingError(Exception):
     pass
+
+class AgentMemory:
+    """
+    Stores data that can be used to augment the context of a chat completion request.
+
+    This can be used to store data that is relevant to the entire conversation, and
+    can be used by the router to make routing decisions.
+
+    Attributes:
+        data (Dict[str, Any]): a dictionary of key-value pairs, where the key is a
+            string and the value is any type of object.
+    """
+
+    def __init__(self):
+        self.data: Dict[str, Any] = {}
+
+    def set(self, key: str, value: Any):
+        self.data[key] = value
+
+    def get(self, key: str) -> Any:
+        return self.data.get(key)
+
+    def clear(self):
+        self.data.clear()
 
 
 @dataclass
@@ -156,7 +190,7 @@ class Controller:
         *,
         router: Optional[str] = None,
         threshold: Optional[float] = None,
-        **kwargs,
+        **kwargs, # add the response_format parameter there
     ):
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
@@ -171,16 +205,16 @@ class Controller:
                     "model": "predefined_prompt"
                 }
 
-        if "model" in kwargs:
-            router, threshold = self._parse_model_name(kwargs["model"])
+        # Capture all arguments passed to this method, for get_model
+        frame = inspect.currentframe()
+        args, _, _, values = inspect.getargvalues(frame)
+        get_model_args = {arg: values[arg] for arg in args if arg != "self"}
+        get_model_args.update(kwargs)
 
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
+        # Call get_model with all arguments
+        model = self.get_model(**get_model_args)
+        kwargs["model"] = model
+        logging.debug("got the model")
 
         if self.suppress_warnings:
             with warnings.catch_warnings():
@@ -191,11 +225,11 @@ class Controller:
 
     async def acompletion(
         self,
-        *,
         router: Optional[str] = None,
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        logging.debug("acontroller function started")
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
@@ -208,6 +242,50 @@ class Controller:
                     ],
                     "model": "predefined_prompt"
                 }
+        
+        if "model" in kwargs:
+            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
+            router = router or parsed_router
+            threshold = threshold or parsed_threshold
+        
+        if router and threshold:
+            self._validate_router_threshold(router, threshold)
+            kwargs["model"] = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+        elif "model" not in kwargs:
+            # Capture all arguments for get_model
+            frame = inspect.currentframe()
+            args, _, _, values = inspect.getargvalues(frame)
+            get_model_args = {arg: values[arg] for arg in args if arg != "self"}
+            get_model_args.update(kwargs)
+
+            # Call get_model with all arguments
+            model = self.get_model(**get_model_args)
+            kwargs["model"] = model
+        
+        # Keep the existing warning suppression logic
+        if self.suppress_warnings:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=UserWarning)
+                logging.debug("last sprint")
+                return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        else:
+            logging.debug("last sprint 2")
+            return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+
+    def get_model(
+        self,
+        *,
+        router: Optional[str] = None,
+        threshold: Optional[float] = None,
+        **kwargs
+    ):
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                return "predefined_prompt"
 
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
@@ -222,13 +300,253 @@ class Controller:
         elif "model" not in kwargs:
             raise RoutingError("No model specified and router/threshold not provided.")
 
-        if self.suppress_warnings:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=UserWarning)
-                return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
-        else:
-            return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+        return kwargs["model"]
+
+class Longwriter(Controller):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    
+    async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
+        content_strategist_prompt = '''
+        You are a content strategist. Based on the E-E-A-T framework, provide a content strategy. Include:
+        1. Overall strategy
+        2. Content scope
+        3. Recommended word count (as an integer)
+        4. Key questions to answer (as a list)
+        Respond in a structured format that matches the ContentStrategy model.
+        '''
         
+        response = completion(api_base=self.api_base, api_key=self.api_key,
+            model=model,
+            messages=[
+                {"role": "system", "content": str(dedent(content_strategist_prompt))},
+                {"role": "user", "content": str(request.prompt)}
+            ],
+            response_format=ContentStrategy
+        )
+        logging.debug(response["choices"][0]["message"]["content"])
+        return ContentStrategy.model_validate_json(response["choices"][0]["message"]["content"])
+
+    async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
+        html_strategist_prompt = '''
+        You are an HTML strategist. Given a list of allowed HTML tags and a content strategy, 
+        provide a list of HTML tags that would be most effective for structuring the content.
+        Return only the list of HTML tags without any additional explanation or closing tags.
+        For example: ["h1", "h2", "p", "ul", "li", "strong", "em", "img"]
+        '''
+        
+        response = completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": dedent(html_strategist_prompt)},
+                {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "html_tag_strategy",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "tags": {
+                                "type": "array",
+                                "items": {"type": "string"}
+                            }
+                        },
+                        "required": ["tags"],
+                        "additionalProperties": False
+                    },
+                    "strict": True
+                }
+            }
+        )
+
+        return HTMLTagStrategy.model_validate_json(response["choices"][0]["message"]["content"])
+
+    async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
+        content_outliner_prompt = '''
+        You are a creative content outliner. Given a content strategy and HTML tag strategy, 
+        create a detailed, structured outline for the content. Your outline should include:
+
+        1. Section titles
+        2. Brief descriptions of what each section should cover
+        3. Content ideas and key points for each section
+        4. Notes for potential multimedia elements (images, videos, tables, etc.) based on the available HTML tags
+        5. A target word count for each section
+
+        The sum of all section word counts should be within 10% of the total recommended word count.
+        Be creative and think about how to best present the information, avoid arhaic structures like a fixed introduction and conclusion unless it is appropriate for the piece.
+
+        Respond in a structured format that matches the ContentOutline model.
+        '''
+        
+        """
+        console.print(Panel(content_outliner_prompt, title="[bold]Content Outliner - Instruction[/bold]", expand=False))
+        console.print(Panel(
+            JSON(json.dumps({
+                "Content strategy": content_strategy.model_dump(),
+                "HTML strategy": html_strategy.model_dump()
+            }, indent=2)),
+            title="[bold]Content Outliner - Context[/bold]",
+            expand=False
+        ))
+        """
+        
+        response = completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": dedent(content_outliner_prompt)},
+                {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "content_outline",
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "sections": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "content_ideas": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        },
+                                        "multimedia_notes": {"type": "string"},
+                                        "target_word_count": {"type": "integer"}
+                                    },
+                                    "required": ["title", "description", "content_ideas", "multimedia_notes", "target_word_count"],
+                                    "additionalProperties": False
+                                }
+                            },
+                            "total_word_count": {"type": "integer"}
+                        },
+                        "required": ["sections", "total_word_count"],
+                        "additionalProperties": False
+                    },
+                    "strict": True
+                }
+            }
+        )
+
+        return ContentOutline.model_validate_json(response["choices"][0]["message"]["content"])
+
+    async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, style_requirements: str, outline: ContentOutline, preceding_content: str, model: str) -> AsyncGenerator:
+        content_writer_prompt = f'''
+        You are a creative content writer. Write the next section of content based on the given outline and strategy.
+        This section is part of a larger article, so ensure continuity with the preceding content.
+
+        Key points:
+        1. Use ONLY these HTML tags: {", ".join(html_strategy.tags)}
+        2. Do NOT use <!DOCTYPE>, <html>, <head>, or <body> tags
+        3. Start directly with content using allowed tags
+        4. Follow the content strategy and address key questions
+        5. Adhere to style requirements: {style_requirements}
+        6. Aim for {section.target_word_count} words
+        7. Be creative and engaging
+        8. Ensure continuity with the preceding sections, avoid repetitive phrases
+        9. Keep in mind the overall structure of the article as outlined
+        '''
+
+        if 'img' in html_strategy.tags:
+            content_writer_prompt += '''
+        Regarding image usage:
+        - Use images thoughtfully and purposefully. They should enhance the content, not distract from it.
+        - Consider the nature of the content. Technical or data-heavy topics might benefit from diagrams or charts, while more conceptual topics might use illustrative images sparingly.
+        - For longer sections, you might include one image to break up the text or illustrate a key point.
+
+        When including images:
+        - Use placeholder URLs from https://placehold.co with the alt text as the image text
+        - Example: <img src="https://placehold.co/600x400?text=Description+of+image" alt="Description of image">
+        - Ensure the alt text is descriptive and relevant to the content
+        '''
+
+        content_writer_prompt += f'''
+        Here's the outline of the entire article:
+        {outline.model_dump_json()}
+
+        Here's the content of the preceding sections:
+        {preceding_content}
+
+        Now, write the next section: {section.title}
+        '''
+
+        messages = [
+            {"role": "system", "content": content_writer_prompt},
+            {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
+        ]
+
+        # Keep the new streaming implementation
+        response = completion(
+            model=model, 
+            messages=messages,
+            stream=True,
+            api_base=self.api_base,
+            api_key=self.api_key
+        )
+        
+        for chunk in response:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
+
+    async def _stream_content(self, request: ContentRequest, model: str):
+        """Helper method to stream content tokens."""
+        async for token in self.content_creation_agent(request, model):
+            yield token
+
+    async def _get_full_content(self, request: ContentRequest, model: str) -> FullContent:
+        """Helper method to collect all tokens into a FullContent object."""
+        full_content = ""
+        async for token in self.content_creation_agent(request, model):
+            full_content += token
+        return FullContent(content=full_content, model=model, longwriter=True)
+
+    async def content_creation_agent(self, request: ContentRequest, model: str):
+        """Main content generation method that coordinates the content creation process."""
+        full_content = ""
+        content_strategy = await self.get_content_strategy(request, model)
+        html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
+        content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
+        
+        for section in content_outline.sections:
+            async for token in self.get_content_draft(section, content_strategy, html_strategy, request.style_requirements, content_outline, full_content, model):
+                full_content += token
+                yield token
+
+    async def acompletion(
+        self,
+        *,
+        router: Optional[str] = None,
+        threshold: Optional[float] = None,
+        **kwargs,
+    ):
+        """Override of base acompletion to handle longwriter-specific streaming."""
+        if "model" in kwargs:
+            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
+            router = router or parsed_router
+            threshold = threshold or parsed_threshold
+        
+        if router and threshold:
+            self._validate_router_threshold(router, threshold)
+            kwargs["model"] = self._get_routed_model_for_completion(
+                kwargs["messages"], router, threshold
+            )
+        elif "model" not in kwargs:
+            raise RoutingError("No model specified and router/threshold not provided.")
+        
+        request = ContentRequest(
+            prompt=kwargs["messages"][-1]["content"],
+            allowed_html_tags="allowed_html_tags" in kwargs and kwargs["allowed_html_tags"] or "h1, h2, p",
+            style_requirements="style_requirements" in kwargs and kwargs["style_requirements"] or "professional"
+        )
+
+        async for token in self.content_creation_agent(request, kwargs["model"]):
+            yield token
+
 class Controllers:
     def __init__(self, **kwargs):
         self.controllers = {}
@@ -244,17 +562,29 @@ class Controllers:
         api_key=kwargs.get('api_key', None)
         progress_bar=kwargs.get('progress_bar', None)
 
-        # initializing controller
-        controller = Controller(
-            routers=routers,
-            config=config,
-            strong_model=strong_model,
-            weak_model=weak_model,
-            api_base=api_base,
-            api_key=api_key,
-            progress_bar=progress_bar
-        )
-
+        if id.startswith("longwriter") :
+            # initializing longwriter
+            controller = Longwriter(
+                routers=routers,
+                config=config,
+                strong_model=strong_model,
+                weak_model=weak_model,
+                api_base=api_base,
+                api_key=api_key,
+                progress_bar=progress_bar
+            )
+        else :
+            # initializing controller
+            controller = Controller(
+                routers=routers,
+                config=config,
+                strong_model=strong_model,
+                weak_model=weak_model,
+                api_base=api_base,
+                api_key=api_key,
+                progress_bar=progress_bar
+            )
+        
         # storing controller
         self.controllers[id] = controller
 
@@ -276,10 +606,47 @@ class Controllers:
     -------
     The response from the async method.
     """
-    async def response(self, request: ChatCompletionRequest, id, amethod_name):
+    async def response(self, request: ChatCompletionRequest, id, amethod_name, **kwargs):
         return await self.controllers[id].__getattribute__(amethod_name)(
             **request.model_dump(exclude_none=True),
+            **kwargs
         )
+
+    async def basic_routing(self, request: ChatCompletionRequest):
+        routing_request = ChatCompletionRequest(
+            model=request.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": """
+### Task
+
+Rate the probability that the below prompt is expected to return a text string longer than 700 words, answer with a float between 0.0 and 1.0. 0 means 0% and 1 means 100%. Answer only the number, do not talk about other topics. Do not explain your answer. Do not send anything other than the number.
+
+### User prompt
+
+                    """ + request.messages[-1]["content"],
+                }
+            ],
+            stream=False  # Force non-streaming for routing
+        )
+
+        # Use regular completion for routing
+        response = await acompletion(**routing_request.model_dump(exclude_none=True))
+        content = response.choices[0].message.content
+        
+        number_strings = re.findall(r"[-+]?\d*\.\d+|\d+", content)
+        true_number = 0
+        if len(number_strings) > 0: 
+            try:
+                true_number = float(number_strings[0]) 
+            except ValueError:
+                pass
+        
+        if true_number > 0.5:
+            return "longwriter"
+        else:
+            return "completion"
 
     # METHODS TO IMITATE DICT INTERFACE
 

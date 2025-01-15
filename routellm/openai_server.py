@@ -18,7 +18,7 @@ from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from routellm.controller import Controllers, RoutingError
+from routellm.controller import Controllers, RoutingError, ContentRequest
 from routellm.routers.routers import ROUTER_CLS
 import routellm.models 
 
@@ -50,10 +50,19 @@ async def lifespan(_):
         api_key=args.api_key,
         progress_bar=True,
     )
+    app.controllers.create_controller("longwriter", 
+        routers=args.routers,
+        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+        strong_model=args.strong_model,
+        weak_model=args.weak_model,
+        api_base=args.base_url,
+        api_key=args.api_key,
+        progress_bar=True,
+    )
     # create as many controllers as needed, below :
     # app.controllers.create_controller("title_generator", **vars(args))
     # app.controllers.create_controller("paraphrase", **vars(args))
-    logging.debug("Default controller based on arguments, initialized successfully")
+    logging.debug("Default controllers based on arguments, initialized successfully")
     # except Exception as e:
         # logging.error(f"Failed to initialize controllers: {str(e)}")
     
@@ -131,10 +140,8 @@ async def health_check():
 async def create_chat_completion(request: routellm.models.ChatCompletionRequest):
     logging.info(f"Received request: {request}")
     try:
-        res = await app.controllers.response(request, "completion", "acompletion")
-        # print(json.dumps(res))
-        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-        chosen_model = res['model'] if is_predefined else res.model
+        controller_name = await app.controllers.basic_routing(request)
+        logging.debug("controller_name: " + controller_name)
     except RoutingError as e:
         return JSONResponse(
             routellm.models.ErrorResponse(message=str(e)).model_dump(),
@@ -142,14 +149,53 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
         )
 
     logging.info(app.controllers.completion.model_counts)
-
+    
     if request.stream:
-        return StreamingResponse(
-            content=routellm.models.stream_response(res),
-            media_type="text/event-stream",
-            headers={"X-Chosen-Model": chosen_model}
-        )
+        if controller_name.startswith("longwriter"):
+            model = app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
+            logging.debug("model: " + model)
+            async def iter_response():
+                logging.debug("iter_response")
+                try:
+                    content_request = ContentRequest(
+                        prompt=request.messages[-1]["content"],
+                        allowed_html_tags="allowed_html_tags" in request and request.allowed_html_tags or "h1, h2, p",
+                        style_requirements="style_requirements" in request and request.style_requirements or "professional"
+                    ) 
+
+                    full_content = ""
+
+                    # status response
+        
+                    logging.debug("Creating content strategy")
+                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
+                    content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
+                    logging.debug("Creating HTML strategy")
+                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
+                    html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_strategy, model)
+                    logging.debug("Creating Content outline")
+                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
+                    content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
+                    
+                    for _, section in enumerate(content_outline.sections):
+                        async for token in app.controllers.longwriter.get_content_draft(section, content_strategy, html_strategy, content_request.style_requirements, content_outline, full_content, model):
+                            full_content += token
+                            async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
+                                yield chunk
+                except Exception as e:
+                    yield f"Error during streaming: {str(e)}"
+            return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})  
+        else:
+            res = app.controllers.completion.completion(**request.model_dump(exclude_none=True))
+            is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+            chosen_model = res['model'] if is_predefined else res.model
+            return StreamingResponse(routellm.models.create_stream_response(res), media_type="text/event-stream", headers={"X-Chosen-Model": chosen_model}) 
     else:
+        res = await app.controllers.response(request, controller_name, "acompletion")
+        # print(json.dumps(res))
+        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+        chosen_model = res['model'] if is_predefined else res.model_dump()['model']
+
         if is_predefined:
             content = routellm.models.predefined_completion_response(res).model_dump()
         else:
