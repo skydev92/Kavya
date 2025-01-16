@@ -214,7 +214,6 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
                     content_request = ContentRequest(
                         prompt=request.messages[-1]["content"],
                         allowed_html_tags="allowed_html_tags" in request and request.allowed_html_tags or "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul",
-                        style_requirements="style_requirements" in request and request.style_requirements or "professional"
                     ) 
 
                     full_content = ""
@@ -236,7 +235,6 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
                             section, 
                             content_strategy, 
                             html_strategy, 
-                            content_request.style_requirements, 
                             content_outline, 
                             full_content, 
                             model,

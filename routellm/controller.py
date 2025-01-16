@@ -458,9 +458,9 @@ class Longwriter(Controller):
         return ContentOutline.model_validate_json(response["choices"][0]["message"]["content"])
 
     async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, 
-                              html_strategy: HTMLTagStrategy, style_requirements: str, 
-                              outline: ContentOutline, preceding_content: str, 
-                              model: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
+                              html_strategy: HTMLTagStrategy, outline: ContentOutline, 
+                              preceding_content: str, model: str, 
+                              chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with the preceding content.
@@ -547,7 +547,7 @@ class Longwriter(Controller):
         content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
         
         for section in content_outline.sections:
-            async for token in self.get_content_draft(section, content_strategy, html_strategy, request.style_requirements, content_outline, full_content, model):
+            async for token in self.get_content_draft(section, content_strategy, html_strategy, content_outline, full_content, model):
                 full_content += token
                 yield token
 
@@ -575,7 +575,6 @@ class Longwriter(Controller):
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
             allowed_html_tags="allowed_html_tags" in kwargs and kwargs["allowed_html_tags"] or "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul",
-            style_requirements="style_requirements" in kwargs and kwargs["style_requirements"] or "professional"
         )
 
         async for token in self.content_creation_agent(request, kwargs["model"]):
