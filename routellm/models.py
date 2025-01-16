@@ -200,7 +200,6 @@ class ChatCompletionResponse(BaseModel):
 class ContentRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     allowed_html_tags: str = Field(..., min_length=1)
-    style_requirements: str = Field(..., min_length=1)
 
 class ContentStrategy(BaseModel):
     strategy: str

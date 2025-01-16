@@ -470,11 +470,10 @@ class Longwriter(Controller):
         2. Do NOT use <!DOCTYPE>, <html>, <head>, or <body> tags
         3. Start directly with content using allowed tags
         4. Follow the content strategy and address key questions
-        5. Adhere to style requirements: {style_requirements}
-        6. Aim for {section.target_word_count} words
-        7. Be creative and engaging
-        8. Ensure continuity with the preceding sections, avoid repetitive phrases
-        9. Keep in mind the overall structure of the article as outlined
+        5. Aim for {section.target_word_count} words
+        6. Be creative and engaging
+        7. Ensure continuity with the preceding sections, avoid repetitive phrases
+        8. Keep in mind the overall structure of the article as outlined
         '''
 
         if 'img' in html_strategy.tags:
