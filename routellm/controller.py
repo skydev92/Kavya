@@ -575,7 +575,7 @@ class Longwriter(Controller):
         
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags="allowed_html_tags" in kwargs and kwargs["allowed_html_tags"] or "h1, h2, p",
+            allowed_html_tags="allowed_html_tags" in kwargs and kwargs["allowed_html_tags"] or "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul",
             style_requirements="style_requirements" in kwargs and kwargs["style_requirements"] or "professional"
         )
 
