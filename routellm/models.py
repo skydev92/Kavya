@@ -164,6 +164,7 @@ class ChatCompletionRequest(BaseModel):
     tools: Optional[List[Dict[str, Union[str, int, float]]]] = None
     tool_choice: Optional[str] = None
     user: Optional[str] = None
+    allowed_html_tags: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
