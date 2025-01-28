@@ -211,13 +211,9 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
             async def iter_response():
                 logging.debug("iter_response")
                 try:
-                    allowed_html_tags = "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul"
-                    if "allowed_html_tags" in request:
-                        allowed_html_tags = request.allowed_html_tags
-                    
                     content_request = ContentRequest(
                         prompt=request.messages[-1]["content"],
-                        allowed_html_tags=allowed_html_tags
+                        allowed_html_tags="allowed_html_tags" in request and request.allowed_html_tags or "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul",
                     ) 
 
                     full_content = ""

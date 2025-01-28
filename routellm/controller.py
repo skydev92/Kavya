@@ -38,7 +38,6 @@ GPT_4_AUGMENTED_CONFIG = {
 }
 
 DEFAULT_CHUNK_SIZE = 10
-LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -219,11 +218,6 @@ class Controller:
         kwargs["model"] = model
         logging.debug("got the model")
 
-        # Only necessary for the longwriter
-        for key in LONGWRITER_ONLY_ARGS:
-            if key in kwargs:
-                del kwargs[key]
-
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
@@ -271,11 +265,6 @@ class Controller:
             # Call get_model with all arguments
             model = self.get_model(**get_model_args)
             kwargs["model"] = model
-        
-        # Only necessary for the longwriter
-        for key in LONGWRITER_ONLY_ARGS:
-            if key in kwargs:
-                del kwargs[key]
         
         # Keep the existing warning suppression logic
         if self.suppress_warnings:
@@ -585,7 +574,7 @@ class Longwriter(Controller):
         
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags="allowed_html_tags"
+            allowed_html_tags="allowed_html_tags" in kwargs and kwargs["allowed_html_tags"] or "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul",
         )
 
         async for token in self.content_creation_agent(request, kwargs["model"]):
@@ -652,7 +641,7 @@ class Controllers:
     """
     async def response(self, request: ChatCompletionRequest, id, amethod_name, **kwargs):
         return await self.controllers[id].__getattribute__(amethod_name)(
-            **request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True),
+            **request.model_dump(exclude_none=True),
             **kwargs
         )
 
