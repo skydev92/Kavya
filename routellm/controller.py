@@ -349,6 +349,11 @@ class Longwriter(Controller):
         Respond in a structured format that matches the ContentStrategy model.
         '''
         
+        # Store the original messages for later use
+        original_messages = None
+        if hasattr(request, 'messages'):
+            original_messages = request.messages
+        
         response = completion(api_base=self.api_base, api_key=self.api_key,
             model=model,
             messages=[
@@ -357,8 +362,11 @@ class Longwriter(Controller):
             ],
             response_format=ContentStrategy
         )
-        logging.debug(response["choices"][0]["message"]["content"])
-        return ContentStrategy.model_validate_json(response["choices"][0]["message"]["content"])
+        
+        strategy = ContentStrategy.model_validate_json(response["choices"][0]["message"]["content"])
+        # Add the original messages to the strategy object
+        strategy.original_messages = original_messages
+        return strategy
 
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
         html_strategist_prompt = '''
@@ -472,32 +480,29 @@ class Longwriter(Controller):
                               html_strategy: HTMLTagStrategy, outline: ContentOutline, 
                               preceding_content: str, model: str, 
                               chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
-        # First, analyze the tone from the original content strategy
-        tone_analyzer_prompt = '''
-        Analyze the tone of voice from the content strategy. Focus on:
-        1. Writing style (formal/informal/conversational/technical)
-        2. Emotional tone (serious/light/humorous/empathetic)
-        3. Key tone characteristics (authoritative/friendly/educational/inspirational)
+        # Extract tone from system prompt if present
+        tone_instruction = ""
+        image_instructions = None
         
-        Respond with a concise 2-3 sentence description of the tone to maintain.
-        '''
-        
-        tone_response = completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": tone_analyzer_prompt},
-                {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}"}
-            ]
-        )
-        
-        tone_guidance = tone_response["choices"][0]["message"]["content"]
+        # Get the original request messages from content_strategy
+        if hasattr(content_strategy, 'original_messages') and content_strategy.original_messages:
+            messages = content_strategy.original_messages
+            if messages and messages[0]["role"] == "system":
+                import re
+                # Extract tone
+                tone_match = re.search(r'<TONE>(.*?)</TONE>', messages[0]["content"], re.DOTALL)
+                if tone_match:
+                    tone = tone_match.group(1).strip()  # Added strip() to clean up any extra whitespace
+                    tone_instruction = f"\n9. Use this specific tone of voice:\n{tone}"
+                
+                # Extract image handling instructions
+                image_match = re.search(r'<IMAGE_HANDLING>(.*?)</IMAGE_HANDLING>', messages[0]["content"], re.DOTALL)
+                if image_match:
+                    image_instructions = image_match.group(1).strip()
 
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with the preceding content.
-
-        Tone of Voice:
-        {tone_guidance}
 
         Key points:
         1. Use ONLY these HTML tags: {", ".join(html_strategy.tags)}
@@ -507,12 +512,17 @@ class Longwriter(Controller):
         5. Aim for {section.target_word_count} words
         6. Be creative and engaging
         7. Ensure continuity with the preceding sections, avoid repetitive phrases
-        8. Keep in mind the overall structure of the article as outlined
-        9. Maintain consistent tone of voice throughout the section
+        8. Keep in mind the overall structure of the article as outlined{tone_instruction}
         '''
 
         if 'img' in html_strategy.tags:
-            content_writer_prompt += '''
+            if image_instructions:
+                content_writer_prompt += f'''
+        Image Requirements:
+        {image_instructions}
+        '''
+            else:
+                content_writer_prompt += '''
         Image Requirements:
         - Every <img> needs src and alt attributes
         - Place images between content blocks, not inline with text

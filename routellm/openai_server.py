@@ -220,7 +220,8 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
                     
                     content_request = ContentRequest(
                         prompt=request.messages[-1]["content"],
-                        allowed_html_tags=allowed_html_tags
+                        allowed_html_tags=allowed_html_tags,
+                        messages=request.messages
                     ) 
 
                     full_content = ""

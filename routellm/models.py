@@ -201,12 +201,14 @@ class ChatCompletionResponse(BaseModel):
 class ContentRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     allowed_html_tags: str = Field(..., min_length=1)
+    messages: Optional[List[Dict[str, str]]] = None
 
 class ContentStrategy(BaseModel):
     strategy: str
     content_scope: str
     recommended_word_count: int
     key_questions: List[str]
+    original_messages: Optional[List[Dict[str, str]]] = None
 
 class HTMLTagStrategy(BaseModel):
     tags: List[str]
