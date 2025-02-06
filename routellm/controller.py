@@ -472,9 +472,32 @@ class Longwriter(Controller):
                               html_strategy: HTMLTagStrategy, outline: ContentOutline, 
                               preceding_content: str, model: str, 
                               chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
+        # First, analyze the tone from the original content strategy
+        tone_analyzer_prompt = '''
+        Analyze the tone of voice from the content strategy. Focus on:
+        1. Writing style (formal/informal/conversational/technical)
+        2. Emotional tone (serious/light/humorous/empathetic)
+        3. Key tone characteristics (authoritative/friendly/educational/inspirational)
+        
+        Respond with a concise 2-3 sentence description of the tone to maintain.
+        '''
+        
+        tone_response = completion(
+            model=model,
+            messages=[
+                {"role": "system", "content": tone_analyzer_prompt},
+                {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}"}
+            ]
+        )
+        
+        tone_guidance = tone_response["choices"][0]["message"]["content"]
+
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with the preceding content.
+
+        Tone of Voice:
+        {tone_guidance}
 
         Key points:
         1. Use ONLY these HTML tags: {", ".join(html_strategy.tags)}
@@ -485,19 +508,22 @@ class Longwriter(Controller):
         6. Be creative and engaging
         7. Ensure continuity with the preceding sections, avoid repetitive phrases
         8. Keep in mind the overall structure of the article as outlined
+        9. Maintain consistent tone of voice throughout the section
         '''
 
         if 'img' in html_strategy.tags:
             content_writer_prompt += '''
-        Regarding image usage:
-        - Use images thoughtfully and purposefully. They should enhance the content, not distract from it.
-        - Consider the nature of the content. Technical or data-heavy topics might benefit from diagrams or charts, while more conceptual topics might use illustrative images sparingly.
-        - For longer sections, you might include one image to break up the text or illustrate a key point.
+        Image Requirements:
+        - Every <img> needs src and alt attributes
+        - Place images between content blocks, not inline with text
+        - Format src URLs as: https://promptahuman.com/600x400@2x?bg_color=[color]&&title=[file_name.png]&prompt=[Creative Brief]
+        - Use these bg_colors: ghostwhite, whitesmoke, aliceblue, seashell, mintcream, ivory, azure, floralwhite
+        - Alt text must be descriptive
+        - Creative brief should be 10-20 words, emoji allowed
+        - File name should match content type (jpg for images, gif for animations, mp4 for videos)
 
-        When including images:
-        - Use placeholder URLs from https://placehold.co with the alt text as the image text
-        - Example: <img src="https://placehold.co/600x400?text=Description+of+image" alt="Description of image">
-        - Ensure the alt text is descriptive and relevant to the content
+        Example:
+        <img src="https://promptahuman.com/600x400@2x?bg_color=ghostwhite&&title=team_collaboration.jpg&prompt=Diverse team working together at modern office desk, sharing ideas 🤝✨" alt="Diverse team collaborating at a modern workspace, sharing creative ideas during a meeting">
         '''
 
         content_writer_prompt += f'''
