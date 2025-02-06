@@ -41,7 +41,7 @@ DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    # level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -355,7 +355,7 @@ class Longwriter(Controller):
             original_messages = request.messages
         
         response = completion(api_base=self.api_base, api_key=self.api_key,
-            model=model,
+            model=model,  # Direct model use after routing decision
             messages=[
                 {"role": "system", "content": str(dedent(content_strategist_prompt))},
                 {"role": "user", "content": str(request.prompt)}
@@ -377,7 +377,9 @@ class Longwriter(Controller):
         '''
         
         response = completion(
-            model=model,
+            model=model,  # Direct model use after routing decision
+            api_base=self.api_base,
+            api_key=self.api_key,
             messages=[
                 {"role": "system", "content": dedent(html_strategist_prompt)},
                 {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
@@ -421,20 +423,10 @@ class Longwriter(Controller):
         Respond in a structured format that matches the ContentOutline model.
         '''
         
-        """
-        console.print(Panel(content_outliner_prompt, title="[bold]Content Outliner - Instruction[/bold]", expand=False))
-        console.print(Panel(
-            JSON(json.dumps({
-                "Content strategy": content_strategy.model_dump(),
-                "HTML strategy": html_strategy.model_dump()
-            }, indent=2)),
-            title="[bold]Content Outliner - Context[/bold]",
-            expand=False
-        ))
-        """
-        
         response = completion(
-            model=model,
+            model=model,  # Direct model use after routing decision
+            api_base=self.api_base,
+            api_key=self.api_key,
             messages=[
                 {"role": "system", "content": dedent(content_outliner_prompt)},
                 {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
@@ -492,7 +484,7 @@ class Longwriter(Controller):
                 # Extract tone
                 tone_match = re.search(r'<TONE>(.*?)</TONE>', messages[0]["content"], re.DOTALL)
                 if tone_match:
-                    tone = tone_match.group(1).strip()  # Added strip() to clean up any extra whitespace
+                    tone = tone_match.group(1).strip()
                     tone_instruction = f"\n9. Use this specific tone of voice:\n{tone}"
                 
                 # Extract image handling instructions
@@ -551,9 +543,8 @@ class Longwriter(Controller):
             {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
         ]
 
-        # Keep the new streaming implementation
         response = completion(
-            model=model, 
+            model=model,  # Direct model use after routing decision
             messages=messages,
             stream=True,
             api_base=self.api_base,
@@ -573,18 +564,6 @@ class Longwriter(Controller):
         final_chunk = accumulator.flush()
         if final_chunk:
             yield final_chunk
-
-    async def _stream_content(self, request: ContentRequest, model: str):
-        """Helper method to stream content tokens."""
-        async for token in self.content_creation_agent(request, model):
-            yield token
-
-    async def _get_full_content(self, request: ContentRequest, model: str) -> FullContent:
-        """Helper method to collect all tokens into a FullContent object."""
-        full_content = ""
-        async for token in self.content_creation_agent(request, model):
-            full_content += token
-        return FullContent(content=full_content, model=model, longwriter=True)
 
     async def content_creation_agent(self, request: ContentRequest, model: str):
         """Main content generation method that coordinates the content creation process."""
@@ -621,7 +600,7 @@ class Longwriter(Controller):
         
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags="allowed_html_tags"
+            allowed_html_tags=kwargs.get("allowed_html_tags", "")
         )
 
         async for token in self.content_creation_agent(request, kwargs["model"]):
@@ -693,8 +672,24 @@ class Controllers:
         )
 
     async def basic_routing(self, request: ChatCompletionRequest):
+        # Get the default controller to use its methods
+        default_controller = self.controllers["default"]
+        
+        # First determine which model to use based on router if specified
+        routed_model = None
+        if "model" in request.model_dump():
+            parsed_router, parsed_threshold = default_controller._parse_model_name(request.model)
+            if parsed_router and parsed_threshold:
+                default_controller._validate_router_threshold(parsed_router, parsed_threshold)
+                routed_model = default_controller._get_routed_model_for_completion(
+                    request.messages, parsed_router, parsed_threshold
+                )
+                # Store the routed model in the request for later use
+                request.model = routed_model
+
+        # Now determine if we should use longwriter based on expected response length
         routing_request = ChatCompletionRequest(
-            model=request.model,
+            model=default_controller.model_pair.weak,  # Always use weak model for length check
             messages=[
                 {
                     "role": "user",
@@ -711,8 +706,13 @@ Rate the probability that the below prompt is expected to return a text string l
             stream=False  # Force non-streaming for routing
         )
 
-        # Use regular completion for routing
-        response = await acompletion(**routing_request.model_dump(exclude_none=True))
+        # Use regular completion for routing decision
+        response = await acompletion(
+            model=default_controller.model_pair.weak,  # Use weak model for routing decision
+            messages=routing_request.messages,
+            api_base=default_controller.api_base,
+            api_key=default_controller.api_key
+        )
         content = response.choices[0].message.content
         
         number_strings = re.findall(r"[-+]?\d*\.\d+|\d+", content)
@@ -723,6 +723,7 @@ Rate the probability that the below prompt is expected to return a text string l
             except ValueError:
                 pass
         
+        # Return longwriter or completion based on length prediction
         if true_number > 0.5:
             return "longwriter"
         else:

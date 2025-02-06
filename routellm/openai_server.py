@@ -206,7 +206,7 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
     
     if request.stream:
         if controller_name.startswith("longwriter"):
-            model = app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
+            model = request.model or app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
             logging.debug("model: " + model)
             async def iter_response():
                 logging.debug("iter_response")
@@ -255,13 +255,18 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
                     yield f"Error during streaming: {str(e)}"
             return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})  
         else:
-            res = app.controllers.completion.completion(**request.model_dump(exclude_none=True))
+            # Use the routed model if available, otherwise use completion's default model
+            if request.model:
+                kwargs = request.model_dump(exclude_none=True)
+            else:
+                kwargs = request.model_dump(exclude_none=True)
+                kwargs["model"] = app.controllers.completion.model_pair.weak
+            res = app.controllers.completion.completion(**kwargs)
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
             chosen_model = res['model'] if is_predefined else res.model
             return StreamingResponse(routellm.models.create_stream_response(res), media_type="text/event-stream", headers={"X-Chosen-Model": chosen_model}) 
     else:
         res = await app.controllers.response(request, controller_name, "acompletion")
-        # print(json.dumps(res))
         is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
         chosen_model = res['model'] if is_predefined else res.model_dump()['model']
 
@@ -278,7 +283,7 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
 # if __name__ == "__main__":
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    # level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )

@@ -68,6 +68,8 @@ MODEL_IDS = {
     "yi-34b-chat": 61,
     "zephyr-7b-alpha": 62,
     "zephyr-7b-beta": 63,
+    "gpt-4o": 64,
+    "gpt-4o-mini": 65,
 }
 
 
