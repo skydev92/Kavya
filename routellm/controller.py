@@ -485,11 +485,7 @@ class Longwriter(Controller):
                     {"role": "system", "content": str(dedent(content_strategist_prompt))},
                     {"role": "user", "content": str(request.prompt)}
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "schema": ContentStrategy.model_json_schema(),
-                    "strict": True
-                }
+                response_format=ContentStrategy
             )
             
             # Get the content from the response
@@ -525,11 +521,7 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(html_strategist_prompt)},
                     {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "schema": HTMLTagStrategy.model_json_schema(),
-                    "strict": True
-                }
+                response_format=HTMLTagStrategy
             )
 
             # Get the content from the response
@@ -568,11 +560,7 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(content_outliner_prompt)},
                     {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
                 ],
-                response_format={
-                    "type": "json_schema",
-                    "schema": ContentOutline.model_json_schema(),
-                    "strict": True
-                }
+                response_format=ContentOutline
             )
 
             # Get the content from the response
@@ -816,14 +804,7 @@ class Controllers:
                     "content": f"""You are a routing analyzer that evaluates if content requires Longwriter's capabilities.
 Analyze the prompt and return a JSON object that exactly matches this Pydantic model:
 
-{RoutingAnalysis.model_json_schema()}
-
-Example response:
-{json.dumps({
-    "length_score": 0.8,
-    "needs_structure": True,
-    "is_data_dump": False
-}, indent=2)}"""
+{RoutingAnalysis.model_json_schema()}"""
                 },
                 {
                     "role": "user",
@@ -831,10 +812,7 @@ Example response:
                 }
             ],
             stream=False,  # Force non-streaming for routing
-            config={
-                'response_mime_type': 'application/json',
-                'response_schema': RoutingAnalysis
-            }
+            response_format=RoutingAnalysis
         )
 
         # Use regular completion for routing decision
@@ -843,15 +821,12 @@ Example response:
             messages=routing_request.messages,
             api_base=default_controller.api_base,
             api_key=default_controller.api_key,
-            config={
-                'response_mime_type': 'application/json',
-                'response_schema': RoutingAnalysis
-            }
+            response_format=RoutingAnalysis
         )
         
         try:
-            # Clean and parse the JSON response
-            content = _clean_json_response(response.choices[0].message.content)
+            # Get the content directly from the response
+            content = response.choices[0].message.content
             analysis = RoutingAnalysis.model_validate_json(content)
             
             # Add debug output for routing decision

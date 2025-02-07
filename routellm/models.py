@@ -259,12 +259,10 @@ class ChatCompletionRequest(BaseModel):
     )
     max_tokens: Optional[int] = Field(
         None,
-        gt=0,
         description="Maximum number of tokens to generate"
     )
     n: Optional[int] = Field(
         default=1,
-        gt=0,
         description="Number of chat completion choices to generate"
     )
     config: Optional[Dict[str, Any]] = Field(
@@ -375,7 +373,7 @@ class ContentStrategy(BaseModel):
     )
     recommended_word_count: int = Field(
         ...,
-        gt=0,
+        ge=1,
         le=10000,
         description="Recommended total word count for the content"
     )
@@ -384,8 +382,8 @@ class ContentStrategy(BaseModel):
         min_items=1,
         description="Key questions the content should answer"
     )
-    original_messages: Optional[List[Dict[str, str]]] = Field(
-        None,
+    original_messages: Optional[List[str]] = Field(
+        default=None,
         description="Original chat messages for context preservation"
     )
 
@@ -420,7 +418,6 @@ class OutlineSection(BaseModel):
     )
     target_word_count: int = Field(
         ...,
-        gt=0,
         le=5000,
         description="Target word count for this section"
     )
@@ -433,7 +430,6 @@ class ContentOutline(BaseModel):
         description="List of content sections"
     )
     total_word_count: int = Field(
-        default=0,
         ge=0,
         le=10000,
         description="Total word count across all sections"

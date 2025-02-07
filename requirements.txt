@@ -7,7 +7,7 @@ pytest
 pandas
 litellm>=1.60.6
 pyyaml
-pydantic
+pydantic>=2.0.0
 numpy<2
 pandas
 torch
