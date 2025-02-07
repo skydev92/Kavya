@@ -368,13 +368,10 @@ class ContentStrategy(BaseModel):
     )
     recommended_word_count: int = Field(
         ...,
-        ge=1,
-        le=10000,
         description="Recommended total word count for the content"
     )
     key_questions: List[str] = Field(
         ...,
-        min_items=1,
         description="Key questions the content should answer"
     )
     original_messages: Optional[List[str]] = Field(
@@ -386,7 +383,6 @@ class HTMLTagStrategy(BaseModel):
     """Strategy for HTML tag usage in content."""
     tags: List[str] = Field(
         ...,
-        min_items=1,
         description="List of HTML tags to use in content formatting"
     )
 
@@ -402,7 +398,6 @@ class OutlineSection(BaseModel):
     )
     content_ideas: List[str] = Field(
         ...,
-        min_items=1,
         description="List of content ideas and key points for the section"
     )
     multimedia_notes: str = Field(
@@ -411,7 +406,6 @@ class OutlineSection(BaseModel):
     )
     target_word_count: int = Field(
         ...,
-        le=5000,
         description="Target word count for this section"
     )
 
@@ -419,12 +413,9 @@ class ContentOutline(BaseModel):
     """Complete content outline with sections."""
     sections: List[OutlineSection] = Field(
         ...,
-        min_items=1,
         description="List of content sections"
     )
     total_word_count: int = Field(
-        ge=0,
-        le=10000,
         description="Total word count across all sections"
     )
 
