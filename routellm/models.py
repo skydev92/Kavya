@@ -10,7 +10,7 @@ from litellm import CustomStreamWrapper
 
 # Configure logging
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -128,111 +128,344 @@ def predefined_completion_response(base_response, **kwargs):
             ).model_dump()
 
 class ErrorResponse(BaseModel):
-    object: str = "error"
-    message: str
+    """Error response from the API."""
+    object: Literal["error"] = Field(
+        "error",
+        description="Always 'error' for error responses"
+    )
+    message: str = Field(
+        ...,
+        description="Error message details"
+    )
 
 
 class UsageInfo(BaseModel):
-    prompt_tokens: int = 0
-    total_tokens: int = 0
-    completion_tokens: Optional[int] = 0
+    """Token usage information for API calls."""
+    prompt_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Number of tokens in the prompt"
+    )
+    total_tokens: int = Field(
+        default=0,
+        ge=0,
+        description="Total tokens used in the request"
+    )
+    completion_tokens: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Number of tokens in the completion"
+    )
+
+
+class ChatMessage(BaseModel):
+    """A single message in a chat conversation."""
+    role: Literal["system", "user", "assistant"] = Field(
+        ...,
+        description="Role of the message sender"
+    )
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="Content of the message"
+    )
+
+
+class ChatCompletionResponseChoice(BaseModel):
+    """A single completion choice in a chat response."""
+    index: int = Field(
+        ...,
+        ge=0,
+        description="Index of this choice in the list of choices"
+    )
+    message: ChatMessage = Field(
+        ...,
+        description="The message containing the completion"
+    )
+    finish_reason: Optional[Literal["stop", "length"]] = Field(
+        None,
+        description="Why the completion stopped"
+    )
+
+
+class ChatCompletionResponse(BaseModel):
+    """Response from a chat completion request."""
+    id: str = Field(
+        default_factory=lambda: f"chatcmpl-{shortuuid.random()}",
+        description="Unique identifier for this completion"
+    )
+    object: Literal["chat.completion"] = Field(
+        "chat.completion",
+        description="Type of object returned"
+    )
+    created: int = Field(
+        default_factory=lambda: int(time.time()),
+        description="Unix timestamp of when this completion was created"
+    )
+    model: str = Field(
+        ...,
+        description="Model used for the completion"
+    )
+    choices: List[ChatCompletionResponseChoice] = Field(
+        ...,
+        min_items=1,
+        description="List of completion choices"
+    )
+    usage: UsageInfo = Field(
+        default_factory=UsageInfo,
+        description="Token usage information"
+    )
 
 
 class ChatCompletionRequest(BaseModel):
-    # OpenAI fields: https://platform.openai.com/docs/api-reference/chat/create
-    model: str
+    """Request for a chat completion."""
+    model: str = Field(
+        ...,
+        description="ID of the model to use"
+    )
     messages: Union[
         str,
         List[Dict[str, str]],
         List[Dict[str, Union[str, List[Dict[str, Union[str, Dict[str, str]]]]]]],
-    ]
-    frequency_penalty: Optional[float] = 0.0
-    logit_bias: Optional[Dict[int, float]] = None
-    logprobs: Optional[bool] = None
-    top_logprobs: Optional[int] = None
-    max_tokens: Optional[int] = None
-    n: Optional[int] = 1
-    response_format: Optional[Dict[str, str]] = (
-        None  # { "type": "json_object" } for json mode
+    ] = Field(
+        ...,
+        description="Messages to generate chat completions for"
     )
-    seed: Optional[int] = None
-    stop: Optional[Union[str, List[str]]] = None
-    stream: Optional[bool] = False
-    temperature: Optional[float] = 1.0
-    top_p: Optional[float] = 1.0
-    tools: Optional[List[Dict[str, Union[str, int, float]]]] = None
-    tool_choice: Optional[str] = None
-    user: Optional[str] = None
-    allowed_html_tags: Optional[str] = None
+    frequency_penalty: Optional[float] = Field(
+        default=0.0,
+        ge=-2.0,
+        le=2.0,
+        description="Penalty for token frequency"
+    )
+    logit_bias: Optional[Dict[int, float]] = Field(
+        None,
+        description="Modify likelihood of specific tokens"
+    )
+    logprobs: Optional[bool] = Field(
+        None,
+        description="Include log probabilities in response"
+    )
+    top_logprobs: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Number of most likely tokens to return"
+    )
+    max_tokens: Optional[int] = Field(
+        None,
+        gt=0,
+        description="Maximum number of tokens to generate"
+    )
+    n: Optional[int] = Field(
+        default=1,
+        gt=0,
+        description="Number of chat completion choices to generate"
+    )
+    response_format: Optional[Dict[str, str]] = Field(
+        None,
+        description="Format for the response (e.g., {'type': 'json_object'})"
+    )
+    seed: Optional[int] = Field(
+        None,
+        description="Random seed for deterministic results"
+    )
+    stop: Optional[Union[str, List[str]]] = Field(
+        None,
+        description="Sequences where the API will stop generating"
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description="Whether to stream partial progress"
+    )
+    temperature: Optional[float] = Field(
+        default=1.0,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature"
+    )
+    top_p: Optional[float] = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Nucleus sampling parameter"
+    )
+    tools: Optional[List[Dict[str, Union[str, int, float]]]] = Field(
+        None,
+        description="List of tools the model may call"
+    )
+    tool_choice: Optional[str] = Field(
+        None,
+        description="Control which tool is used"
+    )
+    user: Optional[str] = Field(
+        None,
+        description="Unique identifier for the end-user"
+    )
+    allowed_html_tags: Optional[str] = Field(
+        None,
+        description="Comma-separated list of allowed HTML tags"
+    )
+    config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Additional configuration for Gemini models"
+    )
 
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatCompletionResponseChoice(BaseModel):
-    index: int
-    message: ChatMessage
-    finish_reason: Optional[Literal["stop", "length"]] = None
-
-
-class ChatCompletionResponse(BaseModel):
-    id: str = Field(default_factory=lambda: f"chatcmpl-{shortuuid.random()}")
-    object: str = "chat.completion"
-    created: int = Field(default_factory=lambda: int(time.time()))
-    model: str
-    choices: List[ChatCompletionResponseChoice]
-    usage: UsageInfo
-
-
-
-
-
-
-
-
-
+# ######################
+# ROUTING MODELS
+# ######################
+class RoutingAnalysis(BaseModel):
+    """Schema for the routing analysis response.
+    Used to determine if content should be handled by Longwriter.
+    """
+    length_score: float = Field(
+        ...,
+        description="Probability (0.0-1.0) that response will be >700 words",
+        ge=0.0,
+        le=1.0
+    )
+    needs_structure: bool = Field(
+        ...,
+        description="If content needs strategic planning and organization"
+    )
+    is_data_dump: bool = Field(
+        ...,
+        description="If it's primarily a list/data without narrative"
+    )
 
 # ######################
 # LONGWRITER MODELS
 # ######################
 class ContentRequest(BaseModel):
-    prompt: str = Field(..., min_length=1)
-    allowed_html_tags: str = Field(..., min_length=1)
-    messages: Optional[List[Dict[str, str]]] = None
+    """Request model for content generation."""
+    prompt: str = Field(
+        ...,
+        min_length=1,
+        description="The main content prompt to generate content for"
+    )
+    allowed_html_tags: str = Field(
+        ...,
+        min_length=1,
+        description="Comma-separated list of allowed HTML tags"
+    )
+    messages: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Optional chat messages for context"
+    )
 
 class ContentStrategy(BaseModel):
-    strategy: str
-    content_scope: str
-    recommended_word_count: int
-    key_questions: List[str]
-    original_messages: Optional[List[Dict[str, str]]] = None
+    """Strategic plan for content generation based on E-E-A-T framework."""
+    strategy: str = Field(
+        ...,
+        min_length=10,
+        description="Overall content strategy and approach"
+    )
+    content_scope: str = Field(
+        ...,
+        min_length=10,
+        description="Defined scope and boundaries of the content"
+    )
+    recommended_word_count: int = Field(
+        ...,
+        gt=0,
+        le=10000,
+        description="Recommended total word count for the content"
+    )
+    key_questions: List[str] = Field(
+        ...,
+        min_items=1,
+        description="Key questions the content should answer"
+    )
+    original_messages: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Original chat messages for context preservation"
+    )
 
 class HTMLTagStrategy(BaseModel):
-    tags: List[str]
+    """Strategy for HTML tag usage in content."""
+    tags: List[str] = Field(
+        ...,
+        min_items=1,
+        description="List of HTML tags to use in content formatting"
+    )
 
 class OutlineSection(BaseModel):
-    title: str
-    description: str
-    content_ideas: List[str]
-    multimedia_notes: str
-    target_word_count: int
+    """Section in the content outline."""
+    title: str = Field(
+        ...,
+        min_length=1,
+        description="Section title"
+    )
+    description: str = Field(
+        ...,
+        min_length=10,
+        description="Detailed description of section content"
+    )
+    content_ideas: List[str] = Field(
+        ...,
+        min_items=1,
+        description="List of content ideas and key points for the section"
+    )
+    multimedia_notes: str = Field(
+        ...,
+        description="Notes about multimedia elements to include"
+    )
+    target_word_count: int = Field(
+        ...,
+        gt=0,
+        le=5000,
+        description="Target word count for this section"
+    )
 
 class ContentOutline(BaseModel):
-    sections: List[OutlineSection]
-    total_word_count: int = Field(default=0)
+    """Complete content outline with sections."""
+    sections: List[OutlineSection] = Field(
+        ...,
+        min_items=1,
+        description="List of content sections"
+    )
+    total_word_count: int = Field(
+        default=0,
+        ge=0,
+        le=10000,
+        description="Total word count across all sections"
+    )
 
     @field_validator('total_word_count', mode='before')
     @classmethod
     def set_total_word_count(cls, v, info):
+        """Calculate total word count from sections if not provided."""
         if v == 0 and 'sections' in info.data:
-            return sum(section.target_word_count for section in info.data['sections'])
+            total = sum(section.target_word_count for section in info.data['sections'])
+            if total > 10000:  # Enforce maximum even in calculated total
+                raise ValueError("Total word count exceeds maximum limit of 10000")
+            return total
+        return v
+
+    @field_validator('sections')
+    @classmethod
+    def validate_section_totals(cls, v):
+        """Validate that section word counts don't exceed total limit."""
+        total = sum(section.target_word_count for section in v)
+        if total > 10000:
+            raise ValueError("Combined section word counts exceed maximum limit of 10000")
         return v
 
 class ContentDraft(BaseModel):
-    content: str
+    """Draft content for a section."""
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="The actual content draft"
+    )
 
 class FullContent(BaseModel):
-    content: str
-    model: str
+    """Complete generated content."""
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="The complete generated content"
+    )
+    model: str = Field(
+        ...,
+        description="The model used to generate the content"
+    )

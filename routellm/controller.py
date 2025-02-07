@@ -16,8 +16,13 @@ import sys
 import re
 import inspect
 
-from routellm.models import ChatCompletionRequest, ContentRequest, ContentStrategy, HTMLTagStrategy, OutlineSection, ContentOutline, ContentDraft, FullContent
+from routellm.models import (
+    ChatCompletionRequest, ContentRequest, ContentStrategy, 
+    HTMLTagStrategy, OutlineSection, ContentOutline, 
+    ContentDraft, FullContent, RoutingAnalysis
+)
 from routellm.routers.routers import ROUTER_CLS
+from pydantic import BaseModel
 
 # Default config for routers augmented using golden label data from GPT-4.
 # This is exactly the same as config.example.yaml.
@@ -41,10 +46,30 @@ DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
 
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
+def _clean_json_response(content: str) -> str:
+    """Clean up JSON response that might be wrapped in markdown or have other artifacts.
+    
+    Args:
+        content: Raw response content that might contain JSON
+        
+    Returns:
+        Cleaned JSON string
+    """
+    # Remove markdown code blocks if present
+    if content.startswith("```") and content.endswith("```"):
+        # Extract content between first and last ```
+        content = content[content.find('\n')+1:content.rfind('\n')]
+    # Remove any remaining json language identifier
+    if content.startswith("json\n"):
+        content = content[5:]
+    # Strip any extra whitespace
+    content = content.strip()
+    return content
 
 class RoutingError(Exception):
     pass
@@ -340,13 +365,23 @@ class Longwriter(Controller):
         super().__init__(**kwargs)
     
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
-        content_strategist_prompt = '''
-        You are a content strategist. Based on the E-E-A-T framework, provide a content strategy. Include:
-        1. Overall strategy
-        2. Content scope
-        3. Recommended word count (as an integer)
-        4. Key questions to answer (as a list)
-        Respond in a structured format that matches the ContentStrategy model.
+        content_strategist_prompt = f'''
+        You are a content strategist. Based on the E-E-A-T framework, provide a content strategy.
+        Return a JSON object that exactly matches this Pydantic model:
+
+        {ContentStrategy.model_json_schema()}
+
+        Example response:
+        {json.dumps({
+            "strategy": "Create a comprehensive, research-backed guide focusing on practical applications",
+            "content_scope": "Cover fundamentals through advanced concepts with real-world examples",
+            "recommended_word_count": 2500,
+            "key_questions": [
+                "What are the core concepts?",
+                "How can it be applied in practice?",
+                "What are common challenges and solutions?"
+            ]
+        }, indent=2)}
         '''
         
         # Store the original messages for later use
@@ -354,123 +389,130 @@ class Longwriter(Controller):
         if hasattr(request, 'messages'):
             original_messages = request.messages
         
-        response = completion(api_base=self.api_base, api_key=self.api_key,
-            model=model,  # Direct model use after routing decision
-            messages=[
-                {"role": "system", "content": str(dedent(content_strategist_prompt))},
-                {"role": "user", "content": str(request.prompt)}
-            ],
-            response_format={
-                "type": "json_object",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {
-                        "strategy": {"type": "string"},
-                        "content_scope": {"type": "string"},
-                        "recommended_word_count": {"type": "integer"},
-                        "key_questions": {
-                            "type": "array",
-                            "items": {"type": "string"}
-                        }
-                    },
-                    "required": ["strategy", "content_scope", "recommended_word_count", "key_questions"]
+        try:
+            response = completion(api_base=self.api_base, api_key=self.api_key,
+                model=model,  # Direct model use after routing decision
+                messages=[
+                    {"role": "system", "content": str(dedent(content_strategist_prompt))},
+                    {"role": "user", "content": str(request.prompt)}
+                ],
+                config={
+                    'response_mime_type': 'application/json',
+                    'response_schema': ContentStrategy
                 }
-            }
-        )
-        
-        strategy = ContentStrategy.model_validate_json(response["choices"][0]["message"]["content"])
-        # Add the original messages to the strategy object
-        strategy.original_messages = original_messages
-        return strategy
+            )
+            
+            # Clean and parse the JSON response
+            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
+            
+            strategy = ContentStrategy.model_validate_json(content)
+            # Add the original messages to the strategy object
+            strategy.original_messages = original_messages
+            return strategy
+            
+        except Exception as e:
+            logging.error(f"\033[91mError creating content strategy: {str(e)}\033[0m")
+            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
+            raise
 
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
-        html_strategist_prompt = '''
+        html_strategist_prompt = f'''
         You are an HTML strategist. Given a list of allowed HTML tags and a content strategy, 
         provide a list of HTML tags that would be most effective for structuring the content.
-        Return only the list of HTML tags without any additional explanation or closing tags.
-        For example: ["h1", "h2", "p", "ul", "li", "strong", "em", "img"]
+        
+        Return a JSON object that exactly matches this Pydantic model:
+
+        {HTMLTagStrategy.model_json_schema()}
+
+        Example response:
+        {json.dumps({
+            "tags": ["h1", "h2", "p", "ul", "li", "strong", "em", "img"]
+        }, indent=2)}
         '''
         
-        response = completion(
-            model=model,  # Direct model use after routing decision
-            api_base=self.api_base,
-            api_key=self.api_key,
-            messages=[
-                {"role": "system", "content": dedent(html_strategist_prompt)},
-                {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
-            ],
-            response_format={
-                "type": "json_object",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {
-                        "tags": {
-                            "type": "array",
-                            "items": {"type": "string"}
-                        }
-                    },
-                    "required": ["tags"]
+        try:
+            response = completion(
+                model=model,  # Direct model use after routing decision
+                api_base=self.api_base,
+                api_key=self.api_key,
+                messages=[
+                    {"role": "system", "content": dedent(html_strategist_prompt)},
+                    {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
+                ],
+                config={
+                    'response_mime_type': 'application/json',
+                    'response_schema': HTMLTagStrategy
                 }
-            }
-        )
+            )
 
-        return HTMLTagStrategy.model_validate_json(response["choices"][0]["message"]["content"])
+            # Clean and parse the JSON response
+            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            logging.debug(f"\033[96mHTML Strategy Response:\n{content}\033[0m")
+            
+            return HTMLTagStrategy.model_validate_json(content)
+            
+        except Exception as e:
+            logging.error(f"\033[91mError creating HTML strategy: {str(e)}\033[0m")
+            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
+            raise
 
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
-        content_outliner_prompt = '''
+        content_outliner_prompt = f'''
         You are a creative content outliner. Given a content strategy and HTML tag strategy, 
-        create a detailed, structured outline for the content. Your outline should include:
+        create a detailed, structured outline for the content.
+        
+        Return a JSON object that exactly matches this Pydantic model:
 
-        1. Section titles
-        2. Brief descriptions of what each section should cover
-        3. Content ideas and key points for each section
-        4. Notes for potential multimedia elements (images, videos, tables, etc.) based on the available HTML tags
-        5. A target word count for each section
+        {ContentOutline.model_json_schema()}
 
-        The sum of all section word counts should be within 10% of the total recommended word count.
-        Be creative and think about how to best present the information, avoid arhaic structures like a fixed introduction and conclusion unless it is appropriate for the piece.
+        Requirements:
+        1. The sum of all section word counts should be within 10% of the total recommended word count
+        2. Be creative and avoid archaic structures unless appropriate
+        3. Each section should have clear, actionable content ideas
+        4. Include multimedia suggestions based on available HTML tags
 
-        Respond in a structured format that matches the ContentOutline model.
+        Example response:
+        {json.dumps({
+            "sections": [{
+                "title": "Understanding the Basics",
+                "description": "Introduction to core concepts with practical examples",
+                "content_ideas": [
+                    "Define key terminology",
+                    "Real-world applications",
+                    "Common misconceptions"
+                ],
+                "multimedia_notes": "Include diagram showing concept relationships",
+                "target_word_count": 800
+            }]
+        }, indent=2)}
         '''
         
-        response = completion(
-            model=model,  # Direct model use after routing decision
-            api_base=self.api_base,
-            api_key=self.api_key,
-            messages=[
-                {"role": "system", "content": dedent(content_outliner_prompt)},
-                {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
-            ],
-            response_format={
-                "type": "json_object",
-                "response_schema": {
-                    "type": "object",
-                    "properties": {
-                        "sections": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "description": {"type": "string"},
-                                    "content_ideas": {
-                                        "type": "array",
-                                        "items": {"type": "string"}
-                                    },
-                                    "multimedia_notes": {"type": "string"},
-                                    "target_word_count": {"type": "integer"}
-                                },
-                                "required": ["title", "description", "content_ideas", "multimedia_notes", "target_word_count"]
-                            }
-                        },
-                        "total_word_count": {"type": "integer"}
-                    },
-                    "required": ["sections", "total_word_count"]
+        try:
+            response = completion(
+                model=model,  # Direct model use after routing decision
+                api_base=self.api_base,
+                api_key=self.api_key,
+                messages=[
+                    {"role": "system", "content": dedent(content_outliner_prompt)},
+                    {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
+                ],
+                config={
+                    'response_mime_type': 'application/json',
+                    'response_schema': ContentOutline
                 }
-            }
-        )
+            )
 
-        return ContentOutline.model_validate_json(response["choices"][0]["message"]["content"])
+            # Clean and parse the JSON response
+            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            logging.debug(f"\033[96mContent Outline Response:\n{content}\033[0m")
+            
+            return ContentOutline.model_validate_json(content)
+            
+        except Exception as e:
+            logging.error(f"\033[91mError creating content outline: {str(e)}\033[0m")
+            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
+            raise
 
     async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, 
                               html_strategy: HTMLTagStrategy, outline: ContentOutline, 
@@ -693,23 +735,34 @@ class Controllers:
                 # Store the routed model in the request for later use
                 request.model = routed_model
 
-        # Now determine if we should use longwriter based on expected response length
+        # Check both length and content type requirements
         routing_request = ChatCompletionRequest(
-            model=default_controller.model_pair.weak,  # Always use weak model for length check
+            model=default_controller.model_pair.weak,  # Always use weak model for checks
             messages=[
                 {
+                    "role": "system",
+                    "content": f"""You are a routing analyzer that evaluates if content requires Longwriter's capabilities.
+Analyze the prompt and return a JSON object that exactly matches this Pydantic model:
+
+{RoutingAnalysis.model_json_schema()}
+
+Example response:
+{json.dumps({
+    "length_score": 0.8,
+    "needs_structure": True,
+    "is_data_dump": False
+}, indent=2)}"""
+                },
+                {
                     "role": "user",
-                    "content": """
-### Task
-
-Rate the probability that the below prompt is expected to return a text string longer than 700 words, answer with a float between 0.0 and 1.0. 0 means 0% and 1 means 100%. Answer only the number, do not talk about other topics. Do not explain your answer. Do not send anything other than the number.
-
-### User prompt
-
-                    """ + request.messages[-1]["content"],
+                    "content": "Analyze this prompt: " + request.messages[-1]["content"]
                 }
             ],
-            stream=False  # Force non-streaming for routing
+            stream=False,  # Force non-streaming for routing
+            config={
+                'response_mime_type': 'application/json',
+                'response_schema': RoutingAnalysis
+            }
         )
 
         # Use regular completion for routing decision
@@ -717,22 +770,41 @@ Rate the probability that the below prompt is expected to return a text string l
             model=default_controller.model_pair.weak,  # Use weak model for routing decision
             messages=routing_request.messages,
             api_base=default_controller.api_base,
-            api_key=default_controller.api_key
+            api_key=default_controller.api_key,
+            config={
+                'response_mime_type': 'application/json',
+                'response_schema': RoutingAnalysis
+            }
         )
-        content = response.choices[0].message.content
         
-        number_strings = re.findall(r"[-+]?\d*\.\d+|\d+", content)
-        true_number = 0
-        if len(number_strings) > 0: 
-            try:
-                true_number = float(number_strings[0]) 
-            except ValueError:
-                pass
-        
-        # Return longwriter or completion based on length prediction
-        if true_number > 0.5:
-            return "longwriter"
-        else:
+        try:
+            # Clean and parse the JSON response
+            content = _clean_json_response(response.choices[0].message.content)
+            analysis = RoutingAnalysis.model_validate_json(content)
+            
+            # Add debug output for routing decision
+            logging.debug("\033[95m=== Routing Analysis ===\033[0m")
+            logging.debug(f"\033[94mLength Score: {analysis.length_score}\033[0m")
+            logging.debug(f"\033[94mNeeds Structure: {analysis.needs_structure}\033[0m")
+            logging.debug(f"\033[94mIs Data Dump: {analysis.is_data_dump}\033[0m")
+            
+            # Route to longwriter if:
+            # 1. Content will be long (> 700 words)
+            # 2. Content benefits from structure
+            # 3. Not just a data dump
+            use_longwriter = (
+                analysis.length_score > 0.5 and 
+                analysis.needs_structure and 
+                not analysis.is_data_dump
+            )
+            
+            logging.debug(f"\033[93mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m")
+            logging.debug("\033[95m=====================\033[0m")
+            
+            return "longwriter" if use_longwriter else "completion"
+        except Exception as e:
+            logging.error(f"\033[91mError parsing routing analysis: {str(e)}\033[0m")
+            # If there's any error parsing the response, default to completion
             return "completion"
 
     # METHODS TO IMITATE DICT INTERFACE

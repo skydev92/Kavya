@@ -283,7 +283,7 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest)
 # if __name__ == "__main__":
 # Configure logging
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
