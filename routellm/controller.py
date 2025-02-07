@@ -865,7 +865,7 @@ Example response:
             # 2. Content benefits from structure
             # 3. Not just a data dump
             use_longwriter = (
-                analysis.length_score > 0.5 and 
+                analysis.length_score > 0.8 and 
                 analysis.needs_structure and 
                 not analysis.is_data_dump
             )
