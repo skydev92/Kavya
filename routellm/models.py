@@ -152,7 +152,6 @@ class ChatCompletionRequest(BaseModel):
     top_logprobs: Optional[int] = None
     max_tokens: Optional[int] = None
     n: Optional[int] = 1
-    presence_penalty: Optional[float] = 0.0
     response_format: Optional[Dict[str, str]] = (
         None  # { "type": "json_object" } for json mode
     )

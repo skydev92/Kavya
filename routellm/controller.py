@@ -360,7 +360,22 @@ class Longwriter(Controller):
                 {"role": "system", "content": str(dedent(content_strategist_prompt))},
                 {"role": "user", "content": str(request.prompt)}
             ],
-            response_format=ContentStrategy
+            response_format={
+                "type": "json_object",
+                "response_schema": {
+                    "type": "object",
+                    "properties": {
+                        "strategy": {"type": "string"},
+                        "content_scope": {"type": "string"},
+                        "recommended_word_count": {"type": "integer"},
+                        "key_questions": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
+                    },
+                    "required": ["strategy", "content_scope", "recommended_word_count", "key_questions"]
+                }
+            }
         )
         
         strategy = ContentStrategy.model_validate_json(response["choices"][0]["message"]["content"])
@@ -385,21 +400,16 @@ class Longwriter(Controller):
                 {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
             ],
             response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "html_tag_strategy",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "tags": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            }
-                        },
-                        "required": ["tags"],
-                        "additionalProperties": False
+                "type": "json_object",
+                "response_schema": {
+                    "type": "object",
+                    "properties": {
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        }
                     },
-                    "strict": True
+                    "required": ["tags"]
                 }
             }
         )
@@ -432,36 +442,30 @@ class Longwriter(Controller):
                 {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
             ],
             response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "content_outline",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "sections": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {"type": "string"},
-                                        "description": {"type": "string"},
-                                        "content_ideas": {
-                                            "type": "array",
-                                            "items": {"type": "string"}
-                                        },
-                                        "multimedia_notes": {"type": "string"},
-                                        "target_word_count": {"type": "integer"}
+                "type": "json_object",
+                "response_schema": {
+                    "type": "object",
+                    "properties": {
+                        "sections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": {"type": "string"},
+                                    "description": {"type": "string"},
+                                    "content_ideas": {
+                                        "type": "array",
+                                        "items": {"type": "string"}
                                     },
-                                    "required": ["title", "description", "content_ideas", "multimedia_notes", "target_word_count"],
-                                    "additionalProperties": False
-                                }
-                            },
-                            "total_word_count": {"type": "integer"}
+                                    "multimedia_notes": {"type": "string"},
+                                    "target_word_count": {"type": "integer"}
+                                },
+                                "required": ["title", "description", "content_ideas", "multimedia_notes", "target_word_count"]
+                            }
                         },
-                        "required": ["sections", "total_word_count"],
-                        "additionalProperties": False
+                        "total_word_count": {"type": "integer"}
                     },
-                    "strict": True
+                    "required": ["sections", "total_word_count"]
                 }
             }
         )
@@ -504,7 +508,9 @@ class Longwriter(Controller):
         5. Aim for {section.target_word_count} words
         6. Be creative and engaging
         7. Ensure continuity with the preceding sections, avoid repetitive phrases
-        8. Keep in mind the overall structure of the article as outlined{tone_instruction}
+        8. Keep in mind the overall structure of the article as outlined
+        9. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
+        10. Only use the specified HTML tags for formatting{tone_instruction}
         '''
 
         if 'img' in html_strategy.tags:
