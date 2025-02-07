@@ -17,3 +17,4 @@ openai
 transformers
 datasets
 litellm
+json5>=0.9.14

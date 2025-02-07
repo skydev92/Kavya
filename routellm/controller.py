@@ -15,6 +15,7 @@ import logging
 import sys
 import re
 import inspect
+import json5
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
@@ -60,16 +61,31 @@ def _clean_json_response(content: str) -> str:
     Returns:
         Cleaned JSON string
     """
-    # Remove markdown code blocks if present
-    if content.startswith("```") and content.endswith("```"):
-        # Extract content between first and last ```
-        content = content[content.find('\n')+1:content.rfind('\n')]
-    # Remove any remaining json language identifier
-    if content.startswith("json\n"):
-        content = content[5:]
-    # Strip any extra whitespace
-    content = content.strip()
-    return content
+    try:
+        # First try standard JSON
+        json.loads(content)
+        return content
+    except json.JSONDecodeError:
+        try:
+            # Try to find JSON content
+            # First look for content between code blocks
+            matches = re.findall(r'```(?:json)?(.*?)```', content, re.DOTALL)
+            if matches:
+                content = matches[0].strip()
+            
+            # Find the first { and last } to extract just the JSON object
+            start = content.find('{')
+            end = content.rfind('}')
+            if start != -1 and end != -1:
+                content = content[start:end + 1].strip()
+            
+            # Parse with json5 and re-serialize as standard JSON
+            parsed = json5.loads(content)
+            return json.dumps(parsed, ensure_ascii=False)
+        except Exception as e:
+            logging.error(f"\033[91mFailed to clean JSON response: {str(e)}\033[0m")
+            logging.error(f"\033[91mAttempted to parse:\n{content}\033[0m")
+            raise
 
 class RoutingError(Exception):
     pass
