@@ -5,7 +5,13 @@ from types import SimpleNamespace
 from typing import Any, Optional, Callable, AsyncGenerator, List
 
 import pandas as pd
-from litellm import acompletion, completion, batch_completion
+from litellm import (
+    acompletion, 
+    completion, 
+    batch_completion, 
+    get_supported_openai_params,
+    supports_response_schema
+)
 from textwrap import dedent
 from tqdm import tqdm
 
@@ -15,7 +21,7 @@ import logging
 import sys
 import re
 import inspect
-import json5
+import enum
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
@@ -51,41 +57,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-
-def _clean_json_response(content: str) -> str:
-    """Clean up JSON response that might be wrapped in markdown or have other artifacts.
-    
-    Args:
-        content: Raw response content that might contain JSON
-        
-    Returns:
-        Cleaned JSON string
-    """
-    try:
-        # First try standard JSON
-        json.loads(content)
-        return content
-    except json.JSONDecodeError:
-        try:
-            # Try to find JSON content
-            # First look for content between code blocks
-            matches = re.findall(r'```(?:json)?(.*?)```', content, re.DOTALL)
-            if matches:
-                content = matches[0].strip()
-            
-            # Find the first { and last } to extract just the JSON object
-            start = content.find('{')
-            end = content.rfind('}')
-            if start != -1 and end != -1:
-                content = content[start:end + 1].strip()
-            
-            # Parse with json5 and re-serialize as standard JSON
-            parsed = json5.loads(content)
-            return json.dumps(parsed, ensure_ascii=False)
-        except Exception as e:
-            logging.error(f"\033[91mFailed to clean JSON response: {str(e)}\033[0m")
-            logging.error(f"\033[91mAttempted to parse:\n{content}\033[0m")
-            raise
 
 class RoutingError(Exception):
     pass
@@ -234,7 +205,7 @@ class Controller:
         *,
         router: Optional[str] = None,
         threshold: Optional[float] = None,
-        **kwargs, # add the response_format parameter there
+        **kwargs,
     ):
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
@@ -249,7 +220,7 @@ class Controller:
                     "model": "predefined_prompt"
                 }
 
-        # Capture all arguments passed to this method, for get_model
+        # Capture all arguments for get_model
         frame = inspect.currentframe()
         args, _, _, values = inspect.getargvalues(frame)
         get_model_args = {arg: values[arg] for arg in args if arg != "self"}
@@ -258,7 +229,45 @@ class Controller:
         # Call get_model with all arguments
         model = self.get_model(**get_model_args)
         kwargs["model"] = model
-        logging.debug("got the model")
+
+        # Handle structured output configuration
+        if "config" in kwargs and kwargs["config"]:
+            config = kwargs["config"]
+            if isinstance(config, dict):
+                # Check if model supports response_format and json_schema
+                supported_params = get_supported_openai_params(model=model)
+                has_schema_support = supports_response_schema(model=model)
+                
+                if "response_schema" in config:
+                    if not has_schema_support:
+                        logging.warning(f"Model {model} does not support json_schema. Enabling client-side validation.")
+                        # Enable client-side validation for models that don't support schema
+                        kwargs["config"]["enable_json_schema_validation"] = True
+                    
+                    schema = config["response_schema"]
+                    if isinstance(schema, type) and issubclass(schema, BaseModel):
+                        # Convert Pydantic model to JSON schema
+                        config["response_schema"] = {
+                            "type": "json_schema",
+                            "json_schema": schema.model_json_schema(),
+                            "strict": True
+                        }
+                    elif isinstance(schema, type) and issubclass(schema, enum.Enum):
+                        if "response_format" not in supported_params:
+                            logging.warning(f"Model {model} does not support response_format. Enum responses may not work as expected.")
+                        # Convert enum to proper format
+                        config["response_schema"] = {
+                            "type": "string",
+                            "enum": [e.value for e in schema],
+                        }
+                        config["response_mime_type"] = "text/x.enum"
+                    elif isinstance(schema, dict):
+                        # Already in proper format, ensure it has type and strict fields
+                        if "type" not in schema:
+                            schema["type"] = "json_schema"
+                        if "strict" not in schema:
+                            schema["strict"] = True
+                        config["response_schema"] = schema
 
         # Only necessary for the longwriter
         for key in LONGWRITER_ONLY_ARGS:
@@ -268,9 +277,26 @@ class Controller:
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
-                return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                response = completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
         else:
-            return completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+            response = completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+
+        # Handle enum responses
+        if (
+            "config" in kwargs 
+            and kwargs["config"] 
+            and kwargs["config"].get("response_mime_type") == "text/x.enum"
+            and "choices" in response
+            and response["choices"]
+            and "message" in response["choices"][0]
+        ):
+            enum_value = response["choices"][0]["message"]["content"].strip()
+            enum_class = kwargs["config"]["response_schema"]
+            if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
+                enum_response = EnumResponse.from_enum(enum_class, enum_value)
+                response["choices"][0]["message"]["content"] = enum_response.model_dump()
+
+        return response
 
     async def acompletion(
         self,
@@ -312,6 +338,45 @@ class Controller:
             # Call get_model with all arguments
             model = self.get_model(**get_model_args)
             kwargs["model"] = model
+
+        # Handle structured output configuration
+        if "config" in kwargs and kwargs["config"]:
+            config = kwargs["config"]
+            if isinstance(config, dict):
+                # Check if model supports response_format and json_schema
+                supported_params = get_supported_openai_params(model=kwargs["model"])
+                has_schema_support = supports_response_schema(model=kwargs["model"])
+                
+                if "response_schema" in config:
+                    if not has_schema_support:
+                        logging.warning(f"Model {kwargs['model']} does not support json_schema. Enabling client-side validation.")
+                        # Enable client-side validation for models that don't support schema
+                        kwargs["config"]["enable_json_schema_validation"] = True
+                    
+                    schema = config["response_schema"]
+                    if isinstance(schema, type) and issubclass(schema, BaseModel):
+                        # Convert Pydantic model to JSON schema
+                        config["response_schema"] = {
+                            "type": "json_schema",
+                            "json_schema": schema.model_json_schema(),
+                            "strict": True
+                        }
+                    elif isinstance(schema, type) and issubclass(schema, enum.Enum):
+                        if "response_format" not in supported_params:
+                            logging.warning(f"Model {kwargs['model']} does not support response_format. Enum responses may not work as expected.")
+                        # Convert enum to proper format
+                        config["response_schema"] = {
+                            "type": "string",
+                            "enum": [e.value for e in schema],
+                        }
+                        config["response_mime_type"] = "text/x.enum"
+                    elif isinstance(schema, dict):
+                        # Already in proper format, ensure it has type and strict fields
+                        if "type" not in schema:
+                            schema["type"] = "json_schema"
+                        if "strict" not in schema:
+                            schema["strict"] = True
+                        config["response_schema"] = schema
         
         # Only necessary for the longwriter
         for key in LONGWRITER_ONLY_ARGS:
@@ -323,10 +388,27 @@ class Controller:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
                 logging.debug("last sprint")
-                return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
         else:
             logging.debug("last sprint 2")
-            return await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+            response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+
+        # Handle enum responses
+        if (
+            "config" in kwargs 
+            and kwargs["config"] 
+            and kwargs["config"].get("response_mime_type") == "text/x.enum"
+            and hasattr(response, "choices")
+            and response.choices
+            and hasattr(response.choices[0], "message")
+        ):
+            enum_value = response.choices[0].message.content.strip()
+            enum_class = kwargs["config"]["response_schema"]
+            if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
+                enum_response = EnumResponse.from_enum(enum_class, enum_value)
+                response.choices[0].message.content = enum_response.model_dump()
+
+        return response
 
     def get_model(
         self,
@@ -381,23 +463,12 @@ class Longwriter(Controller):
         super().__init__(**kwargs)
     
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
-        content_strategist_prompt = f'''
+        # First check if model supports response schema
+        if not supports_response_schema(model=model):
+            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+
+        content_strategist_prompt = '''
         You are a content strategist. Based on the E-E-A-T framework, provide a content strategy.
-        Return a JSON object that exactly matches this Pydantic model:
-
-        {ContentStrategy.model_json_schema()}
-
-        Example response:
-        {json.dumps({
-            "strategy": "Create a comprehensive, research-backed guide focusing on practical applications",
-            "content_scope": "Cover fundamentals through advanced concepts with real-world examples",
-            "recommended_word_count": 2500,
-            "key_questions": [
-                "What are the core concepts?",
-                "How can it be applied in practice?",
-                "What are common challenges and solutions?"
-            ]
-        }, indent=2)}
         '''
         
         # Store the original messages for later use
@@ -406,20 +477,23 @@ class Longwriter(Controller):
             original_messages = request.messages
         
         try:
-            response = completion(api_base=self.api_base, api_key=self.api_key,
+            response = completion(
+                api_base=self.api_base,
+                api_key=self.api_key,
                 model=model,  # Direct model use after routing decision
                 messages=[
                     {"role": "system", "content": str(dedent(content_strategist_prompt))},
                     {"role": "user", "content": str(request.prompt)}
                 ],
-                config={
-                    'response_mime_type': 'application/json',
-                    'response_schema': ContentStrategy
+                response_format={
+                    "type": "json_schema",
+                    "schema": ContentStrategy.model_json_schema(),
+                    "strict": True
                 }
             )
             
-            # Clean and parse the JSON response
-            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            # Get the content from the response
+            content = response["choices"][0]["message"]["content"]
             logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
             
             strategy = ContentStrategy.model_validate_json(content)
@@ -433,18 +507,13 @@ class Longwriter(Controller):
             raise
 
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
+        # First check if model supports response schema
+        if not supports_response_schema(model=model):
+            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+
         html_strategist_prompt = f'''
         You are an HTML strategist. Given a list of allowed HTML tags and a content strategy, 
         provide a list of HTML tags that would be most effective for structuring the content.
-        
-        Return a JSON object that exactly matches this Pydantic model:
-
-        {HTMLTagStrategy.model_json_schema()}
-
-        Example response:
-        {json.dumps({
-            "tags": ["h1", "h2", "p", "ul", "li", "strong", "em", "img"]
-        }, indent=2)}
         '''
         
         try:
@@ -456,14 +525,15 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(html_strategist_prompt)},
                     {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
                 ],
-                config={
-                    'response_mime_type': 'application/json',
-                    'response_schema': HTMLTagStrategy
+                response_format={
+                    "type": "json_schema",
+                    "schema": HTMLTagStrategy.model_json_schema(),
+                    "strict": True
                 }
             )
 
-            # Clean and parse the JSON response
-            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            # Get the content from the response
+            content = response["choices"][0]["message"]["content"]
             logging.debug(f"\033[96mHTML Strategy Response:\n{content}\033[0m")
             
             return HTMLTagStrategy.model_validate_json(content)
@@ -474,34 +544,19 @@ class Longwriter(Controller):
             raise
 
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
-        content_outliner_prompt = f'''
+        # First check if model supports response schema
+        if not supports_response_schema(model=model):
+            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+
+        content_outliner_prompt = '''
         You are a creative content outliner. Given a content strategy and HTML tag strategy, 
         create a detailed, structured outline for the content.
         
-        Return a JSON object that exactly matches this Pydantic model:
-
-        {ContentOutline.model_json_schema()}
-
         Requirements:
         1. The sum of all section word counts should be within 10% of the total recommended word count
         2. Be creative and avoid archaic structures unless appropriate
         3. Each section should have clear, actionable content ideas
         4. Include multimedia suggestions based on available HTML tags
-
-        Example response:
-        {json.dumps({
-            "sections": [{
-                "title": "Understanding the Basics",
-                "description": "Introduction to core concepts with practical examples",
-                "content_ideas": [
-                    "Define key terminology",
-                    "Real-world applications",
-                    "Common misconceptions"
-                ],
-                "multimedia_notes": "Include diagram showing concept relationships",
-                "target_word_count": 800
-            }]
-        }, indent=2)}
         '''
         
         try:
@@ -513,14 +568,15 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(content_outliner_prompt)},
                     {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
                 ],
-                config={
-                    'response_mime_type': 'application/json',
-                    'response_schema': ContentOutline
+                response_format={
+                    "type": "json_schema",
+                    "schema": ContentOutline.model_json_schema(),
+                    "strict": True
                 }
             )
 
-            # Clean and parse the JSON response
-            content = _clean_json_response(response["choices"][0]["message"]["content"])
+            # Get the content from the response
+            content = response["choices"][0]["message"]["content"]
             logging.debug(f"\033[96mContent Outline Response:\n{content}\033[0m")
             
             return ContentOutline.model_validate_json(content)

@@ -5,7 +5,7 @@ shortuuid
 pytest
 
 pandas
-litellm
+litellm>=1.60.6
 pyyaml
 pydantic
 numpy<2

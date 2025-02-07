@@ -51,6 +51,10 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         response_id = f"chatcmpl-{shortuuid.random()}"
         created_time = int(time.time())
 
+        # Handle structured output in the response
+        if isinstance(content, (dict, list)):
+            content = json.dumps(content)
+
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
         
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
@@ -74,6 +78,9 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
                 logging.debug("strange json : "+ json.dumps(json.loads(json.dumps(dict_chunk))))
                 content = dict_chunk['choices'][0]['delta']['content']
                 if content is not None:
+                    # Handle structured output in streaming chunks
+                    if isinstance(content, (dict, list)):
+                        content = json.dumps(content)
                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
         except StopIteration:
             pass
@@ -260,9 +267,15 @@ class ChatCompletionRequest(BaseModel):
         gt=0,
         description="Number of chat completion choices to generate"
     )
-    response_format: Optional[Dict[str, str]] = Field(
+    config: Optional[Dict[str, Any]] = Field(
         None,
-        description="Format for the response (e.g., {'type': 'json_object'})"
+        description="""Additional configuration for model behavior. Supports:
+        - response_mime_type: str - The MIME type of the response ('application/json' or 'text/x.enum')
+        - response_schema: Union[Type, Dict[str, Any]] - Schema definition for structured output
+            Can be:
+            - A type annotation (e.g., list[Recipe])
+            - A dict representing an OpenAPI 3.0 schema
+            - An enum class for constrained choices"""
     )
     seed: Optional[int] = Field(
         None,
@@ -303,10 +316,6 @@ class ChatCompletionRequest(BaseModel):
     allowed_html_tags: Optional[str] = Field(
         None,
         description="Comma-separated list of allowed HTML tags"
-    )
-    config: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Additional configuration for Gemini models"
     )
 
 
@@ -469,3 +478,27 @@ class FullContent(BaseModel):
         ...,
         description="The model used to generate the content"
     )
+
+class EnumResponse(BaseModel):
+    """Response containing a constrained choice from an enum."""
+    value: str = Field(
+        ...,
+        description="The selected enum value"
+    )
+    enum_type: str = Field(
+        ...,
+        description="The name of the enum type"
+    )
+    possible_values: List[str] = Field(
+        ...,
+        description="List of all possible enum values"
+    )
+
+    @classmethod
+    def from_enum(cls, enum_class: type, selected_value: str) -> 'EnumResponse':
+        """Create an EnumResponse from an enum class and selected value."""
+        return cls(
+            value=selected_value,
+            enum_type=enum_class.__name__,
+            possible_values=[e.value for e in enum_class]
+        )
