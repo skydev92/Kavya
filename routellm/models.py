@@ -173,7 +173,6 @@ class ChatMessage(BaseModel):
     )
     content: str = Field(
         ...,
-        min_length=1,
         description="Content of the message"
     )
 
@@ -346,12 +345,10 @@ class ContentRequest(BaseModel):
     """Request model for content generation."""
     prompt: str = Field(
         ...,
-        min_length=1,
         description="The main content prompt to generate content for"
     )
     allowed_html_tags: str = Field(
         ...,
-        min_length=1,
         description="Comma-separated list of allowed HTML tags"
     )
     messages: Optional[List[Dict[str, str]]] = Field(
@@ -363,12 +360,10 @@ class ContentStrategy(BaseModel):
     """Strategic plan for content generation based on E-E-A-T framework."""
     strategy: str = Field(
         ...,
-        min_length=10,
         description="Overall content strategy and approach"
     )
     content_scope: str = Field(
         ...,
-        min_length=10,
         description="Defined scope and boundaries of the content"
     )
     recommended_word_count: int = Field(
@@ -399,12 +394,10 @@ class OutlineSection(BaseModel):
     """Section in the content outline."""
     title: str = Field(
         ...,
-        min_length=1,
         description="Section title"
     )
     description: str = Field(
         ...,
-        min_length=10,
         description="Detailed description of section content"
     )
     content_ideas: List[str] = Field(
@@ -459,7 +452,6 @@ class ContentDraft(BaseModel):
     """Draft content for a section."""
     content: str = Field(
         ...,
-        min_length=1,
         description="The actual content draft"
     )
 
@@ -467,7 +459,6 @@ class FullContent(BaseModel):
     """Complete generated content."""
     content: str = Field(
         ...,
-        min_length=1,
         description="The complete generated content"
     )
     model: str = Field(
