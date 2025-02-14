@@ -150,17 +150,17 @@ class UsageInfo(BaseModel):
     """Token usage information for API calls."""
     prompt_tokens: int = Field(
         default=0,
-        ge=0,
+        # ge=0,
         description="Number of tokens in the prompt"
     )
     total_tokens: int = Field(
         default=0,
-        ge=0,
+        # ge=0,
         description="Total tokens used in the request"
     )
     completion_tokens: Optional[int] = Field(
         None,
-        ge=0,
+        # ge=0,
         description="Number of tokens in the completion"
     )
 
@@ -181,7 +181,7 @@ class ChatCompletionResponseChoice(BaseModel):
     """A single completion choice in a chat response."""
     index: int = Field(
         ...,
-        ge=0,
+        # ge=0,
         description="Index of this choice in the list of choices"
     )
     message: ChatMessage = Field(
@@ -239,8 +239,8 @@ class ChatCompletionRequest(BaseModel):
     )
     frequency_penalty: Optional[float] = Field(
         default=0.0,
-        ge=-2.0,
-        le=2.0,
+        # ge=-2.0,
+        # le=2.0,
         description="Penalty for token frequency"
     )
     logit_bias: Optional[Dict[int, float]] = Field(
@@ -253,7 +253,7 @@ class ChatCompletionRequest(BaseModel):
     )
     top_logprobs: Optional[int] = Field(
         None,
-        ge=0,
+        # ge=0,
         description="Number of most likely tokens to return"
     )
     max_tokens: Optional[int] = Field(
@@ -288,14 +288,14 @@ class ChatCompletionRequest(BaseModel):
     )
     temperature: Optional[float] = Field(
         default=1.0,
-        ge=0.0,
-        le=2.0,
+        # ge=0.0,
+        # le=2.0,
         description="Sampling temperature"
     )
     top_p: Optional[float] = Field(
         default=1.0,
-        ge=0.0,
-        le=1.0,
+        # ge=0.0,
+        # le=1.0,
         description="Nucleus sampling parameter"
     )
     tools: Optional[List[Dict[str, Union[str, int, float]]]] = Field(
@@ -326,8 +326,8 @@ class RoutingAnalysis(BaseModel):
     length_score: float = Field(
         ...,
         description="Probability (0.0-1.0) that response will be >700 words",
-        ge=0.0,
-        le=1.0
+        # ge=0.0,
+        # le=1.0
     )
     needs_structure: bool = Field(
         ...,
