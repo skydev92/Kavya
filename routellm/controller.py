@@ -53,7 +53,7 @@ DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    # level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
