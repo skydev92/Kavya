@@ -1,5 +1,8 @@
 cursor-ai-sources
 
+.keys
+.keys/
+.env
 
 .DS_Store
 kavya_venv

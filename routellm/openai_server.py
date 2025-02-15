@@ -18,9 +18,11 @@ import uvicorn
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends
 
 from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE
 from routellm.routers.routers import ROUTER_CLS
+from routellm.auth import JWTBearer
 import routellm.models 
 
 from dotenv import load_dotenv
@@ -191,7 +193,7 @@ async def health_check():
 # ------------------------------------------------------------------------------
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: routellm.models.ChatCompletionRequest):
+async def create_chat_completion(request: routellm.models.ChatCompletionRequest, token: str = Depends(JWTBearer())):
     logging.info(f"Received request: {request}")
     try:
         controller_name = await app.controllers.basic_routing(request)
@@ -335,7 +337,7 @@ if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
     uvicorn.run(
         "routellm.openai_server:app",
-        port=8080,
+        port=8089,
         host="0.0.0.0",
         workers=args.workers,
     )

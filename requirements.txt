@@ -3,6 +3,8 @@ uvicorn
 python-dotenv
 shortuuid
 pytest
+PyJWT>=2.8.0
+cryptography>=42.0.0
 
 pandas
 litellm>=1.60.6
