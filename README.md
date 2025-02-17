@@ -74,7 +74,7 @@
    # Run with local source code mounting for fast development
    docker run --rm -it \
      --name kavya-dev \
-     -p 8089:8080 \
+     -p 8089:${PORT:-8080} \
      -v $(pwd)/routellm:/app/routellm \
      --env-file .env \
      -e ENVIRONMENT=dev \  # Forces development mode with SQLite
@@ -94,7 +94,7 @@
    # Run without source mounting, using Google Cloud SQL
    docker run -d \
      --name kavya-prod \
-     -p 8080:8080 \
+     -p 8080:${PORT:-8080} \
      --env-file .env.prod \
      kavya  # No ENVIRONMENT var needed - defaults to production mode
 

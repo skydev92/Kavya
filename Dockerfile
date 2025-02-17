@@ -35,6 +35,6 @@ RUN echo '#!/bin/bash' > start.sh && \
     chmod +x start.sh
 
 # Expose port for the application
-EXPOSE 8080
+EXPOSE ${PORT:-8080}
 
 CMD ["./start.sh"]
