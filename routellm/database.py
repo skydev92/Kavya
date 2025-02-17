@@ -149,6 +149,8 @@ class PostgreSQLConnection(DatabaseConnection):
         self.engine = None
         self.isolation_level = "REPEATABLE READ"
         self._in_transaction = False
+        self._deadlock_retries = 3
+        self._deadlock_wait = 0.1  # Initial wait time in seconds
 
     def connect(self):
         connector = Connector(refresh_strategy="LAZY")
@@ -167,11 +169,11 @@ class PostgreSQLConnection(DatabaseConnection):
         self.engine = sqlalchemy.create_engine(
             "postgresql+pg8000://",
             creator=getconn,
-            pool_size=10,
-            max_overflow=5,
+            pool_size=5,  # Reduced pool size to minimize contention
+            max_overflow=2,
             pool_timeout=30,
             pool_recycle=1800,
-            isolation_level=self.isolation_level,  # Let SQLAlchemy handle isolation level
+            isolation_level=self.isolation_level,
             connect_args={
                 "application_name": "kavya",
                 "tcp_keepalives_idle": 300,
@@ -190,31 +192,50 @@ class PostgreSQLConnection(DatabaseConnection):
         return self.cursor
 
     def begin_transaction(self):
-        """Start a transaction with proper error handling"""
+        """Start a transaction with deadlock retry logic"""
         if self._in_transaction:
             raise RuntimeError("Transaction already in progress")
-        try:
-            self.get_cursor().execute("BEGIN")
-            self._in_transaction = True
-        except Exception as e:
-            logging.error(f"Failed to begin transaction: {str(e)}")
-            self._in_transaction = False
-            raise
+        
+        retry_count = 0
+        while retry_count < self._deadlock_retries:
+            try:
+                self.get_cursor().execute("BEGIN")
+                # Set a consistent transaction isolation level
+                self.get_cursor().execute(f"SET TRANSACTION ISOLATION LEVEL {self.isolation_level}")
+                self._in_transaction = True
+                return
+            except Exception as e:
+                if "deadlock detected" in str(e) and retry_count < self._deadlock_retries - 1:
+                    retry_count += 1
+                    time.sleep(self._deadlock_wait * (2 ** retry_count))  # Exponential backoff
+                    try:
+                        self.rollback()  # Clean up any partial transaction
+                    except:
+                        pass
+                    continue
+                raise
+
+        raise RuntimeError(f"Failed to begin transaction after {self._deadlock_retries} retries")
 
     def commit(self):
-        """Commit the current transaction with proper error handling"""
+        """Commit with deadlock retry logic"""
         if not self._in_transaction:
-            raise RuntimeError("No transaction in progress")
-        try:
-            self.connection.commit()
-            self._in_transaction = False
-        except Exception as e:
-            logging.error(f"Failed to commit transaction: {str(e)}")
+            return
+        
+        retry_count = 0
+        while retry_count < self._deadlock_retries:
             try:
-                self.rollback()
-            except:
-                pass  # Already in error state
-            raise
+                self.connection.commit()
+                self._in_transaction = False
+                return
+            except Exception as e:
+                if "deadlock detected" in str(e) and retry_count < self._deadlock_retries - 1:
+                    retry_count += 1
+                    time.sleep(self._deadlock_wait * (2 ** retry_count))
+                    continue
+                raise
+        
+        raise RuntimeError(f"Failed to commit transaction after {self._deadlock_retries} retries")
 
     def rollback(self):
         """Rollback the current transaction with proper error handling"""
@@ -534,9 +555,10 @@ class Database:
         ).strip()
 
     def update_usage(self, account_id: int, prompt_tokens: int, completion_tokens: int):
-        """Update token usage for an account"""
+        """Update token usage for an account with improved deadlock handling"""
         max_retries = 3
         retry_count = 0
+        base_wait = 0.1  # 100ms base wait time
         
         while retry_count < max_retries:
             try:
@@ -544,15 +566,15 @@ class Database:
                     cursor = connection.get_cursor()
                     today = datetime.now().strftime('%Y-%m-%d')
 
-                    # Update account_totals with a single atomic update that checks balance
+                    # First update account_totals - always update this table first to maintain consistent lock order
                     cursor.execute(
                         self._get_sql('update_balance'),
                         (
-                            prompt_tokens, prompt_tokens,  # token_in CASE
-                            completion_tokens, completion_tokens,  # token_out CASE
-                            prompt_tokens, completion_tokens,  # transactions CASE
-                            account_id,  # WHERE account_id = ?
-                            prompt_tokens, completion_tokens  # AND token_in >= ? AND token_out >= ?
+                            prompt_tokens, prompt_tokens,
+                            completion_tokens, completion_tokens,
+                            prompt_tokens, completion_tokens,
+                            account_id,
+                            prompt_tokens, completion_tokens
                         )
                     )
                     
@@ -565,7 +587,7 @@ class Database:
                         if cursor.rowcount == 0:
                             raise ValueError("Failed to update balance - insufficient tokens")
 
-                    # Update daily summary
+                    # Then update daily summary - always update this table second
                     cursor.execute(
                         self._get_sql('update_daily'),
                         (account_id, today, prompt_tokens, completion_tokens)
@@ -574,18 +596,23 @@ class Database:
                     # If we get here, the transaction succeeded
                     return
                     
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and retry_count < max_retries - 1:
-                    retry_count += 1
-                    time.sleep(0.1 * (2 ** retry_count))  # Exponential backoff
-                    continue
-                logging.error(f"Database error after {retry_count + 1} retries: {str(e)}")
-                raise
             except Exception as e:
-                logging.error(f"Error updating usage: {str(e)}")
-                raise
+                if retry_count < max_retries - 1:
+                    if "deadlock detected" in str(e):
+                        retry_count += 1
+                        wait_time = base_wait * (2 ** retry_count)  # Exponential backoff
+                        time.sleep(wait_time)
+                        logging.warning(f"Deadlock detected, retrying (attempt {retry_count + 1}/{max_retries})")
+                        continue
+                    elif "database is locked" in str(e):  # For SQLite
+                        retry_count += 1
+                        wait_time = base_wait * (2 ** retry_count)
+                        time.sleep(wait_time)
+                        continue
+                logging.error(f"Database error after {retry_count + 1} retries: {str(e)}")
+                raise RuntimeError(f"CRITICAL: Failed to update token usage in database: {str(e)}")
             
-        raise Exception(f"Failed to update usage after {max_retries} retries due to database contention")
+        raise RuntimeError(f"Failed to update usage after {max_retries} retries due to database contention")
 
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""
