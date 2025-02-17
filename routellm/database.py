@@ -147,6 +147,7 @@ class PostgreSQLConnection(DatabaseConnection):
         self.db_name = db_name
         self.private_ip = private_ip
         self.engine = None
+        self.isolation_level = "REPEATABLE READ"
 
     def connect(self):
         connector = Connector(refresh_strategy="LAZY")
@@ -160,17 +161,21 @@ class PostgreSQLConnection(DatabaseConnection):
                 db=self.db_name,
                 ip_type=IPTypes.PRIVATE if self.private_ip else IPTypes.PUBLIC,
             )
+            # Set isolation level at connection time
+            cursor = conn.cursor()
+            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cursor.close()
             return conn
 
         self.engine = sqlalchemy.create_engine(
             "postgresql+pg8000://",
             creator=getconn,
-            pool_size=10,  # Increased from 5
-            max_overflow=5,  # Increased from 2
+            pool_size=10,
+            max_overflow=5,
             pool_timeout=30,
             pool_recycle=1800,
             connect_args={
-                "application_name": "kavya",  # For better monitoring
+                "application_name": "kavya",
                 "tcp_keepalives_idle": 300,
                 "tcp_keepalives_interval": 60,
                 "tcp_keepalives_count": 5
@@ -185,8 +190,7 @@ class PostgreSQLConnection(DatabaseConnection):
         return self.cursor
 
     def begin_transaction(self):
-        """Start a transaction with REPEATABLE READ isolation for consistent token updates"""
-        self.get_cursor().execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        """Start a transaction"""
         self.get_cursor().execute("BEGIN")
 
     def commit(self):
@@ -247,12 +251,10 @@ class Database:
         },
         'postgresql': {
             'check_balance': """
-                INSERT INTO account_totals (account_id)
-                VALUES ({placeholder})
-                ON CONFLICT(account_id) DO UPDATE SET
-                    token_in = account_totals.token_in
-                RETURNING token_in, token_out, transactions
-                FOR UPDATE  -- Add explicit row lock
+                SELECT token_in, token_out, transactions 
+                FROM account_totals 
+                WHERE account_id = {placeholder}
+                FOR UPDATE
             """,
             'update_balance': """
                 UPDATE account_totals SET
@@ -273,7 +275,6 @@ class Database:
                     AND token_in >= {placeholder} 
                     AND token_out >= {placeholder}
                 RETURNING *
-                FOR UPDATE SKIP LOCKED  -- Skip locked rows instead of waiting
             """,
             'update_daily': """
                 INSERT INTO account_daily_summary 
@@ -354,15 +355,31 @@ class Database:
         
         # Test that we can actually write to the database
         try:
-            cursor = connection.get_cursor()
-            # Try to insert and immediately delete a test record
-            cursor.execute(
-                self._get_sql('check_balance'),
-                (-999,)  # Use a special test ID that won't conflict with real accounts
-            )
-            if self.env == "dev":
-                connection.commit()
-            logging.info("Successfully verified database write access")
+            with self.get_transaction() as connection:
+                cursor = connection.get_cursor()
+                # Try to insert a test record
+                if self.db_type == "sqlite":
+                    cursor.execute("""
+                        INSERT INTO account_totals (account_id)
+                        VALUES (?)
+                        ON CONFLICT(account_id) DO UPDATE SET
+                            token_in = token_in
+                        RETURNING token_in, token_out, transactions
+                    """, (-999,))  # Use a special test ID that won't conflict with real accounts
+                else:
+                    cursor.execute("""
+                        INSERT INTO account_totals (account_id, token_in, token_out, transactions)
+                        VALUES (%s, 3000000, 1000000, 0)
+                        ON CONFLICT (account_id) DO UPDATE SET
+                            token_in = account_totals.token_in
+                        RETURNING token_in, token_out, transactions
+                    """, (-999,))
+                
+                result = cursor.fetchone()
+                if not result:
+                    raise Exception("Failed to verify database write access - no result returned")
+                    
+                logging.info("Successfully verified database write access")
         except Exception as e:
             logging.error("Failed to verify database write access")
             raise Exception(f"Database initialization failed - could not write to database: {str(e)}")
