@@ -15,6 +15,7 @@ import signal
 import logging
 import fastapi
 import uvicorn
+import litellm
 
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
@@ -221,7 +222,57 @@ async def health_check():
 # ------------------------------------------------------------------------------
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: routellm.models.ChatCompletionRequest, user_id: int = Depends(JWTBearer())):
+async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id: int = Depends(JWTBearer())):
+    # Validate and translate Kavya models before creating the ChatCompletionRequest
+    if "model" not in request_data:
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": "Missing required field: model",
+                    "type": "invalid_request_error",
+                    "param": "model",
+                    "code": "missing_field"
+                }
+            },
+            status_code=400
+        )
+
+    # First validate if it's a Kavya request
+    try:
+        kavya_request = routellm.models.KavyaRequest(**request_data)
+        # If validation passes, translate the model
+        request_data["model"] = app.controllers.default.model_translations[kavya_request.model]
+    except Exception as e:
+        # Only return Kavya validation error if it's a Kavya model
+        if "model" in request_data and isinstance(request_data["model"], str) and request_data["model"].startswith("kavya-"):
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": f"Invalid Kavya model. Must be one of: {', '.join(app.controllers.default.model_translations.keys())}",
+                        "type": "invalid_request_error",
+                        "param": "model",
+                        "code": "invalid_model"
+                    }
+                },
+                status_code=400
+            )
+
+    # Now create the ChatCompletionRequest with the translated model
+    try:
+        request = routellm.models.ChatCompletionRequest(**request_data)
+    except Exception as e:
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "invalid_request_error",
+                    "param": None,
+                    "code": "validation_error"
+                }
+            },
+            status_code=400
+        )
+
     logging.info(f"Received request: {request}")
     
     # Ensure user_id is set in the request
@@ -436,7 +487,9 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
 # MAIN : APPLICATION STARTUP
 # ------------------------------------------------------------------------------
 
-# if __name__ == "__main__":
+# Configure litellm to drop unsupported parameters
+litellm.drop_params = True
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
