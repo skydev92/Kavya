@@ -4,6 +4,25 @@ from datetime import datetime
 import logging
 import threading
 from contextlib import contextmanager
+import google.cloud.logging
+from google.cloud.logging.handlers import CloudLoggingHandler
+from google.cloud.logging_v2.handlers import setup_logging
+
+# Configure logging to work with Google Cloud Logging in production
+if os.getenv("ENVIRONMENT") != "dev":
+    try:
+        # Setup Google Cloud Logging
+        client = google.cloud.logging.Client()
+        handler = CloudLoggingHandler(client)
+        setup_logging(handler)
+        logging.getLogger().setLevel(logging.INFO)
+    except Exception as e:
+        print(f"Failed to setup Google Cloud Logging: {str(e)}")
+        # Fall back to basic logging but still run
+        logging.basicConfig(level=logging.INFO)
+else:
+    # In development, use basic logging
+    logging.basicConfig(level=logging.INFO)
 
 # Only import SQLite in development
 sqlite3 = None
@@ -192,8 +211,22 @@ class Database:
 
     def initialize_database(self):
         """Initialize database connection based on environment"""
-        # Just test that we can create a connection
-        self._get_connection()
+        connection = self._get_connection()
+        
+        # Test that we can actually write to the database
+        try:
+            cursor = connection.cursor()
+            # Try to insert and immediately delete a test record
+            cursor.execute(
+                self._get_sql('check_balance'),
+                (-999,)  # Use a special test ID that won't conflict with real accounts
+            )
+            if self.env == "dev":
+                connection.commit()
+            logging.info("Successfully verified database write access")
+        except Exception as e:
+            logging.error("Failed to verify database write access")
+            raise Exception(f"Database initialization failed - could not write to database: {str(e)}")
 
     def _ensure_tables_exist(self, connection):
         """Ensure necessary tables exist without dropping existing ones"""
