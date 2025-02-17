@@ -238,43 +238,44 @@ class Database:
     SQL_TEMPLATES = {
         'sqlite': {
             'upsert_account': """
-                INSERT INTO account_totals (account_id, token_in, token_out, transactions)
-                VALUES ({placeholder}, 3000000, 1000000, 0)
+                INSERT INTO account_totals (account_id)
+                VALUES (?)
                 ON CONFLICT(account_id) DO UPDATE SET
-                    token_in = token_in,
-                    token_out = token_out,
-                    transactions = transactions
+                    account_id = account_totals.account_id
                 RETURNING token_in, token_out, transactions
             """,
             'update_balance': """
                 UPDATE account_totals SET
-                    token_in = token_in - {placeholder},
-                    token_out = token_out - {placeholder},
+                    token_in = token_in - ?,
+                    token_out = token_out - ?,
                     transactions = transactions + 1
-                WHERE account_id = {placeholder}
-                    AND token_in >= {placeholder} 
-                    AND token_out >= {placeholder}
+                WHERE account_id = ?
+                    AND token_in >= ? 
+                    AND token_out >= ?
                 RETURNING token_in, token_out, transactions
             """,
             'update_daily': """
                 INSERT INTO account_daily_summary 
-                    (account_id, date, transaction_count, token_in, token_out, last_updated)
-                VALUES ({placeholder}, {placeholder}, 1, {placeholder}, {placeholder}, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+                    (account_id, date, token_in, token_out)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(account_id, date) DO UPDATE SET
-                    transaction_count = transaction_count + 1,
+                    transaction_count = account_daily_summary.transaction_count + 1,
                     token_in = token_in + excluded.token_in,
                     token_out = token_out + excluded.token_out,
                     last_updated = strftime('%Y-%m-%d %H:%M:%f', 'now')
+            """,
+            'check_balance': """
+                SELECT token_in, token_out, transactions
+                FROM account_totals
+                WHERE account_id = ?;
             """
         },
         'postgresql': {
             'upsert_account': """
-                INSERT INTO account_totals (account_id, token_in, token_out, transactions)
-                VALUES (%s, 3000000, 1000000, 0)
+                INSERT INTO account_totals (account_id)
+                VALUES (%s)
                 ON CONFLICT (account_id) DO UPDATE SET
-                    token_in = account_totals.token_in,
-                    token_out = account_totals.token_out,
-                    transactions = account_totals.transactions
+                    account_id = account_totals.account_id
                 RETURNING token_in, token_out, transactions
             """,
             'update_balance': """
@@ -289,13 +290,18 @@ class Database:
             """,
             'update_daily': """
                 INSERT INTO account_daily_summary 
-                    (account_id, date, transaction_count, token_in, token_out, last_updated)
-                VALUES (%s, %s::date, 1, %s, %s, CURRENT_TIMESTAMP)
+                    (account_id, date, token_in, token_out)
+                VALUES (%s, %s::date, %s, %s)
                 ON CONFLICT(account_id, date) DO UPDATE SET
                     transaction_count = account_daily_summary.transaction_count + 1,
                     token_in = account_daily_summary.token_in + EXCLUDED.token_in,
                     token_out = account_daily_summary.token_out + EXCLUDED.token_out,
                     last_updated = CURRENT_TIMESTAMP
+            """,
+            'check_balance': """
+                SELECT token_in, token_out, transactions
+                FROM account_totals
+                WHERE account_id = %s;
             """
         }
     }
@@ -390,61 +396,38 @@ class Database:
         cursor = connection.get_cursor()
         
         # Create account_totals table if it doesn't exist
-        if self.db_type == "sqlite":
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS account_totals (
-                account_id INTEGER PRIMARY KEY,
-                token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000,
-                token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000,
-                transactions INTEGER NOT NULL DEFAULT 0,
-                CHECK (token_in >= 0),
-                CHECK (token_out >= 0)
-            )
-            """)
-        else:
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS account_totals (
-                account_id INTEGER PRIMARY KEY,
-                token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000,
-                token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000,
-                transactions INTEGER NOT NULL DEFAULT 0,
-                CHECK (token_in >= 0),
-                CHECK (token_out >= 0)
-            )
-            """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS account_totals (
+            account_id INTEGER PRIMARY KEY,
+            token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_in >= 0),
+            token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_out >= 0),
+            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0)
+        )
+        """)
 
         # Create account_daily_summary table if it doesn't exist
         if self.db_type == "sqlite":
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS account_daily_summary (
-                account_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
                 date TEXT NOT NULL,
-                transaction_count INTEGER NOT NULL DEFAULT 0,
-                token_in NUMERIC(18,6) NOT NULL DEFAULT 0,
-                token_out NUMERIC(18,6) NOT NULL DEFAULT 0,
+                transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
+                token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
+                token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
                 last_updated TEXT DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (account_id, date),
-                FOREIGN KEY (account_id) REFERENCES account_totals(account_id),
-                CHECK (token_in >= 0),
-                CHECK (token_out >= 0),
-                CHECK (transaction_count >= 0)
+                PRIMARY KEY (account_id, date)
             )
             """)
         else:
-            # PostgreSQL version
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS account_daily_summary (
-                account_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
                 date DATE NOT NULL,
-                transaction_count INTEGER NOT NULL DEFAULT 0,
-                token_in NUMERIC(18,6) NOT NULL DEFAULT 0,
-                token_out NUMERIC(18,6) NOT NULL DEFAULT 0,
+                transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
+                token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
+                token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
                 last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (account_id, date),
-                FOREIGN KEY (account_id) REFERENCES account_totals(account_id),
-                CHECK (token_in >= 0),
-                CHECK (token_out >= 0),
-                CHECK (transaction_count >= 0)
+                PRIMARY KEY (account_id, date)
             )
             """)
         
@@ -497,14 +480,27 @@ class Database:
                     today = datetime.now().strftime('%Y-%m-%d')
 
                     # First update account_totals - always update this table first to maintain consistent lock order
-                    cursor.execute(
-                        self._get_sql('update_balance'),
-                        (
-                            prompt_tokens, completion_tokens,
-                            account_id,
-                            prompt_tokens, completion_tokens
+                    if self.db_type == "sqlite":
+                        cursor.execute(
+                            self._get_sql('update_balance'),
+                            (
+                                prompt_tokens, completion_tokens,
+                                account_id,
+                                prompt_tokens, completion_tokens
+                            )
                         )
-                    )
+                    else:
+                        # PostgreSQL needs more parameters due to the CASE statements
+                        cursor.execute(
+                            self._get_sql('update_balance'),
+                            (
+                                prompt_tokens, prompt_tokens,  # For token_in CASE
+                                completion_tokens, completion_tokens,  # For token_out CASE
+                                prompt_tokens, completion_tokens,  # For transactions CASE
+                                account_id,  # For WHERE clause
+                                prompt_tokens, completion_tokens  # For WHERE clause checks
+                            )
+                        )
                     
                     # Check if update was successful
                     if self.db_type == "sqlite":
@@ -652,26 +648,27 @@ class Database:
             raise
 
     def check_sufficient_balance(self, account_id: int, prompt_tokens: int, completion_tokens: int) -> tuple[bool, dict]:
-        """Check if account has sufficient balance for the requested operation."""
+        """Check if account has sufficient balance for the requested operation without updating the balance."""
         try:
             with self.get_transaction() as connection:
                 cursor = connection.get_cursor()
                 
-                # Get current balance or default values if account doesn't exist
+                # First ensure account exists and get current balance
                 cursor.execute(
-                    self._get_sql('check_balance'),
-                    (account_id, account_id, account_id)  # Pass account_id three times for %s placeholders
+                    self._get_sql('upsert_account'),
+                    (account_id,)
                 )
                 result = cursor.fetchone()
                 if not result:
-                    raise RuntimeError("Failed to get balance after insert")
-
+                    raise RuntimeError("Failed to get or create account")
+                
                 current_balance = {
                     "token_in": float(result[0]),
                     "token_out": float(result[1]),
                     "transactions": int(result[2])
                 }
                 
+                # Check if balance is sufficient
                 has_sufficient_balance = (
                     current_balance["token_in"] >= prompt_tokens and 
                     current_balance["token_out"] >= completion_tokens
@@ -681,12 +678,6 @@ class Database:
                 
         except Exception as e:
             logging.error(f"Error checking balance: {str(e)}")
-            # Ensure any failed transaction is properly cleaned up
-            if hasattr(self, '_local') and hasattr(self._local, 'db'):
-                try:
-                    self._local.db.rollback()
-                except:
-                    pass  # Best effort rollback
             raise
 
     def initialize_test_accounts(self, account_ids: list[int]):
@@ -782,7 +773,7 @@ class Database:
         connection = self._get_connection()
         cursor = connection.get_cursor()
         cursor.execute("""
-        SELECT date, transaction_count, token_in, token_out, last_updated
+        SELECT date, transaction_count, token_in, token_out 
         FROM account_daily_summary 
         WHERE account_id = ? AND date BETWEEN ? AND ?
         ORDER BY date
@@ -804,6 +795,11 @@ class Database:
         """Update token usage and return a TokenUsageResponse model"""
         from routellm.models import TokenUsageResponse, TokenUsageUpdate, AccountTokenBalance, InsufficientTokensError
         
+        logging.info(f"=== DATABASE UPDATE START ===")
+        logging.info(f"Account ID: {account_id}")
+        logging.info(f"Prompt Tokens: {prompt_tokens}")
+        logging.info(f"Completion Tokens: {completion_tokens}")
+        
         try:
             with self.get_transaction() as connection:
                 cursor = connection.get_cursor()
@@ -822,6 +818,7 @@ class Database:
                     "token_out": float(result[1]),
                     "transactions": int(result[2])
                 }
+                logging.info(f"Current Balance: {current_balance}")
                 
                 # Try to update the balance
                 cursor.execute(
@@ -836,6 +833,7 @@ class Database:
                 result = cursor.fetchone()
                 if not result:
                     # If update failed, it means insufficient balance
+                    logging.error(f"Insufficient balance update failed. Current: {current_balance}, Required: in={prompt_tokens}, out={completion_tokens}")
                     raise InsufficientTokensError(
                         message="Insufficient token balance",
                         current_balance=AccountTokenBalance(
@@ -851,12 +849,22 @@ class Database:
                         )
                     )
                 
-                # Update was successful, update daily summary
+                new_balance = {
+                    "token_in": float(result[0]),
+                    "token_out": float(result[1]),
+                    "transactions": int(result[2])
+                }
+                logging.info(f"New Balance After Update: {new_balance}")
+                
+                # Update daily summary
                 today = datetime.now().strftime('%Y-%m-%d')
                 cursor.execute(
                     self._get_sql('update_daily'),
                     (account_id, today, prompt_tokens, completion_tokens)
                 )
+                
+                logging.info("Daily summary updated successfully")
+                logging.info("=== DATABASE UPDATE END ===")
                 
                 # Return success response with new balance
                 return TokenUsageResponse(

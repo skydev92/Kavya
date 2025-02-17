@@ -234,41 +234,41 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
     estimated_prompt_tokens = len(messages_content.split()) * 1.5  # Rough estimate
     estimated_completion_tokens = 500  # Conservative estimate for completion
     
-    # Update token usage and check balance in one operation
+    # Check balance without updating
     try:
-        usage_response = app.db.update_usage_with_response(
+        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens)
         )
-    except InsufficientTokensError as e:
-        error_msg = (
-            f"Insufficient token balance. Current balance: "
-            f"{e.current_balance.token_in} input tokens, "
-            f"{e.current_balance.token_out} output tokens. "
-            f"Required: {e.required_tokens.prompt_tokens} input tokens, "
-            f"{e.required_tokens.completion_tokens} output tokens."
-        )
-        logging.error(f"Account {user_id}: {error_msg}")
-        return JSONResponse(
-            content={
-                "error": {
-                    "message": error_msg,
-                    "type": "insufficient_balance",
-                    "param": None,
-                    "code": "insufficient_tokens"
+        if not has_sufficient_balance:
+            error_msg = (
+                f"Insufficient token balance. Current balance: "
+                f"{current_balance['token_in']} input tokens, "
+                f"{current_balance['token_out']} output tokens. "
+                f"Required: {estimated_prompt_tokens} input tokens, "
+                f"{estimated_completion_tokens} output tokens."
+            )
+            logging.error(f"Account {user_id}: {error_msg}")
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": error_msg,
+                        "type": "insufficient_balance",
+                        "param": None,
+                        "code": "insufficient_tokens"
+                    }
+                },
+                status_code=402,  # Payment Required
+                headers={
+                    "X-Current-Balance-In": str(current_balance['token_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Required-Tokens-In": str(estimated_prompt_tokens),
+                    "X-Required-Tokens-Out": str(estimated_completion_tokens)
                 }
-            },
-            status_code=402,  # Payment Required
-            headers={
-                "X-Current-Balance-In": str(e.current_balance.token_in),
-                "X-Current-Balance-Out": str(e.current_balance.token_out),
-                "X-Required-Tokens-In": str(e.required_tokens.prompt_tokens),
-                "X-Required-Tokens-Out": str(e.required_tokens.completion_tokens)
-            }
-        )
+            )
     except Exception as e:
-        error_msg = f"Error updating token usage: {str(e)}"
+        error_msg = f"Error checking token balance: {str(e)}"
         logging.error(error_msg)
         return JSONResponse(
             content={
@@ -276,7 +276,7 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
                     "message": error_msg,
                     "type": "internal_error",
                     "param": None,
-                    "code": "token_update_failed"
+                    "code": "balance_check_failed"
                 }
             },
             status_code=500
@@ -290,23 +290,22 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
         controller_name = await app.controllers.basic_routing(request, cost_tracker)
         logging.debug("controller_name: " + controller_name)
         
-        # After routing, check if we still have sufficient balance for remaining tokens
+        # After routing, check remaining balance without updating
         routing_cost = cost_tracker.get_total()
         remaining_prompt_tokens = estimated_prompt_tokens - routing_cost
         
-        try:
-            usage_response = app.db.update_usage_with_response(
-                account_id=user_id,
-                prompt_tokens=int(remaining_prompt_tokens),
-                completion_tokens=int(estimated_completion_tokens)
-            )
-        except InsufficientTokensError as e:
+        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
+            account_id=user_id,
+            prompt_tokens=int(remaining_prompt_tokens),
+            completion_tokens=int(estimated_completion_tokens)
+        )
+        if not has_sufficient_balance:
             error_msg = (
                 f"Insufficient remaining token balance after routing. Current balance: "
-                f"{e.current_balance.token_in} input tokens, "
-                f"{e.current_balance.token_out} output tokens. "
-                f"Required: {e.required_tokens.prompt_tokens} input tokens, "
-                f"{e.required_tokens.completion_tokens} output tokens."
+                f"{current_balance['token_in']} input tokens, "
+                f"{current_balance['token_out']} output tokens. "
+                f"Required: {remaining_prompt_tokens} input tokens, "
+                f"{estimated_completion_tokens} output tokens."
             )
             logging.error(f"Account {user_id}: {error_msg}")
             return JSONResponse(
@@ -320,10 +319,10 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
                 },
                 status_code=402,
                 headers={
-                    "X-Current-Balance-In": str(e.current_balance.token_in),
-                    "X-Current-Balance-Out": str(e.current_balance.token_out),
-                    "X-Required-Tokens-In": str(e.required_tokens.prompt_tokens),
-                    "X-Required-Tokens-Out": str(e.required_tokens.completion_tokens)
+                    "X-Current-Balance-In": str(current_balance['token_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Required-Tokens-In": str(remaining_prompt_tokens),
+                    "X-Required-Tokens-Out": str(estimated_completion_tokens)
                 }
             )
         

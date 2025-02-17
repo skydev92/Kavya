@@ -1057,6 +1057,15 @@ def custom_cost_usage_callback(
                 f"Completion Tokens: {usage.completion_tokens}, "
                 f"Total Tokens: {usage.total_tokens}"
             )
+            logging.info("=== STREAMING TOKEN UPDATE ===")
+            logging.info(f"User ID: {user}")
+            logging.info(f"Model: {kwargs.get('model', 'unknown')}")
+            logging.info(f"Stream: {is_streaming}")
+            logging.info(f"Prompt Preview: {prompt_preview}")
+            logging.info(usage_info)
+            logging.info(f"Cost: ${cost}")
+            logging.info("=== END TOKEN UPDATE ===")
+            
             logging.info(format_usage_log(  # Using info level for usage logs
                 prompt_preview=prompt_preview, 
                 usage_info=usage_info, 
@@ -1073,6 +1082,15 @@ def custom_cost_usage_callback(
             f"Completion Tokens: {usage.completion_tokens}, "
             f"Total Tokens: {usage.total_tokens}"
         )
+        logging.info("=== NON-STREAMING TOKEN UPDATE ===")
+        logging.info(f"User ID: {user}")
+        logging.info(f"Model: {kwargs.get('model', 'unknown')}")
+        logging.info(f"Stream: {is_streaming}")
+        logging.info(f"Prompt Preview: {prompt_preview}")
+        logging.info(usage_info)
+        logging.info(f"Cost: ${cost}")
+        logging.info("=== END TOKEN UPDATE ===")
+        
         logging.info(format_usage_log(  # Using info level for usage logs
             prompt_preview=prompt_preview, 
             usage_info=usage_info, 
