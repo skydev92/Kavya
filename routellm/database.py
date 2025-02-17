@@ -135,7 +135,12 @@ class Database:
                 if google_cloud_sql is None:
                     raise ImportError("Google Cloud SQL dependencies required for production environment")
                 
-                instance_connection_name = os.getenv("CLOUD_SQL_CONNECTION_NAME")
+                db_socket_dir = os.getenv("DB_SOCKET_DIR", "/cloudsql")
+                instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME")
+                
+                if not instance_connection_name:
+                    raise ValueError("INSTANCE_CONNECTION_NAME environment variable is required in production")
+                
                 db_user = os.getenv("DB_USER", "kavya")
                 db_pass = os.getenv("DB_PASS", "")
                 db_name = os.getenv("DB_NAME", "kavya")
