@@ -25,4 +25,3 @@ transformers
 datasets
 litellm
 json5>=0.9.14
-google-cloud-logging>=3.9.0

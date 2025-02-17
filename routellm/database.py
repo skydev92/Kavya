@@ -6,71 +6,26 @@ import threading
 from contextlib import contextmanager
 import time
 
-# First check environment and required dependencies
+# First check environment
 ENVIRONMENT = os.getenv("ENVIRONMENT")
-GOOGLE_CLOUD_SQL_AVAILABLE = False  # Track if dependencies are available
 
+# Configure basic logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# In production, we require PostgreSQL dependencies
 if ENVIRONMENT != "dev":
     try:
-        # Check all required production dependencies first
         from google.cloud.sql.connector import Connector, IPTypes
         import pg8000
         import sqlalchemy
-        import google.cloud.logging
-        from google.cloud.logging.handlers import CloudLoggingHandler, CloudLoggingFilter
-        from google.cloud.logging_v2.handlers import setup_logging
-        GOOGLE_CLOUD_SQL_AVAILABLE = True  # Mark dependencies as available
-
-        # Set up Google Cloud Logging with proper severity mapping
-        client = google.cloud.logging.Client()
-        
-        # Create handler with project ID for proper resource tracking
-        handler = CloudLoggingHandler(
-            client,
-            name="python",  # This will show up as the logger name in Cloud Logging
-        )
-        
-        # Add Cloud Logging filter to properly set project and add labels
-        handler.addFilter(CloudLoggingFilter(
-            project=client.project,
-            default_labels={
-                "environment": ENVIRONMENT,
-                "application": "kavya",
-                "service": "database"
-            }
-        ))
-        
-        # Configure the handler to use the correct severity mapping
-        handler.setFormatter(logging.Formatter('%(message)s'))
-        
-        # Remove any existing handlers to avoid duplicate logging
-        logging.getLogger().handlers = []
-        
-        # Add our configured handler
-        logging.getLogger().addHandler(handler)
-        
-        # Set the logging level to INFO
-        logging.getLogger().setLevel(logging.INFO)
-        
-        # Test the logging setup with different severity levels
-        logging.info("Successfully configured Google Cloud Logging with severity mapping")
-        
     except ImportError as e:
-        # If any dependency is missing, log it clearly and exit
         missing_dep = str(e).split("'")[1] if "'" in str(e) else str(e)
-        error_msg = f"Missing required production dependency: {missing_dep}"
-        print(error_msg)  # Print because logging might not be set up
+        error_msg = f"CRITICAL: Production environment requires PostgreSQL dependencies but {missing_dep} is missing"
+        logging.critical(error_msg)
         raise ImportError(error_msg)
-    except Exception as e:
-        # For other errors (like Cloud Logging setup), fall back to basic logging
-        print(f"Failed to setup Google Cloud Logging: {str(e)}")
-        logging.basicConfig(level=logging.INFO)
-else:
-    # Development mode - use basic logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
 
 class DatabaseConnection:
     def __init__(self):
@@ -357,40 +312,30 @@ class Database:
         """Get thread-local connection with proper thread safety settings"""
         if not hasattr(self._local, 'db'):
             if self.env == "dev":
-                if sqlite3 is None:
-                    raise ImportError("SQLite3 required for development environment")
                 logging.info("Creating SQLite connection for development")
                 db_path = os.path.join(os.path.dirname(__file__), "kavya.db")
                 self._local.db = SQLiteConnection(db_path)
             else:
-                if not GOOGLE_CLOUD_SQL_AVAILABLE:
-                    raise ImportError("Google Cloud SQL dependencies required for production environment")
+                # Production environment - verify all required environment variables
+                required_vars = {
+                    "DB_SOCKET_DIR": os.getenv("DB_SOCKET_DIR"),
+                    "INSTANCE_CONNECTION_NAME": os.getenv("INSTANCE_CONNECTION_NAME"),
+                    "DB_USER": os.getenv("DB_USER"),
+                    "DB_PASS": os.getenv("DB_PASS"),
+                    "DB_NAME": os.getenv("DB_NAME")
+                }
                 
-                db_socket_dir = os.getenv("DB_SOCKET_DIR")
-                if not db_socket_dir:
-                    raise ValueError("DB_SOCKET_DIR environment variable is required in production")
-                    
-                instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME")
-                if not instance_connection_name:
-                    raise ValueError("INSTANCE_CONNECTION_NAME environment variable is required in production")
-                
-                db_user = os.getenv("DB_USER")
-                if not db_user:
-                    raise ValueError("DB_USER environment variable is required in production")
-                    
-                db_pass = os.getenv("DB_PASS")
-                if not db_pass:
-                    raise ValueError("DB_PASS environment variable is required in production")
-                    
-                db_name = os.getenv("DB_NAME")
-                if not db_name:
-                    raise ValueError("DB_NAME environment variable is required in production")
+                missing_vars = [k for k, v in required_vars.items() if not v]
+                if missing_vars:
+                    error_msg = f"CRITICAL: Missing required environment variables for production: {', '.join(missing_vars)}"
+                    logging.critical(error_msg)
+                    raise ValueError(error_msg)
 
                 self._local.db = PostgreSQLConnection(
-                    instance_connection_name=instance_connection_name,
-                    db_user=db_user,
-                    db_pass=db_pass,
-                    db_name=db_name,
+                    instance_connection_name=required_vars["INSTANCE_CONNECTION_NAME"],
+                    db_user=required_vars["DB_USER"],
+                    db_pass=required_vars["DB_PASS"],
+                    db_name=required_vars["DB_NAME"],
                     private_ip=bool(os.getenv("PRIVATE_IP"))
                 )
 
@@ -399,7 +344,9 @@ class Database:
                 # Initialize tables if they don't exist
                 self._ensure_tables_exist(self._local.db)
             except Exception as e:
-                raise Exception(f"Failed to initialize database: {str(e)}")
+                error_msg = f"CRITICAL: Failed to initialize database connection: {str(e)}"
+                logging.critical(error_msg)
+                raise RuntimeError(error_msg)
 
         return self._local.db
 
