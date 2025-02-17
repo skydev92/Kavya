@@ -4,37 +4,34 @@ from datetime import datetime
 import logging
 import threading
 from contextlib import contextmanager
-import google.cloud.logging
-from google.cloud.logging.handlers import CloudLoggingHandler
-from google.cloud.logging_v2.handlers import setup_logging
 
-# Configure logging to work with Google Cloud Logging in production
-if os.getenv("ENVIRONMENT") != "dev":
-    try:
-        # Setup Google Cloud Logging
-        client = google.cloud.logging.Client()
-        handler = CloudLoggingHandler(client)
-        setup_logging(handler)
-        logging.getLogger().setLevel(logging.INFO)
-    except Exception as e:
-        print(f"Failed to setup Google Cloud Logging: {str(e)}")
-        # Fall back to basic logging but still run
-        logging.basicConfig(level=logging.INFO)
-else:
-    # In development, use basic logging
-    logging.basicConfig(level=logging.INFO)
+# First check environment and required dependencies
+ENVIRONMENT = os.getenv("ENVIRONMENT")
+GOOGLE_CLOUD_SQL_AVAILABLE = False  # Track if dependencies are available
 
-# Only import SQLite in development
-sqlite3 = None
-if os.getenv("ENVIRONMENT") == "dev":
-    import sqlite3
-else:
+if ENVIRONMENT != "dev":
     try:
+        # Check all required production dependencies first
         from google.cloud.sql.connector import Connector, IPTypes
         import pg8000
         import sqlalchemy
-    except ImportError:
-        raise ImportError("Google Cloud SQL dependencies required for production environment")
+        import google.cloud.logging
+        from google.cloud.logging.handlers import CloudLoggingHandler
+        from google.cloud.logging_v2.handlers import setup_logging
+        GOOGLE_CLOUD_SQL_AVAILABLE = True  # Mark dependencies as available
+    except ImportError as e:
+        # If any dependency is missing, log it clearly and exit
+        missing_dep = str(e).split("'")[1] if "'" in str(e) else str(e)
+        error_msg = f"Missing required production dependency: {missing_dep}"
+        print(error_msg)  # Print because logging might not be set up
+        raise ImportError(error_msg)
+    except Exception as e:
+        # For other errors (like Cloud Logging setup), fall back to basic logging
+        print(f"Failed to setup Google Cloud Logging: {str(e)}")
+        logging.basicConfig(level=logging.INFO)
+else:
+    # Development mode - use basic logging
+    logging.basicConfig(level=logging.INFO)
 
 class Database:
     # SQL Templates that work for both SQLite and PostgreSQL
@@ -120,7 +117,7 @@ class Database:
     }
 
     def __init__(self):
-        self.env = os.getenv("ENVIRONMENT")
+        self.env = ENVIRONMENT
         self._local = threading.local()
         self.db_type = "sqlite" if self.env == "dev" else "postgresql"
         self.param_style = "?" if self.env == "dev" else "%s"
@@ -157,7 +154,7 @@ class Database:
                 except Exception as e:
                     raise Exception(f"Failed to initialize SQLite database: {str(e)}")
             else:
-                if not hasattr(self, 'google_cloud_sql'):
+                if not GOOGLE_CLOUD_SQL_AVAILABLE:
                     raise ImportError("Google Cloud SQL dependencies required for production environment")
                 
                 db_socket_dir = os.getenv("DB_SOCKET_DIR", "/cloudsql")
