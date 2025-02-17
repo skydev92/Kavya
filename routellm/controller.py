@@ -997,7 +997,7 @@ def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], com
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
                 
-            app.db.update_usage(
+            app.db.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens
