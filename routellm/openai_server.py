@@ -81,7 +81,7 @@ async def lifespan(app: fastapi.FastAPI):
         try:
             # Get a test connection to verify database is working
             test_conn = app.db._get_connection()
-            cursor = test_conn.cursor()
+            cursor = test_conn.get_cursor()
             cursor.execute("SELECT 1")
             cursor.fetchone()
             yield
@@ -490,7 +490,7 @@ if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
     uvicorn.run(
         "routellm.openai_server:app",
-        port=8080,
+        port=args.port,
         host="0.0.0.0",
         workers=args.workers,
     )
