@@ -40,3 +40,12 @@ exclude = ["assets*", "benchmarks*"]
 
 [tool.wheel]
 exclude = ["assets*", "benchmarks*"]
+
+[tool.setuptools.package-data]
+"routellm" = ["docs/litellm/**/*", "docs/pydantic/**/*", "docs/google-cloud-sql/**/*", "docs/sqlite/**/*"]
+
+[tool.setuptools]
+script-files = ["scripts/download_docs.py"]
+
+[project.scripts]
+download-litellm-docs = "scripts.download_docs:download_all_docs"

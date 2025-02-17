@@ -1,0 +1,8 @@
+If ENVIRONMENT=dev, then use the dev config, with SQLITE3
+If ENVIRONMENT=prod, then use the prod config, with Google Cloud SQL
+All SQL queries should be compatible with SQLITE3 as well as Google Cloud SQL
+Follow refactoring best practices, especially DRY, Single Responsibility, Singleton, and YAGNI
+Prefer hard failures over silent failures, don't set defaults except in exceptional cases where it makes a lot of sense.
+Database update failures should always stop the program because otherwise users are using our tokens for free.
+You can always restart the server without asking for permission.
+Use Pydantic models to validate data.
