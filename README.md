@@ -90,6 +90,54 @@
    ```
 
    **Production Mode**
+   
+   Without Docker (Direct Python):
+   ```bash
+   # Load production environment variables and start server
+   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server \
+     --verbose \                    # Enable verbose logging
+     --routers mf \                 # Use the 'mf' router
+     --strong-model gpt-4o \        # Set the strong model
+     --weak-model gpt-4o-mini \     # Set the weak model
+     --config config.yaml \         # Use config.yaml for router settings
+     --port 8089                    # Listen on port 8089
+
+   # Command breakdown:
+   # 1. export $(grep -v '^#' .env.prod | xargs)
+   #    - Loads all non-commented variables from .env.prod
+   #    - Sets them as environment variables
+   #
+   # 2. python -m routellm.openai_server
+   #    - Starts the OpenAI-compatible server
+   #
+   # 3. --verbose
+   #    - Enables detailed logging
+   #
+   # 4. --routers mf
+   #    - Uses the Matrix Factorization router
+   #    - Helps route requests to appropriate models
+   #
+   # 5. --strong-model gpt-4o
+   #    - Sets the powerful model for complex tasks
+   #
+   # 6. --weak-model gpt-4o-mini
+   #    - Sets the faster model for simpler tasks
+   #
+   # 7. --config config.yaml
+   #    - Provides router-specific configuration
+   #
+   # 8. --port 8089
+   #    - Sets the server port
+   #
+   # Required environment variables in .env.prod:
+   # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
+   # - DB_USER=postgres
+   # - DB_PASS=<database-password>
+   # - DB_NAME=postgres
+   # - JWT_PUBLIC_KEY_B64=<base64-encoded-public-key>
+   ```
+
+   With Docker:
    ```bash
    # Run without source mounting, using Google Cloud SQL
    docker run -d \
