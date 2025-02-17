@@ -1,0 +1,14 @@
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.pyc
+.git/
+.env
+.env.*
+.pytest_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+*.log 

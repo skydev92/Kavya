@@ -490,7 +490,7 @@ if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
     uvicorn.run(
         "routellm.openai_server:app",
-        port=8089,
+        port=8080,
         host="0.0.0.0",
         workers=args.workers,
     )
