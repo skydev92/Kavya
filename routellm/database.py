@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 import threading
 from contextlib import contextmanager
+import time
 
 # First check environment and required dependencies
 ENVIRONMENT = os.getenv("ENVIRONMENT")
@@ -164,10 +165,16 @@ class PostgreSQLConnection(DatabaseConnection):
         self.engine = sqlalchemy.create_engine(
             "postgresql+pg8000://",
             creator=getconn,
-            pool_size=5,
-            max_overflow=2,
+            pool_size=10,  # Increased from 5
+            max_overflow=5,  # Increased from 2
             pool_timeout=30,
             pool_recycle=1800,
+            connect_args={
+                "application_name": "kavya",  # For better monitoring
+                "tcp_keepalives_idle": 300,
+                "tcp_keepalives_interval": 60,
+                "tcp_keepalives_count": 5
+            }
         )
         self.connection = self.engine.raw_connection()
         return self.connection
@@ -178,6 +185,8 @@ class PostgreSQLConnection(DatabaseConnection):
         return self.cursor
 
     def begin_transaction(self):
+        """Start a transaction with REPEATABLE READ isolation for consistent token updates"""
+        self.get_cursor().execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         self.get_cursor().execute("BEGIN")
 
     def commit(self):
@@ -243,6 +252,7 @@ class Database:
                 ON CONFLICT(account_id) DO UPDATE SET
                     token_in = account_totals.token_in
                 RETURNING token_in, token_out, transactions
+                FOR UPDATE  -- Add explicit row lock
             """,
             'update_balance': """
                 UPDATE account_totals SET
@@ -263,6 +273,7 @@ class Database:
                     AND token_in >= {placeholder} 
                     AND token_out >= {placeholder}
                 RETURNING *
+                FOR UPDATE SKIP LOCKED  -- Skip locked rows instead of waiting
             """,
             'update_daily': """
                 INSERT INTO account_daily_summary 
@@ -273,6 +284,8 @@ class Database:
                     token_in = account_daily_summary.token_in + EXCLUDED.token_in,
                     token_out = account_daily_summary.token_out + EXCLUDED.token_out,
                     last_updated = CURRENT_TIMESTAMP
+                WHERE account_daily_summary.account_id = EXCLUDED.account_id
+                    AND account_daily_summary.date = EXCLUDED.date
             """
         }
     }
@@ -455,54 +468,57 @@ class Database:
 
     def update_usage(self, account_id: int, prompt_tokens: int, completion_tokens: int):
         """Update token usage for an account"""
-        try:
-            # First check if balance is sufficient
-            has_balance, current_balance = self.check_sufficient_balance(account_id, prompt_tokens, completion_tokens)
-            if not has_balance:
-                error_msg = (
-                    f"Insufficient token balance. Current balance: "
-                    f"{current_balance['token_in']} input tokens, "
-                    f"{current_balance['token_out']} output tokens. "
-                    f"Required: {prompt_tokens} input tokens, "
-                    f"{completion_tokens} output tokens."
-                )
-                logging.error(f"Account {account_id}: {error_msg}")
-                raise ValueError(error_msg)
-            
-            with self.get_transaction() as connection:
-                cursor = connection.get_cursor()
-                today = datetime.now().strftime('%Y-%m-%d')
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                with self.get_transaction() as connection:
+                    cursor = connection.get_cursor()
+                    today = datetime.now().strftime('%Y-%m-%d')
 
-                # Update account_totals with a single atomic update that checks balance
-                cursor.execute(
-                    self._get_sql('update_balance'),
-                    (
-                        prompt_tokens, prompt_tokens,  # token_in CASE
-                        completion_tokens, completion_tokens,  # token_out CASE
-                        prompt_tokens, completion_tokens,  # transactions CASE
-                        account_id,  # WHERE account_id = ?
-                        prompt_tokens, completion_tokens  # AND token_in >= ? AND token_out >= ?
+                    # Update account_totals with a single atomic update that checks balance
+                    cursor.execute(
+                        self._get_sql('update_balance'),
+                        (
+                            prompt_tokens, prompt_tokens,  # token_in CASE
+                            completion_tokens, completion_tokens,  # token_out CASE
+                            prompt_tokens, completion_tokens,  # transactions CASE
+                            account_id,  # WHERE account_id = ?
+                            prompt_tokens, completion_tokens  # AND token_in >= ? AND token_out >= ?
+                        )
                     )
-                )
-                
-                # Check if update was successful
-                if self.db_type == "sqlite":
-                    result = cursor.fetchone()
-                    if not result:
-                        raise ValueError("Failed to update balance - insufficient tokens")
-                else:
-                    if cursor.rowcount == 0:
-                        raise ValueError("Failed to update balance - insufficient tokens")
+                    
+                    # Check if update was successful
+                    if self.db_type == "sqlite":
+                        result = cursor.fetchone()
+                        if not result:
+                            raise ValueError("Failed to update balance - insufficient tokens")
+                    else:
+                        if cursor.rowcount == 0:
+                            raise ValueError("Failed to update balance - insufficient tokens")
 
-                # Update daily summary
-                cursor.execute(
-                    self._get_sql('update_daily'),
-                    (account_id, today, prompt_tokens, completion_tokens)
-                )
-                
-        except Exception as e:
-            logging.error(f"Error updating usage: {str(e)}")
-            raise
+                    # Update daily summary
+                    cursor.execute(
+                        self._get_sql('update_daily'),
+                        (account_id, today, prompt_tokens, completion_tokens)
+                    )
+                    
+                    # If we get here, the transaction succeeded
+                    return
+                    
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and retry_count < max_retries - 1:
+                    retry_count += 1
+                    time.sleep(0.1 * (2 ** retry_count))  # Exponential backoff
+                    continue
+                logging.error(f"Database error after {retry_count + 1} retries: {str(e)}")
+                raise
+            except Exception as e:
+                logging.error(f"Error updating usage: {str(e)}")
+                raise
+            
+        raise Exception(f"Failed to update usage after {max_retries} retries due to database contention")
 
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""
