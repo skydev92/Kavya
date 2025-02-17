@@ -73,6 +73,7 @@
    ```bash
    # Run with local source code mounting for fast development
    docker run --rm -it \
+     --name kavya-dev \
      -p 8089:8080 \
      -v $(pwd)/routellm:/app/routellm \
      --env-file .env \
@@ -83,12 +84,14 @@
    # - Ctrl+C to stop the container
    # - Run the same command to restart with new code
    # - No rebuild needed for Python code changes
+   # - Container will be named 'kavya-dev' for easy reference
    ```
 
    **Production Mode**
    ```bash
    # Run without source mounting, using Google Cloud SQL
    docker run -d \
+     --name kavya-prod \
      -p 8080:8080 \
      --env-file .env.prod \
      -e ENVIRONMENT=prod \
@@ -100,6 +103,21 @@
    # - DB_PASS
    # - DB_NAME
    # - JWT_PUBLIC_KEY_B64
+   ```
+
+   **Useful Docker Commands**
+   ```bash
+   # View logs
+   docker logs kavya-dev    # For development
+   docker logs kavya-prod   # For production
+
+   # Stop container
+   docker stop kavya-dev    # For development
+   docker stop kavya-prod   # For production
+
+   # Remove container
+   docker rm kavya-dev     # For development
+   docker rm kavya-prod    # For production
    ```
 
    **When to Rebuild Docker Image**

@@ -4,11 +4,12 @@ WORKDIR /app
 
 RUN echo "Debug: Starting build process for RouteLLM server"
 
-# Install build dependencies
-# RUN apt-get update && apt-get install -y \
-#     build-essential \
-#     gcc \
-#     && rm -rf /var/lib/apt/lists/*
+# Install build dependencies and SQLite tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
