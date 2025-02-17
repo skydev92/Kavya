@@ -71,6 +71,129 @@ else:
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
 
+class DatabaseConnection:
+    def __init__(self):
+        self.connection = None
+        self.cursor = None
+
+    def connect(self):
+        raise NotImplementedError
+
+    def get_cursor(self):
+        raise NotImplementedError
+
+    def begin_transaction(self):
+        raise NotImplementedError
+
+    def commit(self):
+        raise NotImplementedError
+
+    def rollback(self):
+        raise NotImplementedError
+
+    def close(self):
+        raise NotImplementedError
+
+class SQLiteConnection(DatabaseConnection):
+    def __init__(self, db_path):
+        super().__init__()
+        self.db_path = db_path
+
+    def connect(self):
+        if not os.path.exists(self.db_path):
+            open(self.db_path, 'w').close()
+        elif not os.access(self.db_path, os.W_OK):
+            raise Exception(f"Database file {self.db_path} exists but is not writable")
+        
+        self.connection = sqlite3.connect(
+            self.db_path,
+            check_same_thread=False,
+            isolation_level=None  # This enables autocommit mode
+        )
+        
+        # Enable WAL mode for better concurrency
+        cursor = self.connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+        return self.connection
+
+    def get_cursor(self):
+        if not self.cursor:
+            self.cursor = self.connection.cursor()
+        return self.cursor
+
+    def begin_transaction(self):
+        self.connection.execute("BEGIN IMMEDIATE")
+
+    def commit(self):
+        self.connection.commit()
+
+    def rollback(self):
+        self.connection.rollback()
+
+    def close(self):
+        if self.cursor:
+            self.cursor.close()
+        if self.connection:
+            self.connection.close()
+
+class PostgreSQLConnection(DatabaseConnection):
+    def __init__(self, instance_connection_name, db_user, db_pass, db_name, private_ip=False):
+        super().__init__()
+        self.instance_connection_name = instance_connection_name
+        self.db_user = db_user
+        self.db_pass = db_pass
+        self.db_name = db_name
+        self.private_ip = private_ip
+        self.engine = None
+
+    def connect(self):
+        connector = Connector(refresh_strategy="LAZY")
+
+        def getconn():
+            conn = connector.connect(
+                self.instance_connection_name,
+                "pg8000",
+                user=self.db_user,
+                password=self.db_pass,
+                db=self.db_name,
+                ip_type=IPTypes.PRIVATE if self.private_ip else IPTypes.PUBLIC,
+            )
+            return conn
+
+        self.engine = sqlalchemy.create_engine(
+            "postgresql+pg8000://",
+            creator=getconn,
+            pool_size=5,
+            max_overflow=2,
+            pool_timeout=30,
+            pool_recycle=1800,
+        )
+        self.connection = self.engine.raw_connection()
+        return self.connection
+
+    def get_cursor(self):
+        if not self.cursor:
+            self.cursor = self.connection.cursor()
+        return self.cursor
+
+    def begin_transaction(self):
+        self.get_cursor().execute("BEGIN")
+
+    def commit(self):
+        self.connection.commit()
+
+    def rollback(self):
+        self.connection.rollback()
+
+    def close(self):
+        if self.cursor:
+            self.cursor.close()
+        if self.connection:
+            self.connection.close()
+        if self.engine:
+            self.engine.dispose()
+
 class Database:
     # SQL Templates that work for both SQLite and PostgreSQL
     SQL_TEMPLATES = {
@@ -164,33 +287,13 @@ class Database:
 
     def _get_connection(self):
         """Get thread-local connection with proper thread safety settings"""
-        if not hasattr(self._local, 'connection'):
+        if not hasattr(self._local, 'db'):
             if self.env == "dev":
                 if sqlite3 is None:
                     raise ImportError("SQLite3 required for development environment")
                 logging.info("Creating SQLite connection for development")
                 db_path = os.path.join(os.path.dirname(__file__), "kavya.db")
-                try:
-                    # Test if we can create/write to the database file
-                    if not os.path.exists(db_path):
-                        open(db_path, 'w').close()
-                    elif not os.access(db_path, os.W_OK):
-                        raise Exception(f"Database file {db_path} exists but is not writable")
-                    
-                    # Use check_same_thread=False to allow cross-thread usage with thread-local storage
-                    self._local.connection = sqlite3.connect(
-                        db_path,
-                        check_same_thread=False,
-                        isolation_level=None  # This enables autocommit mode
-                    )
-                    
-                    # Enable WAL mode for better concurrency
-                    cursor = self._local.connection.cursor()
-                    cursor.execute("PRAGMA journal_mode=WAL")
-                    cursor.close()
-                    
-                except Exception as e:
-                    raise Exception(f"Failed to initialize SQLite database: {str(e)}")
+                self._local.db = SQLiteConnection(db_path)
             else:
                 if not GOOGLE_CLOUD_SQL_AVAILABLE:
                     raise ImportError("Google Cloud SQL dependencies required for production environment")
@@ -215,41 +318,22 @@ class Database:
                 if not db_name:
                     raise ValueError("DB_NAME environment variable is required in production")
 
-                try:
-                    # Initialize Cloud SQL Python Connector object
-                    connector = Connector(refresh_strategy="LAZY")
+                self._local.db = PostgreSQLConnection(
+                    instance_connection_name=instance_connection_name,
+                    db_user=db_user,
+                    db_pass=db_pass,
+                    db_name=db_name,
+                    private_ip=bool(os.getenv("PRIVATE_IP"))
+                )
 
-                    def getconn():
-                        conn: pg8000.dbapi.Connection = connector.connect(
-                            instance_connection_name,
-                            "pg8000",
-                            user=db_user,
-                            password=db_pass,
-                            db=db_name,
-                            ip_type=IPTypes.PRIVATE if os.getenv("PRIVATE_IP") else IPTypes.PUBLIC,
-                        )
-                        return conn
+            try:
+                self._local.db.connect()
+                # Initialize tables if they don't exist
+                self._ensure_tables_exist(self._local.db)
+            except Exception as e:
+                raise Exception(f"Failed to initialize database: {str(e)}")
 
-                    # The Cloud SQL Python Connector can be used with SQLAlchemy
-                    pool = sqlalchemy.create_engine(
-                        "postgresql+pg8000://",
-                        creator=getconn,
-                        # Pool size is the maximum number of permanent connections to keep.
-                        pool_size=5,
-                        # Temporarily exceeds the set pool_size if no connections are available.
-                        max_overflow=2,
-                        # The total number of concurrent connections for your application will be
-                        # a total of pool_size and max_overflow.
-                        pool_timeout=30,  # 30 seconds
-                        pool_recycle=1800,  # 30 minutes
-                    )
-                    self._local.connection = pool.connect()
-                except Exception as e:
-                    raise Exception(f"Failed to connect to Cloud SQL PostgreSQL: {str(e)}")
-            
-            # Initialize tables if they don't exist
-            self._ensure_tables_exist(self._local.connection)
-        return self._local.connection
+        return self._local.db
 
     def initialize_database(self):
         """Initialize database connection based on environment"""
@@ -257,7 +341,7 @@ class Database:
         
         # Test that we can actually write to the database
         try:
-            cursor = connection.cursor()
+            cursor = connection.get_cursor()
             # Try to insert and immediately delete a test record
             cursor.execute(
                 self._get_sql('check_balance'),
@@ -272,7 +356,7 @@ class Database:
 
     def _ensure_tables_exist(self, connection):
         """Ensure necessary tables exist without dropping existing ones"""
-        cursor = connection.cursor()
+        cursor = connection.get_cursor()
         
         # Create account_totals table if it doesn't exist
         if self.db_type == "sqlite":
@@ -350,22 +434,16 @@ class Database:
     @contextmanager
     def get_transaction(self):
         """Get a transaction context manager for safe database operations"""
-        conn = self._get_connection()
+        db = self._get_connection()
         try:
-            if self.env == "dev":
-                # For SQLite, explicitly start a transaction
-                conn.execute("BEGIN IMMEDIATE")
-            
-            yield conn
-            
-            if self.env == "dev":
-                conn.commit()
+            db.begin_transaction()
+            yield db
+            db.commit()
         except Exception as e:
-            if self.env == "dev":
-                try:
-                    conn.rollback()
-                except Exception as rollback_error:
-                    logging.error(f"Error during rollback: {str(rollback_error)}")
+            try:
+                db.rollback()
+            except Exception as rollback_error:
+                logging.error(f"Error during rollback: {str(rollback_error)}")
             logging.error(f"Transaction failed: {str(e)}")
             raise
 
@@ -392,7 +470,7 @@ class Database:
                 raise ValueError(error_msg)
             
             with self.get_transaction() as connection:
-                cursor = connection.cursor()
+                cursor = connection.get_cursor()
                 today = datetime.now().strftime('%Y-%m-%d')
 
                 # Update account_totals with a single atomic update that checks balance
@@ -429,7 +507,7 @@ class Database:
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""
         connection = self._get_connection()
-        cursor = connection.cursor()
+        cursor = connection.get_cursor()
         cursor.execute("""
         SELECT token_in, token_out, transactions 
         FROM account_totals 
@@ -447,7 +525,7 @@ class Database:
     def get_daily_usage(self, account_id: int, start_date: str, end_date: str):
         """Get daily usage for an account within a date range"""
         connection = self._get_connection()
-        cursor = connection.cursor()
+        cursor = connection.get_cursor()
         cursor.execute("""
         SELECT date, transaction_count, token_in, token_out 
         FROM account_daily_summary 
@@ -458,15 +536,15 @@ class Database:
 
     def close(self):
         """Close all thread-local database connections"""
-        if hasattr(self._local, 'connection'):
-            self._local.connection.close()
-            del self._local.connection 
+        if hasattr(self._local, 'db'):
+            self._local.db.close()
+            del self._local.db
 
     def create_tables(self):
         """Create the necessary tables if they don't exist"""
         try:
             with self.get_transaction() as connection:
-                cursor = connection.cursor()
+                cursor = connection.get_cursor()
                 
                 # Drop existing tables to ensure clean schema
                 cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
@@ -539,7 +617,7 @@ class Database:
         """Check if account has sufficient balance for the requested operation."""
         try:
             connection = self._get_connection()
-            cursor = connection.cursor()
+            cursor = connection.get_cursor()
             
             # Get current balance or default values if account doesn't exist
             cursor.execute(
@@ -574,7 +652,7 @@ class Database:
         
         try:
             with self.get_transaction() as connection:
-                cursor = connection.cursor()
+                cursor = connection.get_cursor()
                 
                 for account_id in account_ids:
                     cursor.execute(
@@ -604,7 +682,7 @@ class Database:
             raise RuntimeError("Database reset is only allowed in development environment")
         
         with self.get_transaction() as connection:
-            cursor = connection.cursor()
+            cursor = connection.get_cursor()
             
             # Drop existing tables
             cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
@@ -621,7 +699,7 @@ class Database:
         from routellm.models import AccountTokenBalance
         
         connection = self._get_connection()
-        cursor = connection.cursor()
+        cursor = connection.get_cursor()
         cursor.execute("""
         SELECT token_in, token_out, transactions 
         FROM account_totals 
@@ -658,7 +736,7 @@ class Database:
         from routellm.models import DailyUsageSummary
         
         connection = self._get_connection()
-        cursor = connection.cursor()
+        cursor = connection.get_cursor()
         cursor.execute("""
         SELECT date, transaction_count, token_in, token_out, last_updated
         FROM account_daily_summary 
