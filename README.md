@@ -77,6 +77,7 @@
      -p 8089:8080 \
      -v $(pwd)/routellm:/app/routellm \
      --env-file .env \
+     -e ENVIRONMENT=dev \  # Forces development mode with SQLite
      kavya
 
    # Now you can:
@@ -85,6 +86,7 @@
    # - Run the same command to restart with new code
    # - No rebuild needed for Python code changes
    # - Container will be named 'kavya-dev' for easy reference
+   # - Uses local SQLite database for development
    ```
 
    **Production Mode**
@@ -94,9 +96,16 @@
      --name kavya-prod \
      -p 8080:8080 \
      --env-file .env.prod \
-     -e ENVIRONMENT=prod \
-     kavya
+     kavya  # No ENVIRONMENT var needed - defaults to production mode
 
+   # Required environment variables for production:
+   # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
+   # - DB_PASS=<database-password>
+   # 
+   # Optional environment variables (with defaults):
+   # - DB_USER=kavya
+   # - DB_NAME=kavya
+   # - DB_SOCKET_DIR=/cloudsql
    # Note: Ensure your .env.prod contains:
    # - CLOUD_SQL_CONNECTION_NAME
    # - DB_USER

@@ -5,15 +5,17 @@ import logging
 import threading
 from contextlib import contextmanager
 
-# Only import Google Cloud SQL in production
-google_cloud_sql = None
-if os.getenv("ENVIRONMENT") == "prod":
+# Only import SQLite in development
+sqlite3 = None
+if os.getenv("ENVIRONMENT") == "dev":
+    import sqlite3
+else:
     try:
         from google.cloud.sql.connector import Connector, IPTypes
         import pg8000
         import sqlalchemy
     except ImportError:
-        logging.warning("Google Cloud SQL dependencies not installed. Production database features will not be available.")
+        raise ImportError("Google Cloud SQL dependencies required for production environment")
 
 class Database:
     # SQL Templates that work for both SQLite and PostgreSQL
@@ -99,16 +101,20 @@ class Database:
     }
 
     def __init__(self):
-        self.env = os.getenv("ENVIRONMENT", "dev")
+        self.env = os.getenv("ENVIRONMENT")
         self._local = threading.local()
         self.db_type = "sqlite" if self.env == "dev" else "postgresql"
         self.param_style = "?" if self.env == "dev" else "%s"
+        logging.info(f"Initializing database in {'development' if self.env == 'dev' else 'production'} environment using {self.db_type}")
         self.initialize_database()
 
     def _get_connection(self):
         """Get thread-local connection with proper thread safety settings"""
         if not hasattr(self._local, 'connection'):
             if self.env == "dev":
+                if sqlite3 is None:
+                    raise ImportError("SQLite3 required for development environment")
+                logging.info("Creating SQLite connection for development")
                 db_path = os.path.join(os.path.dirname(__file__), "kavya.db")
                 try:
                     # Test if we can create/write to the database file
@@ -132,7 +138,7 @@ class Database:
                 except Exception as e:
                     raise Exception(f"Failed to initialize SQLite database: {str(e)}")
             else:
-                if google_cloud_sql is None:
+                if not hasattr(self, 'google_cloud_sql'):
                     raise ImportError("Google Cloud SQL dependencies required for production environment")
                 
                 db_socket_dir = os.getenv("DB_SOCKET_DIR", "/cloudsql")
@@ -142,15 +148,18 @@ class Database:
                     raise ValueError("INSTANCE_CONNECTION_NAME environment variable is required in production")
                 
                 db_user = os.getenv("DB_USER", "kavya")
-                db_pass = os.getenv("DB_PASS", "")
+                db_pass = os.getenv("DB_PASS")
                 db_name = os.getenv("DB_NAME", "kavya")
+
+                if not db_pass:
+                    raise ValueError("DB_PASS environment variable is required in production")
 
                 try:
                     # Initialize Cloud SQL Python Connector object
                     connector = Connector(refresh_strategy="LAZY")
 
                     def getconn():
-                        conn = connector.connect(
+                        conn: pg8000.dbapi.Connection = connector.connect(
                             instance_connection_name,
                             "pg8000",
                             user=db_user,
@@ -164,10 +173,14 @@ class Database:
                     pool = sqlalchemy.create_engine(
                         "postgresql+pg8000://",
                         creator=getconn,
+                        # Pool size is the maximum number of permanent connections to keep.
                         pool_size=5,
+                        # Temporarily exceeds the set pool_size if no connections are available.
                         max_overflow=2,
-                        pool_timeout=30,
-                        pool_recycle=1800,
+                        # The total number of concurrent connections for your application will be
+                        # a total of pool_size and max_overflow.
+                        pool_timeout=30,  # 30 seconds
+                        pool_recycle=1800,  # 30 minutes
                     )
                     self._local.connection = pool.connect()
                 except Exception as e:
