@@ -16,9 +16,44 @@ if ENVIRONMENT != "dev":
         import pg8000
         import sqlalchemy
         import google.cloud.logging
-        from google.cloud.logging.handlers import CloudLoggingHandler
+        from google.cloud.logging.handlers import CloudLoggingHandler, CloudLoggingFilter
         from google.cloud.logging_v2.handlers import setup_logging
         GOOGLE_CLOUD_SQL_AVAILABLE = True  # Mark dependencies as available
+
+        # Set up Google Cloud Logging with proper severity mapping
+        client = google.cloud.logging.Client()
+        
+        # Create handler with project ID for proper resource tracking
+        handler = CloudLoggingHandler(
+            client,
+            name="python",  # This will show up as the logger name in Cloud Logging
+        )
+        
+        # Add Cloud Logging filter to properly set project and add labels
+        handler.addFilter(CloudLoggingFilter(
+            project=client.project,
+            default_labels={
+                "environment": ENVIRONMENT,
+                "application": "kavya",
+                "service": "database"
+            }
+        ))
+        
+        # Configure the handler to use the correct severity mapping
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        
+        # Remove any existing handlers to avoid duplicate logging
+        logging.getLogger().handlers = []
+        
+        # Add our configured handler
+        logging.getLogger().addHandler(handler)
+        
+        # Set the logging level to INFO
+        logging.getLogger().setLevel(logging.INFO)
+        
+        # Test the logging setup with different severity levels
+        logging.info("Successfully configured Google Cloud Logging with severity mapping")
+        
     except ImportError as e:
         # If any dependency is missing, log it clearly and exit
         missing_dep = str(e).split("'")[1] if "'" in str(e) else str(e)
@@ -31,7 +66,10 @@ if ENVIRONMENT != "dev":
         logging.basicConfig(level=logging.INFO)
 else:
     # Development mode - use basic logging
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 class Database:
     # SQL Templates that work for both SQLite and PostgreSQL

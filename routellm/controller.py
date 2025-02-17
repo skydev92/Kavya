@@ -1041,7 +1041,7 @@ def custom_cost_usage_callback(
     user = kwargs.get("user", None)
     if not user:
         error_msg = "CRITICAL: No user ID provided in callback. Every request must be billed to a user."
-        logging.error(error_msg)
+        logging.critical(error_msg)  # Changed from error to critical for proper severity
         raise ValueError(error_msg)
         
     messages = kwargs.get("messages", [])
@@ -1057,7 +1057,7 @@ def custom_cost_usage_callback(
                 f"Completion Tokens: {usage.completion_tokens}, "
                 f"Total Tokens: {usage.total_tokens}"
             )
-            logging.info(format_usage_log(
+            logging.info(format_usage_log(  # Using info level for usage logs
                 prompt_preview=prompt_preview, 
                 usage_info=usage_info, 
                 cost=cost, 
@@ -1073,7 +1073,7 @@ def custom_cost_usage_callback(
             f"Completion Tokens: {usage.completion_tokens}, "
             f"Total Tokens: {usage.total_tokens}"
         )
-        logging.info(format_usage_log(
+        logging.info(format_usage_log(  # Using info level for usage logs
             prompt_preview=prompt_preview, 
             usage_info=usage_info, 
             cost=cost, 
