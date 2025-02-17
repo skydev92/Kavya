@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any, Optional, Callable, AsyncGenerator, List
 
 import pandas as pd
+import litellm
 from litellm import (
     acompletion, 
     completion, 
@@ -22,6 +23,7 @@ import sys
 import re
 import inspect
 import enum
+from threading import Lock
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
@@ -53,7 +55,7 @@ DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
 
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -91,6 +93,19 @@ class ModelPair:
     strong: str
     weak: str
 
+
+class RequestCostTracker:
+    def __init__(self):
+        self.cost = 0.0
+        self.lock = Lock()
+    
+    def add_cost(self, cost: float):
+        with self.lock:
+            self.cost += cost
+    
+    def get_total(self) -> float:
+        with self.lock:
+            return self.cost
 
 class Controller:
     def __init__(
@@ -207,6 +222,21 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        # Ensure user ID is present and valid
+        if "user" not in kwargs or not kwargs["user"]:
+            error_msg = "CRITICAL: No user ID provided in completion request. Every request must be associated with a user."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+            
+        try:
+            user_id = int(kwargs["user"])  # Validate user ID is a valid integer
+        except (ValueError, TypeError):
+            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+
+        model = kwargs.get('model', 'unspecified')
+        logging.info(f"Making {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
@@ -304,6 +334,21 @@ class Controller:
         threshold: Optional[float] = None,
         **kwargs,
     ):
+        # Ensure user ID is present and valid
+        if "user" not in kwargs or not kwargs["user"]:
+            error_msg = "CRITICAL: No user ID provided in acompletion request. Every request must be associated with a user."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+            
+        try:
+            user_id = int(kwargs["user"])  # Validate user ID is a valid integer
+        except (ValueError, TypeError):
+            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+
+        model = kwargs.get('model', 'unspecified')
+        logging.info(f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
         logging.debug("acontroller function started")
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
@@ -463,6 +508,7 @@ class Longwriter(Controller):
         super().__init__(**kwargs)
     
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
+        logging.info(f"Making completion call for content strategy using model: {model}")
         # First check if model supports response schema
         if not supports_response_schema(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
@@ -485,7 +531,8 @@ class Longwriter(Controller):
                     {"role": "system", "content": str(dedent(content_strategist_prompt))},
                     {"role": "user", "content": str(request.prompt)}
                 ],
-                response_format=ContentStrategy
+                response_format=ContentStrategy,
+                user=request.user  # Propagate user ID
             )
             
             # Get the content from the response
@@ -493,8 +540,9 @@ class Longwriter(Controller):
             logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
             
             strategy = ContentStrategy.model_validate_json(content)
-            # Add the original messages to the strategy object
+            # Add the original messages and user ID to the strategy object
             strategy.original_messages = original_messages
+            strategy.user = request.user  # Set the user ID
             return strategy
             
         except Exception as e:
@@ -503,6 +551,7 @@ class Longwriter(Controller):
             raise
 
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
+        logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
         if not supports_response_schema(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
@@ -521,7 +570,8 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(html_strategist_prompt)},
                     {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
                 ],
-                response_format=HTMLTagStrategy
+                response_format=HTMLTagStrategy,
+                user=content_strategy.user  # Get user ID directly from content_strategy
             )
 
             # Get the content from the response
@@ -536,6 +586,7 @@ class Longwriter(Controller):
             raise
 
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
+        logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
         if not supports_response_schema(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
@@ -560,7 +611,8 @@ class Longwriter(Controller):
                     {"role": "system", "content": dedent(content_outliner_prompt)},
                     {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
                 ],
-                response_format=ContentOutline
+                response_format=ContentOutline,
+                user=content_strategy.user  # Get user ID from content strategy
             )
 
             # Get the content from the response
@@ -578,6 +630,7 @@ class Longwriter(Controller):
                               html_strategy: HTMLTagStrategy, outline: ContentOutline, 
                               preceding_content: str, model: str, 
                               chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
+        logging.info(f"Making streaming completion call for content draft section '{section.title}' using model: {model}")
         # Extract tone from system prompt if present
         tone_instruction = ""
         image_instructions = None
@@ -656,7 +709,8 @@ class Longwriter(Controller):
             messages=messages,
             stream=True,
             api_base=self.api_base,
-            api_key=self.api_key
+            api_key=self.api_key,
+            user=content_strategy.user  # Get user ID from content strategy
         )
         
         accumulator = TokenAccumulator(chunk_size=chunk_size)
@@ -675,6 +729,19 @@ class Longwriter(Controller):
 
     async def content_creation_agent(self, request: ContentRequest, model: str):
         """Main content generation method that coordinates the content creation process."""
+        # Ensure user ID is present in the request
+        if not hasattr(request, 'user') or not request.user:
+            error_msg = "CRITICAL: No user ID provided in content creation request. Every request must be associated with a user."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+            
+        try:
+            user_id = int(request.user)  # Validate user ID is a valid integer
+        except (ValueError, TypeError):
+            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+            
         full_content = ""
         content_strategy = await self.get_content_strategy(request, model)
         html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
@@ -779,7 +846,16 @@ class Controllers:
             **kwargs
         )
 
-    async def basic_routing(self, request: ChatCompletionRequest):
+    async def basic_routing(self, request: ChatCompletionRequest, cost_tracker: Optional[RequestCostTracker] = None):
+        logging.info("Making completion call for routing analysis using weak model")
+        
+        # Ensure user ID is present in the request
+        user_id = request.model_dump().get("user")
+        if not user_id:
+            error_msg = "CRITICAL: No user ID provided in request. Every request must be associated with a user."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+            
         # Get the default controller to use its methods
         default_controller = self.controllers["default"]
         
@@ -812,7 +888,8 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
                 }
             ],
             stream=False,  # Force non-streaming for routing
-            response_format=RoutingAnalysis
+            response_format=RoutingAnalysis,
+            user=request.model_dump().get("user")  # Pass through the user ID
         )
 
         # Use regular completion for routing decision
@@ -821,9 +898,29 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
             messages=routing_request.messages,
             api_base=default_controller.api_base,
             api_key=default_controller.api_key,
-            response_format=RoutingAnalysis
+            response_format=RoutingAnalysis,
+            user=routing_request.user  # Pass through the user ID
         )
         
+        # Add logging for routing analysis response and usage
+        prompt_preview = format_prompt_preview(routing_request.messages[-1]["content"])
+        usage_info = (
+            f"Usage - Prompt Tokens: {response.usage.prompt_tokens}, "
+            f"Completion Tokens: {response.usage.completion_tokens}, "
+            f"Total Tokens: {response.usage.total_tokens}"
+        )
+        cost = response._hidden_params.get("response_cost", 0)
+        if cost_tracker:
+            cost_tracker.add_cost(cost)
+        logging.info(format_usage_log(
+            prompt_preview=prompt_preview, 
+            usage_info=usage_info, 
+            cost=cost, 
+            user_id=int(routing_request.user) if routing_request.user else None,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens
+        ))
+
         try:
             # Get the content directly from the response
             content = response.choices[0].message.content
@@ -889,3 +986,127 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
 
     def __str__(self):
         return str(self.controllers)
+
+def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], completion_tokens: Optional[int]) -> None:
+    """Update token usage in the database. Raises RuntimeError if update fails."""
+    if user_id is not None and prompt_tokens is not None and completion_tokens is not None:
+        try:
+            from routellm.openai_server import app
+            if not hasattr(app, 'db') or not app.db:
+                error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
+                logging.error(error_msg)
+                raise RuntimeError(error_msg)
+                
+            app.db.update_usage(
+                account_id=user_id,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens
+            )
+        except Exception as db_error:
+            error_msg = f"CRITICAL: Failed to update token usage in database: {str(db_error)}"
+            logging.error(error_msg)
+            raise RuntimeError(error_msg) from db_error
+
+def format_usage_log(prompt_preview: str, usage_info: str, cost: Optional[float] = None, user_id: Optional[int] = None, prompt_tokens: Optional[int] = None, completion_tokens: Optional[int] = None) -> str:
+    """Format usage log with consistent styling and simple borders."""
+    # Update token usage before logging
+    update_token_usage(user_id, prompt_tokens, completion_tokens)
+
+    usage_msg = (
+        f"\n================================================================\n"
+        f"Account: {user_id if user_id is not None else 'No Account ID'}\n"
+        f"Prompt: '{prompt_preview}'\n"
+        f"{usage_info}"
+    )
+    if cost is not None:
+        usage_msg += f"\nCost: ${cost:.6f}"
+    usage_msg += "\n================================================================"
+    return f"\033[94m{usage_msg}\033[0m"  # Using \033[94m for purple instead of \033[95m for pink
+
+def format_prompt_preview(prompt: str, max_length: int = 50) -> str:
+    """Format prompt preview by replacing newlines with spaces and truncating."""
+    # Replace all whitespace (including newlines) with a single space
+    cleaned = ' '.join(prompt.split())
+    return cleaned[:max_length] + ('...' if len(cleaned) > max_length else '')
+
+def format_total_cost_log(total_cost: float) -> str:
+    return f"\033[95m=== Total Request Cost: ${total_cost:.6f} ===\033[0m"
+
+def custom_cost_usage_callback(
+    kwargs,                  # kwargs to completion
+    completion_response,     # response from completion
+    start_time, end_time    # start/end time
+):
+    # Get user ID from kwargs - hard fail if not present
+    user = kwargs.get("user", None)
+    if not user:
+        error_msg = "CRITICAL: No user ID provided in callback. Every request must be billed to a user."
+        logging.error(error_msg)
+        raise ValueError(error_msg)
+        
+    messages = kwargs.get("messages", [])
+    prompt_preview = format_prompt_preview(messages[-1]["content"]) if messages else "No prompt"
+    is_streaming = kwargs.get("stream", False)
+    
+    if is_streaming:
+        if "complete_streaming_response" in kwargs:
+            usage = kwargs["complete_streaming_response"].usage
+            cost = kwargs.get("response_cost", 0)
+            usage_info = (
+                f"Usage - Prompt Tokens: {usage.prompt_tokens}, "
+                f"Completion Tokens: {usage.completion_tokens}, "
+                f"Total Tokens: {usage.total_tokens}"
+            )
+            logging.info(format_usage_log(
+                prompt_preview=prompt_preview, 
+                usage_info=usage_info, 
+                cost=cost, 
+                user_id=int(user),
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens
+            ))
+    else:
+        usage = completion_response.usage
+        cost = kwargs.get("response_cost", 0)
+        usage_info = (
+            f"Usage - Prompt Tokens: {usage.prompt_tokens}, "
+            f"Completion Tokens: {usage.completion_tokens}, "
+            f"Total Tokens: {usage.total_tokens}"
+        )
+        logging.info(format_usage_log(
+            prompt_preview=prompt_preview, 
+            usage_info=usage_info, 
+            cost=cost, 
+            user_id=int(user),
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens
+        ))
+
+# Register the callback
+litellm.success_callback = [custom_cost_usage_callback]
+logging.info("Registered custom_cost_usage_callback with litellm")
+
+# Example usage for non-streaming completion
+def make_non_streaming_completion(prompt):
+    response = litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response
+
+# Example usage for streaming completion
+def make_streaming_completion(prompt):
+    response = litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True,
+        stream_options={"include_usage": True}  # Important for getting usage info in streaming
+    )
+    
+    # Process streaming response
+    collected_content = []
+    for chunk in response:
+        if chunk.choices[0].delta.content:
+            collected_content.append(chunk.choices[0].delta.content)
+    
+    return "".join(collected_content)

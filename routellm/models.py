@@ -3,6 +3,7 @@ import json
 import shortuuid
 import logging
 import sys
+from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
@@ -10,7 +11,7 @@ from litellm import CustomStreamWrapper
 
 # Configure logging
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -355,6 +356,10 @@ class ContentRequest(BaseModel):
         None,
         description="Optional chat messages for context"
     )
+    user: Optional[str] = Field(
+        None,
+        description="User ID for token tracking"
+    )
 
 class ContentStrategy(BaseModel):
     """Strategic plan for content generation based on E-E-A-T framework."""
@@ -377,6 +382,10 @@ class ContentStrategy(BaseModel):
     original_messages: Optional[List[str]] = Field(
         default=None,
         description="Original chat messages for context preservation"
+    )
+    user: Optional[str] = Field(
+        None,
+        description="User ID for token tracking"
     )
 
 class HTMLTagStrategy(BaseModel):
@@ -480,3 +489,227 @@ class EnumResponse(BaseModel):
             enum_type=enum_class.__name__,
             possible_values=[e.value for e in enum_class]
         )
+
+# Token Tracking Models
+class TokenAmount(BaseModel):
+    """Base model for token amounts with validation."""
+    amount: float = Field(
+        ...,
+        ge=0.0,
+        description="Number of tokens"
+    )
+    
+    @field_validator('amount')
+    def validate_non_negative(cls, v: float) -> float:
+        """Ensure token amounts are non-negative."""
+        if v < 0:
+            raise ValueError("Token amounts must be non-negative")
+        return v
+
+class AccountTokenBalance(BaseModel):
+    """Current token balance for an account."""
+    account_id: int = Field(
+        ..., 
+        gt=0,
+        description="Unique identifier for the account"
+    )
+    token_in: float = Field(
+        ...,
+        ge=0.0,
+        description="Available input tokens"
+    )
+    token_out: float = Field(
+        ...,
+        ge=0.0,
+        description="Available output tokens"
+    )
+    transactions: int = Field(
+        ...,
+        ge=0,
+        description="Total number of transactions"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "account_id": 1,
+                    "token_in": 3000000.0,
+                    "token_out": 1000000.0,
+                    "transactions": 42
+                }
+            ]
+        }
+    }
+
+class DailyUsageSummary(BaseModel):
+    """Daily token usage summary for an account."""
+    account_id: int = Field(
+        ...,
+        gt=0,
+        description="Account identifier"
+    )
+    date: str = Field(
+        ...,
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        description="Usage date in YYYY-MM-DD format"
+    )
+    transaction_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of transactions on this date"
+    )
+    token_in: float = Field(
+        ...,
+        ge=0.0,
+        description="Input tokens used"
+    )
+    token_out: float = Field(
+        ...,
+        ge=0.0,
+        description="Output tokens used"
+    )
+    last_updated: str = Field(
+        ...,
+        description="Last update timestamp in ISO format"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "account_id": 1,
+                    "date": "2024-02-20",
+                    "transaction_count": 5,
+                    "token_in": 1500.0,
+                    "token_out": 300.0,
+                    "last_updated": "2024-02-20T15:30:45Z"
+                }
+            ]
+        }
+    }
+
+class TokenUsageUpdate(BaseModel):
+    """Token usage update request."""
+    account_id: int = Field(
+        ...,
+        gt=0,
+        description="Account to update"
+    )
+    prompt_tokens: int = Field(
+        ...,
+        ge=0,
+        description="Number of prompt tokens to deduct"
+    )
+    completion_tokens: int = Field(
+        ...,
+        ge=0,
+        description="Number of completion tokens to deduct"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "account_id": 1,
+                    "prompt_tokens": 150,
+                    "completion_tokens": 50
+                }
+            ]
+        }
+    }
+
+class TokenError(BaseModel):
+    """Base class for token-related errors."""
+    code: str = Field(
+        ...,
+        description="Error code"
+    )
+    message: str = Field(
+        ...,
+        description="Error message"
+    )
+    type: Literal["token_error"] = Field(
+        "token_error",
+        description="Type of error"
+    )
+
+class InsufficientTokensError(TokenError):
+    """Error response for insufficient token balance."""
+    code: Literal["insufficient_tokens"] = Field(
+        "insufficient_tokens",
+        description="Error code for insufficient tokens"
+    )
+    current_balance: AccountTokenBalance = Field(
+        ...,
+        description="Current account balance"
+    )
+    required_tokens: TokenUsageUpdate = Field(
+        ...,
+        description="Required tokens for operation"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "code": "insufficient_tokens",
+                    "message": "Insufficient token balance",
+                    "type": "token_error",
+                    "current_balance": {
+                        "account_id": 1,
+                        "token_in": 100.0,
+                        "token_out": 50.0,
+                        "transactions": 10
+                    },
+                    "required_tokens": {
+                        "account_id": 1,
+                        "prompt_tokens": 150,
+                        "completion_tokens": 75
+                    }
+                }
+            ]
+        }
+    }
+
+class TokenUsageResponse(BaseModel):
+    """Response for a successful token usage update."""
+    account_id: int = Field(
+        ...,
+        gt=0,
+        description="Account identifier"
+    )
+    new_balance: AccountTokenBalance = Field(
+        ...,
+        description="Updated account balance"
+    )
+    usage: TokenUsageUpdate = Field(
+        ...,
+        description="Token usage details"
+    )
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="Timestamp of the update"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "account_id": 1,
+                    "new_balance": {
+                        "account_id": 1,
+                        "token_in": 2999850.0,
+                        "token_out": 999950.0,
+                        "transactions": 11
+                    },
+                    "usage": {
+                        "account_id": 1,
+                        "prompt_tokens": 150,
+                        "completion_tokens": 50
+                    },
+                    "timestamp": "2024-02-20T15:30:45.123456"
+                }
+            ]
+        }
+    }

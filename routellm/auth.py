@@ -61,34 +61,91 @@ class JWTBearer(HTTPBearer):
         if not credentials:
             raise HTTPException(
                 status_code=401,
-                detail="Missing authentication credentials",
+                detail={
+                    "error": {
+                        "message": "Missing authentication credentials",
+                        "type": "authentication_error",
+                        "param": None,
+                        "code": "missing_credentials"
+                    }
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             )
         
         if credentials.scheme.lower() != "bearer":
             raise HTTPException(
                 status_code=401,
-                detail="Invalid authentication scheme. Use Bearer token",
+                detail={
+                    "error": {
+                        "message": "Invalid authentication scheme. Use Bearer token",
+                        "type": "authentication_error",
+                        "param": None,
+                        "code": "invalid_auth_scheme"
+                    }
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             )
         
         try:
             public_key_b64 = os.getenv('JWT_PUBLIC_KEY_B64')
             if not public_key_b64:
-                raise HTTPException(status_code=500, detail="JWT public key not configured")
+                raise HTTPException(
+                    status_code=500, 
+                    detail={
+                        "error": {
+                            "message": "JWT public key not configured",
+                            "type": "configuration_error",
+                            "param": None,
+                            "code": "missing_jwt_key"
+                        }
+                    }
+                )
                 
             payload = decode_jwt(credentials.credentials, public_key_b64)
-            return payload
+            
+            # Extract and validate user ID from sub claim
+            try:
+                user_id = str(payload.get('sub', ''))
+                if not user_id or not user_id.isdigit():
+                    raise ValueError("Invalid sub claim")
+                return int(user_id)  # Return just the user ID as an integer
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": {
+                            "message": "Invalid user ID in token",
+                            "type": "authentication_error",
+                            "param": "sub",
+                            "code": "invalid_user_id"
+                        }
+                    },
+                    headers={"WWW-Authenticate": "Bearer"}
+                )
             
         except jwt.InvalidTokenError as e:
             raise HTTPException(
                 status_code=401,
-                detail=str(e),
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "authentication_error",
+                        "param": None,
+                        "code": "invalid_token"
+                    }
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             )
         except Exception as e:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid authentication credentials",
+                detail={
+                    "error": {
+                        "message": "Invalid authentication credentials",
+                        "type": "authentication_error",
+                        "param": None,
+                        "code": "auth_failed"
+                    }
+                },
                 headers={"WWW-Authenticate": "Bearer"}
             ) 

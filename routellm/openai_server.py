@@ -10,6 +10,7 @@ import asyncio
 import yaml
 import json
 from datetime import datetime
+import signal
 
 import logging
 import fastapi
@@ -20,10 +21,11 @@ from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends
 
-from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE
+from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE, RequestCostTracker
 from routellm.routers.routers import ROUTER_CLS
 from routellm.auth import JWTBearer
 import routellm.models 
+from routellm.database import Database
 
 from dotenv import load_dotenv
 
@@ -31,48 +33,73 @@ from dotenv import load_dotenv
 # APPLICATION INITIALIZATION
 # ------------------------------------------------------------------------------
 
-@asynccontextmanager
-async def lifespan(_):
-    logging.debug("Initializing controllers")
-    # try:
-    app.controllers = Controllers(
-        routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-        strong_model=args.strong_model,
-        weak_model=args.weak_model,
-        api_base=args.base_url,
-        api_key=args.api_key,
-        progress_bar=True,
-    )
-    app.controllers.create_controller("completion", 
-        routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-        strong_model=args.strong_model,
-        weak_model=args.weak_model,
-        api_base=args.base_url,
-        api_key=args.api_key,
-        progress_bar=True,
-    )
-    app.controllers.create_controller("longwriter", 
-        routers=args.routers,
-        config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-        strong_model=args.strong_model,
-        weak_model=args.weak_model,
-        api_base=args.base_url,
-        api_key=args.api_key,
-        progress_bar=True,
-    )
-    # create as many controllers as needed, below :
-    # app.controllers.create_controller("title_generator", **vars(args))
-    # app.controllers.create_controller("paraphrase", **vars(args))
-    logging.debug("Default controllers based on arguments, initialized successfully")
-    # except Exception as e:
-        # logging.error(f"Failed to initialize controllers: {str(e)}")
-    
-    yield
+def signal_handler(signum, frame):
+    """Handle interrupt signals by outputting total cost before exit."""
+    sys.exit(0)
 
-    app.controllers = []
-    logging.debug("All controllers shut down")
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+@asynccontextmanager
+async def lifespan(app: fastapi.FastAPI):
+    """Initialize and cleanup application state"""
+    try:
+        app.controllers = Controllers(
+            routers=args.routers,
+            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+            strong_model=args.strong_model,
+            weak_model=args.weak_model,
+            api_base=args.base_url,
+            api_key=args.api_key,
+            progress_bar=True,
+        )
+        app.controllers.create_controller("completion", 
+            routers=args.routers,
+            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+            strong_model=args.strong_model,
+            weak_model=args.weak_model,
+            api_base=args.base_url,
+            api_key=args.api_key,
+            progress_bar=True,
+        )
+        app.controllers.create_controller("longwriter", 
+            routers=args.routers,
+            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
+            strong_model=args.strong_model,
+            weak_model=args.weak_model,
+            api_base=args.base_url,
+            api_key=args.api_key,
+            progress_bar=True,
+        )
+        logging.debug("Default controllers based on arguments, initialized successfully")
+        
+        # Initialize database
+        app.db = Database()
+        
+        # Test database connection by trying to create tables
+        try:
+            # Get a test connection to verify database is working
+            test_conn = app.db._get_connection()
+            cursor = test_conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            yield
+        except Exception as e:
+            logging.error(f"Database connection test failed: {str(e)}")
+            raise Exception("Application startup failed - database initialization error") from e
+        
+    except Exception as e:
+        logging.error(f"Failed to initialize application: {str(e)}")
+        raise Exception("Application startup failed - database initialization error") from e
+    
+    finally:
+        # Cleanup on shutdown
+        if hasattr(app, 'db') and app.db:
+            app.db.close()
+        if hasattr(app, 'controllers'):
+            app.controllers = []
+        logging.debug("All controllers shut down")
 
 app = fastapi.FastAPI(lifespan=lifespan)
 
@@ -193,90 +220,216 @@ async def health_check():
 # ------------------------------------------------------------------------------
 
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request: routellm.models.ChatCompletionRequest, token: str = Depends(JWTBearer())):
+async def create_chat_completion(request: routellm.models.ChatCompletionRequest, user_id: int = Depends(JWTBearer())):
     logging.info(f"Received request: {request}")
-    try:
-        controller_name = await app.controllers.basic_routing(request)
-        logging.debug("controller_name: " + controller_name)
-    except RoutingError as e:
-        return JSONResponse(
-            routellm.models.ErrorResponse(message=str(e)).model_dump(),
-            status_code=400,
-        )
-
-    logging.info(app.controllers.completion.model_counts)
     
-    if request.stream:
-        if controller_name.startswith("longwriter"):
-            model = request.model or app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
-            logging.debug("model: " + model)
-            async def iter_response():
-                logging.debug("iter_response")
-                try:
-                    # Default HTML tags
-                    allowed_html_tags = "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul"
-                    # Check if custom tags are provided in request
-                    if request.allowed_html_tags is not None:
-                        allowed_html_tags = request.allowed_html_tags
-                        logging.debug(f"Using custom HTML tags: {allowed_html_tags}")
-                    
-                    content_request = ContentRequest(
-                        prompt=request.messages[-1]["content"],
-                        allowed_html_tags=allowed_html_tags,
-                        messages=request.messages
-                    ) 
-
-                    full_content = ""
-
-                    # status response
+    # Ensure user_id is set in the request
+    request_dict = request.model_dump(exclude_none=True)
+    request_dict["user"] = str(user_id)  # Convert to string as that's what the API expects
+    request = routellm.models.ChatCompletionRequest(**request_dict)
+    
+    # Get token estimates for the request
+    messages_content = " ".join([msg["content"] for msg in request.messages])
+    estimated_prompt_tokens = len(messages_content.split()) * 1.5  # Rough estimate
+    estimated_completion_tokens = 500  # Conservative estimate for completion
+    
+    # Check if user has sufficient balance BEFORE any token usage
+    try:
+        has_balance, current_balance = app.db.check_sufficient_balance(
+            account_id=user_id,
+            prompt_tokens=int(estimated_prompt_tokens),
+            completion_tokens=int(estimated_completion_tokens)
+        )
         
-                    logging.debug("Creating content strategy")
-                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
-                    content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
-                    logging.debug("Creating HTML strategy")
-                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
-                    html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_strategy, model)
-                    logging.debug("Creating Content outline")
-                    yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
-                    content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
-                    
-                    for _, section in enumerate(content_outline.sections):
-                        async for token in app.controllers.longwriter.get_content_draft(
-                            section, 
-                            content_strategy, 
-                            html_strategy, 
-                            content_outline, 
-                            full_content, 
-                            model,
-                            chunk_size=DEFAULT_CHUNK_SIZE
-                        ):
-                            full_content += token
-                            async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
-                                yield chunk
-                except Exception as e:
-                    yield f"Error during streaming: {str(e)}"
-            return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})  
-        else:
-            # Use the routed model if available, otherwise use completion's default model
-            if request.model:
-                kwargs = request.model_dump(exclude_none=True)
-            else:
-                kwargs = request.model_dump(exclude_none=True)
-                kwargs["model"] = app.controllers.completion.model_pair.weak
-            res = app.controllers.completion.completion(**kwargs)
-            is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-            chosen_model = res['model'] if is_predefined else res.model
-            return StreamingResponse(routellm.models.create_stream_response(res), media_type="text/event-stream", headers={"X-Chosen-Model": chosen_model}) 
-    else:
-        res = await app.controllers.response(request, controller_name, "acompletion")
-        is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-        chosen_model = res['model'] if is_predefined else res.model_dump()['model']
+        if not has_balance:
+            error_msg = (
+                f"Insufficient token balance. Current balance: "
+                f"{current_balance['token_in']} input tokens, "
+                f"{current_balance['token_out']} output tokens. "
+                f"Required: {int(estimated_prompt_tokens)} input tokens, "
+                f"{int(estimated_completion_tokens)} output tokens."
+            )
+            logging.error(f"Account {user_id}: {error_msg}")
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": error_msg,
+                        "type": "insufficient_balance",
+                        "param": None,
+                        "code": "insufficient_tokens"
+                    }
+                },
+                status_code=402,  # Payment Required
+                headers={
+                    "X-Current-Balance-In": str(current_balance['token_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Required-Tokens-In": str(int(estimated_prompt_tokens)),
+                    "X-Required-Tokens-Out": str(int(estimated_completion_tokens))
+                }
+            )
+    except Exception as e:
+        error_msg = f"Error checking token balance: {str(e)}"
+        logging.error(error_msg)
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": error_msg,
+                    "type": "internal_error",
+                    "param": None,
+                    "code": "balance_check_failed"
+                }
+            },
+            status_code=500
+        )
+    
+    # Create a cost tracker for this request
+    cost_tracker = RequestCostTracker()
+    
+    try:
+        # First determine routing - this will use some tokens
+        controller_name = await app.controllers.basic_routing(request, cost_tracker)
+        logging.debug("controller_name: " + controller_name)
+        
+        # After routing, check if we still have sufficient balance
+        routing_cost = cost_tracker.get_total()
+        has_balance, current_balance = app.db.check_sufficient_balance(
+            account_id=user_id,
+            prompt_tokens=int(estimated_prompt_tokens - routing_cost),  # Subtract tokens used for routing
+            completion_tokens=int(estimated_completion_tokens)
+        )
+        
+        if not has_balance:
+            error_msg = (
+                f"Insufficient remaining token balance after routing. Current balance: "
+                f"{current_balance['token_in']} input tokens, "
+                f"{current_balance['token_out']} output tokens. "
+                f"Required: {int(estimated_prompt_tokens - routing_cost)} input tokens, "
+                f"{int(estimated_completion_tokens)} output tokens."
+            )
+            logging.error(f"Account {user_id}: {error_msg}")
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": error_msg,
+                        "type": "insufficient_balance",
+                        "param": None,
+                        "code": "insufficient_tokens"
+                    }
+                },
+                status_code=402,
+                headers={
+                    "X-Current-Balance-In": str(current_balance['token_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Required-Tokens-In": str(int(estimated_prompt_tokens - routing_cost)),
+                    "X-Required-Tokens-Out": str(int(estimated_completion_tokens))
+                }
+            )
+        
+        if request.stream:
+            if controller_name.startswith("longwriter"):
+                model = request.model or app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
+                logging.debug("model: " + model)
+                async def iter_response():
+                    logging.debug("iter_response")
+                    try:
+                        # Default HTML tags
+                        allowed_html_tags = "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul"
+                        # Check if custom tags are provided in request
+                        if request.allowed_html_tags is not None:
+                            allowed_html_tags = request.allowed_html_tags
+                            logging.debug(f"Using custom HTML tags: {allowed_html_tags}")
+                        
+                        content_request = ContentRequest(
+                            prompt=request.messages[-1]["content"],
+                            allowed_html_tags=allowed_html_tags,
+                            messages=request.messages,
+                            user=str(user_id)  # Add user ID to content request
+                        ) 
 
-        if is_predefined:
-            content = routellm.models.predefined_completion_response(res).model_dump()
+                        full_content = ""
+
+                        # status response
+                    
+                        logging.debug("Creating content strategy")
+                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
+                        content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
+                        logging.debug("Creating HTML strategy")
+                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
+                        html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_strategy, model)
+                        logging.debug("Creating Content outline")
+                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
+                        content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
+                        
+                        for _, section in enumerate(content_outline.sections):
+                            async for token in app.controllers.longwriter.get_content_draft(
+                                section, 
+                                content_strategy, 
+                                html_strategy, 
+                                content_outline, 
+                                full_content, 
+                                model,
+                                chunk_size=DEFAULT_CHUNK_SIZE
+                            ):
+                                full_content += token
+                                async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
+                                    yield chunk
+                    except Exception as e:
+                        error_msg = f"Error during streaming: {str(e)}"
+                        logging.error(error_msg)
+                        yield f"data: {json.dumps({'error': {'message': error_msg}})}\n\n"
+                return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})
+            else:
+                # Use the routed model if available, otherwise use completion's default model
+                if request.model:
+                    kwargs = request.model_dump(exclude_none=True)
+                else:
+                    kwargs = request.model_dump(exclude_none=True)
+                    kwargs["model"] = app.controllers.completion.model_pair.weak
+                
+                logging.info("calling app.controllers.completion.completion for non-longwriter response")
+                
+                # Ensure user ID is set
+                kwargs["user"] = str(user_id)
+                
+                res = app.controllers.completion.completion(**kwargs)
+                
+                is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+                chosen_model = res['model'] if is_predefined else res.model
+
+                return StreamingResponse(
+                    routellm.models.create_stream_response(res),
+                    media_type="text/event-stream",
+                )
         else:
-            content = res.model_dump()
-        return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+            # Handle non-streaming case
+            kwargs = request.model_dump(exclude_none=True)
+            kwargs["user"] = str(user_id)  # Ensure user ID is set
+            res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
+            
+            is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
+            chosen_model = res['model'] if is_predefined else res.model_dump()['model']
+
+            if is_predefined:
+                content = routellm.models.predefined_completion_response(res).model_dump()
+            else:
+                content = res.model_dump()
+                
+            return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
+            
+    except Exception as e:
+        error_msg = f"Error processing request: {str(e)}"
+        logging.error(error_msg)
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": error_msg,
+                    "type": "internal_error",
+                    "param": None,
+                    "code": "request_failed"
+                }
+            },
+            status_code=500
+        )
 
 # ------------------------------------------------------------------------------
 # MAIN : APPLICATION STARTUP
@@ -285,7 +438,7 @@ async def create_chat_completion(request: routellm.models.ChatCompletionRequest,
 # if __name__ == "__main__":
 # Configure logging
 logging.basicConfig(
-    # level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
