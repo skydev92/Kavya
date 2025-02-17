@@ -136,6 +136,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.prod
 .venv
 env/
 venv/
@@ -178,3 +179,7 @@ cython_debug/
 *.db
 *.db-shm
 *.db-wal
+
+# Cloud SQL
+cloud-sql-proxy
+cloud-sql-proxy.linux.amd64
