@@ -206,7 +206,7 @@ If you prefer not to use Docker, you can set up a virtual environment and run Ka
 
 3. **Run Kavya**
    ```bash
-   python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml
+   python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089
    ```
 
 4. **Access Kavya**
