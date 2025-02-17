@@ -67,13 +67,49 @@
    docker build -t kavya .
    ```
 
-3. **Run the Docker Container**
+3. **Run Kavya**
+
+   **Development Mode**
    ```bash
-   docker run -p 8080:8080 kavya
+   # Run with local source code mounting for fast development
+   docker run --rm -it \
+     -p 8089:8080 \
+     -v $(pwd)/routellm:/app/routellm \
+     --env-file .env \
+     kavya
+
+   # Now you can:
+   # - Edit Python files locally
+   # - Ctrl+C to stop the container
+   # - Run the same command to restart with new code
+   # - No rebuild needed for Python code changes
    ```
 
+   **Production Mode**
+   ```bash
+   # Run without source mounting, using Google Cloud SQL
+   docker run -d \
+     -p 8080:8080 \
+     --env-file .env.prod \
+     -e ENVIRONMENT=prod \
+     kavya
+
+   # Note: Ensure your .env.prod contains:
+   # - CLOUD_SQL_CONNECTION_NAME
+   # - DB_USER
+   # - DB_PASS
+   # - DB_NAME
+   # - JWT_PUBLIC_KEY_B64
+   ```
+
+   **When to Rebuild Docker Image**
+   - Changes to `requirements.txt`
+   - Changes to `Dockerfile`
+   - Changes to files outside `routellm/` directory
+
 4. **Access Kavya**
-   Open your web browser and navigate to `http://localhost:8080` to start using Kavya.
+   - Development: `http://localhost:8089`
+   - Production: `http://localhost:8080`
 
 ### Alternative: Running Without Docker
 
