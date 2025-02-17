@@ -93,7 +93,10 @@
    
    Without Docker (Direct Python):
    ```bash
-   # Load production environment variables and start server
+   # First start the Cloud SQL Proxy in the background
+   ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
+
+   # Then load production environment variables and start server
    export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server \
      --verbose \                    # Enable verbose logging
      --routers mf \                 # Use the 'mf' router
