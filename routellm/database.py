@@ -148,6 +148,7 @@ class PostgreSQLConnection(DatabaseConnection):
         self.private_ip = private_ip
         self.engine = None
         self.isolation_level = "REPEATABLE READ"
+        self._in_transaction = False
 
     def connect(self):
         connector = Connector(refresh_strategy="LAZY")
@@ -161,10 +162,6 @@ class PostgreSQLConnection(DatabaseConnection):
                 db=self.db_name,
                 ip_type=IPTypes.PRIVATE if self.private_ip else IPTypes.PUBLIC,
             )
-            # Set isolation level at connection time
-            cursor = conn.cursor()
-            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            cursor.close()
             return conn
 
         self.engine = sqlalchemy.create_engine(
@@ -174,6 +171,7 @@ class PostgreSQLConnection(DatabaseConnection):
             max_overflow=5,
             pool_timeout=30,
             pool_recycle=1800,
+            isolation_level=self.isolation_level,  # Let SQLAlchemy handle isolation level
             connect_args={
                 "application_name": "kavya",
                 "tcp_keepalives_idle": 300,
@@ -185,27 +183,79 @@ class PostgreSQLConnection(DatabaseConnection):
         return self.connection
 
     def get_cursor(self):
+        if not self.connection:
+            raise RuntimeError("No connection established. Call connect() first.")
         if not self.cursor:
             self.cursor = self.connection.cursor()
         return self.cursor
 
     def begin_transaction(self):
-        """Start a transaction"""
-        self.get_cursor().execute("BEGIN")
+        """Start a transaction with proper error handling"""
+        if self._in_transaction:
+            raise RuntimeError("Transaction already in progress")
+        try:
+            self.get_cursor().execute("BEGIN")
+            self._in_transaction = True
+        except Exception as e:
+            logging.error(f"Failed to begin transaction: {str(e)}")
+            self._in_transaction = False
+            raise
 
     def commit(self):
-        self.connection.commit()
+        """Commit the current transaction with proper error handling"""
+        if not self._in_transaction:
+            raise RuntimeError("No transaction in progress")
+        try:
+            self.connection.commit()
+            self._in_transaction = False
+        except Exception as e:
+            logging.error(f"Failed to commit transaction: {str(e)}")
+            try:
+                self.rollback()
+            except:
+                pass  # Already in error state
+            raise
 
     def rollback(self):
-        self.connection.rollback()
+        """Rollback the current transaction with proper error handling"""
+        if not self._in_transaction:
+            return  # No transaction to rollback
+        try:
+            self.connection.rollback()
+        except Exception as e:
+            logging.error(f"Failed to rollback transaction: {str(e)}")
+            raise
+        finally:
+            self._in_transaction = False
 
     def close(self):
+        """Close all resources with proper cleanup"""
+        if self._in_transaction:
+            try:
+                self.rollback()
+            except:
+                pass  # Best effort rollback on close
+        
         if self.cursor:
-            self.cursor.close()
+            try:
+                self.cursor.close()
+            except:
+                pass  # Best effort cursor close
+            self.cursor = None
+            
         if self.connection:
-            self.connection.close()
+            try:
+                self.connection.close()
+            except:
+                pass  # Best effort connection close
+            self.connection = None
+            
         if self.engine:
-            self.engine.dispose()
+            try:
+                self.engine.dispose()
+            except:
+                pass  # Best effort engine dispose
+            self.engine = None
 
 class Database:
     # SQL Templates that work for both SQLite and PostgreSQL
