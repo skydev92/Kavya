@@ -195,18 +195,25 @@ class Database:
                 if not GOOGLE_CLOUD_SQL_AVAILABLE:
                     raise ImportError("Google Cloud SQL dependencies required for production environment")
                 
-                db_socket_dir = os.getenv("DB_SOCKET_DIR", "/cloudsql")
+                db_socket_dir = os.getenv("DB_SOCKET_DIR")
+                if not db_socket_dir:
+                    raise ValueError("DB_SOCKET_DIR environment variable is required in production")
+                    
                 instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME")
-                
                 if not instance_connection_name:
                     raise ValueError("INSTANCE_CONNECTION_NAME environment variable is required in production")
                 
-                db_user = os.getenv("DB_USER", "kavya")
+                db_user = os.getenv("DB_USER")
+                if not db_user:
+                    raise ValueError("DB_USER environment variable is required in production")
+                    
                 db_pass = os.getenv("DB_PASS")
-                db_name = os.getenv("DB_NAME", "kavya")
-
                 if not db_pass:
                     raise ValueError("DB_PASS environment variable is required in production")
+                    
+                db_name = os.getenv("DB_NAME")
+                if not db_name:
+                    raise ValueError("DB_NAME environment variable is required in production")
 
                 try:
                     # Initialize Cloud SQL Python Connector object
