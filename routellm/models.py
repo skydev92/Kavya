@@ -713,3 +713,27 @@ class TokenUsageResponse(BaseModel):
             ]
         }
     }
+
+class KavyaRequest(BaseModel):
+    """Request model for Kavya API validation."""
+    model: Literal["kavya-m1", "kavya-m1-EU"] = Field(
+        ...,
+        description="The Kavya model to use"
+    )
+    messages: List[ChatMessage] = Field(
+        ...,
+        description="The messages to process",
+        min_items=1
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description="Whether to stream the response"
+    )
+    user: Optional[str] = Field(
+        None,
+        description="A unique identifier for the user"
+    )
+    allowed_html_tags: Optional[str] = Field(
+        None,
+        description="Comma-separated list of allowed HTML tags"
+    )
