@@ -279,21 +279,33 @@ class Database:
                 RETURNING token_in, token_out, transactions
             """,
             'update_balance': """
-                UPDATE account_totals SET
-                    token_in = token_in - %s,
-                    token_out = token_out - %s,
-                    transactions = transactions + 1
-                WHERE account_id = %s
-                    AND token_in >= %s 
-                    AND token_out >= %s
-                RETURNING token_in, token_out, transactions
+                WITH updated_totals AS (
+                    UPDATE account_totals SET
+                        token_in = token_in - %s,
+                        token_out = token_out - %s,
+                        transactions = transactions + 1
+                    WHERE account_id = %s
+                        AND token_in >= %s 
+                        AND token_out >= %s
+                    RETURNING token_in, token_out, transactions
+                ),
+                daily_update AS (
+                    INSERT INTO account_daily_summary (account_id, date, token_in, token_out, transaction_count)
+                    VALUES (%s, %s::date, %s, %s, 1)
+                    ON CONFLICT(account_id, date) DO UPDATE SET
+                        transaction_count = account_daily_summary.transaction_count + 1,
+                        token_in = account_daily_summary.token_in + EXCLUDED.token_in,
+                        token_out = account_daily_summary.token_out + EXCLUDED.token_out,
+                        last_updated = CURRENT_TIMESTAMP
+                )
+                SELECT * FROM updated_totals
             """,
             'update_daily': """
                 INSERT INTO account_daily_summary 
-                    (account_id, date, token_in, token_out)
-                VALUES (%s, %s::date, %s, %s)
+                    (account_id, date, token_in, token_out, transaction_count)
+                VALUES (%s, %s::date, %s, %s, 1)
                 ON CONFLICT(account_id, date) DO UPDATE SET
-                    transaction_count = account_daily_summary.transaction_count + 1,
+                    transaction_count = COALESCE(account_daily_summary.transaction_count, 0) + 1,
                     token_in = account_daily_summary.token_in + EXCLUDED.token_in,
                     token_out = account_daily_summary.token_out + EXCLUDED.token_out,
                     last_updated = CURRENT_TIMESTAMP
@@ -484,21 +496,22 @@ class Database:
                         cursor.execute(
                             self._get_sql('update_balance'),
                             (
-                                prompt_tokens, completion_tokens,
-                                account_id,
-                                prompt_tokens, completion_tokens
+                                prompt_tokens, completion_tokens,  # For account_totals update
+                                account_id,  # For WHERE clause
+                                prompt_tokens, completion_tokens,  # For balance check
+                                account_id, today, prompt_tokens, completion_tokens  # For daily summary update
                             )
                         )
                     else:
-                        # PostgreSQL needs more parameters due to the CASE statements
+                        # PostgreSQL combined update for both tables
+                        today = datetime.now().strftime('%Y-%m-%d')
                         cursor.execute(
                             self._get_sql('update_balance'),
                             (
-                                prompt_tokens, prompt_tokens,  # For token_in CASE
-                                completion_tokens, completion_tokens,  # For token_out CASE
-                                prompt_tokens, completion_tokens,  # For transactions CASE
+                                prompt_tokens, completion_tokens,  # For account_totals update
                                 account_id,  # For WHERE clause
-                                prompt_tokens, completion_tokens  # For WHERE clause checks
+                                prompt_tokens, completion_tokens,  # For balance check
+                                account_id, today, prompt_tokens, completion_tokens  # For daily summary update
                             )
                         )
                     
@@ -512,10 +525,11 @@ class Database:
                             raise ValueError("Failed to update balance - insufficient tokens")
 
                     # Then update daily summary - always update this table second
-                    cursor.execute(
-                        self._get_sql('update_daily'),
-                        (account_id, today, prompt_tokens, completion_tokens)
-                    )
+                    if self.db_type == "sqlite":
+                        cursor.execute(
+                            self._get_sql('update_daily'),
+                            (account_id, today, prompt_tokens, completion_tokens)
+                        )
                     
                     # If we get here, the transaction succeeded
                     return
@@ -826,7 +840,8 @@ class Database:
                     (
                         prompt_tokens, completion_tokens,
                         account_id,
-                        prompt_tokens, completion_tokens
+                        prompt_tokens, completion_tokens,
+                        account_id, datetime.now().strftime('%Y-%m-%d'), prompt_tokens, completion_tokens  # Add missing parameters
                     )
                 )
                 
@@ -834,18 +849,21 @@ class Database:
                 if not result:
                     # If update failed, it means insufficient balance
                     logging.error(f"Insufficient balance update failed. Current: {current_balance}, Required: in={prompt_tokens}, out={completion_tokens}")
-                    raise InsufficientTokensError(
-                        message="Insufficient token balance",
-                        current_balance=AccountTokenBalance(
-                            account_id=account_id,
-                            token_in=float(current_balance['token_in']),
-                            token_out=float(current_balance['token_out']),
-                            transactions=int(current_balance['transactions'])
-                        ),
-                        required_tokens=TokenUsageUpdate(
-                            account_id=account_id,
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=completion_tokens
+                    return TokenUsageResponse(
+                        account_id=account_id,
+                        error=InsufficientTokensError(
+                            message="Insufficient token balance",
+                            current_balance=AccountTokenBalance(
+                                account_id=account_id,
+                                token_in=float(current_balance['token_in']),
+                                token_out=float(current_balance['token_out']),
+                                transactions=int(current_balance['transactions'])
+                            ),
+                            required_tokens=TokenUsageUpdate(
+                                account_id=account_id,
+                                prompt_tokens=prompt_tokens,
+                                completion_tokens=completion_tokens
+                            )
                         )
                     )
                 
@@ -856,14 +874,7 @@ class Database:
                 }
                 logging.info(f"New Balance After Update: {new_balance}")
                 
-                # Update daily summary
-                today = datetime.now().strftime('%Y-%m-%d')
-                cursor.execute(
-                    self._get_sql('update_daily'),
-                    (account_id, today, prompt_tokens, completion_tokens)
-                )
-                
-                logging.info("Daily summary updated successfully")
+                # No need for separate daily summary update since it's handled in the combined query
                 logging.info("=== DATABASE UPDATE END ===")
                 
                 # Return success response with new balance
@@ -882,8 +893,6 @@ class Database:
                     )
                 )
                 
-        except InsufficientTokensError:
-            raise
         except Exception as e:
             logging.error(f"Error updating usage: {str(e)}")
             raise RuntimeError(f"Failed to update token usage: {str(e)}")
