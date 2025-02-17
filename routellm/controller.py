@@ -11,7 +11,8 @@ from litellm import (
     completion, 
     batch_completion, 
     get_supported_openai_params,
-    supports_response_schema
+    supports_response_schema,
+    supports_function_calling
 )
 from textwrap import dedent
 from tqdm import tqdm
@@ -32,6 +33,17 @@ from routellm.models import (
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
+
+# Model translation mapping
+def get_model_translations(config):
+    """Get model translations from config, with fallback to defaults."""
+    if config and "model_translations" in config:
+        return config["model_translations"]
+    # Default fallback if not in config
+    return {
+        "kavya-m1": "router-mf-0.1",
+        "kavya-m1-EU": "router-mf-0.1"
+    }
 
 # Default config for routers augmented using golden label data from GPT-4.
 # This is exactly the same as config.example.yaml.
@@ -125,6 +137,7 @@ class Controller:
         self.api_key = api_key
         self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
+        self.model_translations = get_model_translations(config)
 
         if config is None:
             config = GPT_4_AUGMENTED_CONFIG
@@ -510,7 +523,7 @@ class Longwriter(Controller):
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
         # First check if model supports response schema
-        if not supports_response_schema(model=model):
+        if not supports_function_calling(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         content_strategist_prompt = '''
@@ -553,7 +566,7 @@ class Longwriter(Controller):
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
-        if not supports_response_schema(model=model):
+        if not supports_function_calling(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         html_strategist_prompt = f'''
@@ -588,7 +601,7 @@ class Longwriter(Controller):
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
         logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
-        if not supports_response_schema(model=model):
+        if not supports_function_calling(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         content_outliner_prompt = '''
