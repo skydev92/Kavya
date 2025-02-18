@@ -42,7 +42,7 @@ def get_model_translations(config):
     # Default fallback if not in config
     return {
         "kavya-m1": "router-mf-0.1",
-        "kavya-m1-EU": "router-mf-0.1"
+        "kavya-m1-eu": "router-mf-0.1"
     }
 
 # Default config for routers augmented using golden label data from GPT-4.
