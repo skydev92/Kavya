@@ -6,3 +6,9 @@ Prefer hard failures over silent failures, don't set defaults except in exceptio
 Database update failures should always stop the program because otherwise users are using our tokens for free.
 You can always restart the server without asking for permission.
 Use Pydantic models to validate data.
+
+# Async Best Practices
+Always use async/await consistently throughout the entire call chain - never mix sync operations (like next()) with async contexts
+Handle all response types explicitly (dict, str, AsyncGenerator) with proper type checking and conversion fallbacks
+Use proper error recovery in streaming contexts - catch errors but maintain the stream where possible
+Ensure all async generators properly yield [DONE] messages to close streams

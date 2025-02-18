@@ -11,6 +11,8 @@ import yaml
 import json
 from datetime import datetime
 import signal
+import time
+import shortuuid
 
 import logging
 import fastapi
@@ -415,7 +417,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
                         content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
                         
-                        for _, section in enumerate(content_outline.sections):
+                        # Use async iteration for sections
+                        for section in content_outline.sections:
                             async for token in app.controllers.longwriter.get_content_draft(
                                 section, 
                                 content_strategy, 
@@ -446,14 +449,39 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Remove original_model from kwargs before API call
                 original_model = kwargs.pop('original_model', None)
                 
-                # Make the API call
-                res = app.controllers.completion.completion(**kwargs)
-                
-                is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-                chosen_model = res['model'] if is_predefined else res.model
+                # Make the API call asynchronously
+                async def generate_stream():
+                    try:
+                        # Add router and threshold to kwargs
+                        kwargs["router"] = "mf"
+                        kwargs["threshold"] = 0.1
+                        
+                        # Ensure we're using acompletion for async streaming
+                        res = await app.controllers.completion.acompletion(**kwargs)
+                        
+                        if isinstance(res, str):
+                            # Handle string responses directly without streaming
+                            response_id = f"chatcmpl-{shortuuid.random()}"
+                            created_time = int(time.time())
+                            model = kwargs.get('model', 'unknown')
+                            
+                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}]})}\n\n"
+                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+                            yield "data: [DONE]\n\n"
+                        else:
+                            # Handle streaming responses
+                            async for chunk in routellm.models.create_stream_response(res, controller=app.controllers.completion):
+                                yield chunk
+                            
+                    except Exception as e:
+                        error_msg = f"Error during streaming: {str(e)}"
+                        logging.error(error_msg, exc_info=True)
+                        yield f"data: {json.dumps({'error': {'message': error_msg}})}\n\n"
+                        yield "data: [DONE]\n\n"
 
                 return StreamingResponse(
-                    routellm.models.create_stream_response(res, controller=app.controllers.completion),
+                    generate_stream(),
                     media_type="text/event-stream",
                 )
         else:
@@ -517,7 +545,7 @@ parser.add_argument(
     "--verbose",
     action="store_true",
 )
-parser.add_argument("--workers", type=int, default=0)
+parser.add_argument("--workers", type=int, default=2)
 parser.add_argument("--config", type=str, default=None)
 parser.add_argument("--port", type=int, default=8080)
 parser.add_argument(

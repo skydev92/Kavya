@@ -155,6 +155,15 @@ def download_all_docs():
         branch='master'
     )
 
+    # Download Uvicorn docs
+    clone_and_copy_docs(
+        'https://github.com/encode/uvicorn.git',
+        'uvicorn',
+        'docs',
+        'uvicorn',
+        branch='master'
+    )
+
 def clone_and_copy_docs(repo_url, repo_name, source_dir, dest_name, branch='main', specific_files=None):
     """Clone a repository and copy its documentation.
     

@@ -31,9 +31,9 @@ def create_status_response_dict(status: str, step : int, total : int, phase : st
         }
 
 async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator], controller=None) -> AsyncGenerator:
-    logging.debug("create_stream_response is triggered")
+    logging.debug("Processing stream response")
+    
     if isinstance(response, dict):
-        logging.debug("create_stream_response : response is a dict")
         # normal response
         if "choices" in response:
             if "message" in response['choices'][0]:
@@ -60,13 +60,9 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
             content = json.dumps(content)
 
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
-        
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
-
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
     elif isinstance(response, CustomStreamWrapper):
-        logging.debug("create_stream_response : response is a CustomStreamWrapper")
-
         # Get model name, preferring original model from controller if available
         if controller and hasattr(controller, 'original_model'):
             model = controller.original_model
@@ -81,32 +77,88 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
 
         try:
-            while True:
-                chunk = next(response)
+            async for chunk in response:
                 if chunk is None:
-                    break
-                # if there's ever an error after an update, it likely comes from the line below
-                dict_chunk = chunk.json() # actually converts to dict because of older pydantic version
-
-                logging.debug("streaming chunk: "+ json.dumps(json.loads(json.dumps(dict_chunk))))
-                if 'choices' in dict_chunk and len(dict_chunk['choices']) > 0 and 'delta' in dict_chunk['choices'][0]:
-                    content = dict_chunk['choices'][0]['delta'].get('content')
-                    if content is not None:
-                        # Handle structured output in streaming chunks
-                        if isinstance(content, (dict, list)):
-                            content = json.dumps(content)
-                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
-        except StopIteration:
-            pass
+                    continue
+                    
+                # Handle string chunks directly without any await
+                if isinstance(chunk, str):
+                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': chunk}, 'finish_reason': None}]})}\n\n"
+                    continue
+                
+                # Handle dictionary chunks
+                try:
+                    # First try to get the chunk as a dict
+                    if hasattr(chunk, 'model_dump'):
+                        # New Pydantic v2 method
+                        dict_chunk = chunk.model_dump()
+                    elif hasattr(chunk, 'dict'):
+                        # Old Pydantic v1 method
+                        dict_chunk = chunk.dict()
+                    elif hasattr(chunk, 'json'):
+                        # Fallback to json method
+                        dict_chunk = chunk.json()
+                        if isinstance(dict_chunk, str):
+                            dict_chunk = json.loads(dict_chunk)
+                    else:
+                        # If it's already a dict, use it directly
+                        dict_chunk = chunk if isinstance(chunk, dict) else {'content': str(chunk)}
+                    
+                    # Extract content from the chunk
+                    if 'choices' in dict_chunk and len(dict_chunk['choices']) > 0:
+                        if 'delta' in dict_chunk['choices'][0]:
+                            content = dict_chunk['choices'][0]['delta'].get('content')
+                        elif 'message' in dict_chunk['choices'][0]:
+                            content = dict_chunk['choices'][0]['message'].get('content')
+                        else:
+                            content = None
+                            
+                        if content is not None:
+                            # Handle structured output in streaming chunks
+                            if isinstance(content, (dict, list)):
+                                content = json.dumps(content)
+                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
+                except Exception as e:
+                    logging.error(f"Error processing chunk: {str(e)}", exc_info=True)
+                    # If chunk processing fails but we can convert it to string, yield it directly
+                    try:
+                        if chunk is not None:
+                            str_content = str(chunk)
+                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': str_content}, 'finish_reason': None}]})}\n\n"
+                    except Exception as str_error:
+                        logging.error(f"Failed to convert chunk to string: {str_error}", exc_info=True)
+                        continue
+                        
         except Exception as e:
-            logging.error(f"Error in stream processing: {str(e)}")
-            # Continue with completion on error
+            logging.error(f"Error in stream processing: {str(e)}", exc_info=True)
+            # Don't re-raise, continue with completion
 
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
-    else:
-        logging.debug("create_stream_response : response is not a dict")
+    elif isinstance(response, AsyncGenerator):
         async for chunk in response:
-            yield f"data: {chunk.model_dump_json()}\n\n"
+            if isinstance(chunk, str):
+                # Handle string chunks from AsyncGenerator
+                response_id = f"chatcmpl-{shortuuid.random()}"
+                created_time = int(time.time())
+                model = "unknown"
+                if controller and hasattr(controller, 'original_model'):
+                    model = controller.original_model
+                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': chunk}, 'finish_reason': None}]})}\n\n"
+            else:
+                yield f"data: {chunk.model_dump_json()}\n\n"
+    else:
+        logging.warning(f"Unexpected response type: {type(response)}")
+        if isinstance(response, str):
+            response_id = f"chatcmpl-{shortuuid.random()}"
+            created_time = int(time.time())
+            model = "unknown"
+            if controller and hasattr(controller, 'original_model'):
+                model = controller.original_model
+            
+            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': response}, 'finish_reason': None}]})}\n\n"
+            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+        
     yield "data: [DONE]\n\n"
 
 def predefined_completion_response(base_response, controller=None, **kwargs):

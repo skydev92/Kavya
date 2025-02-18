@@ -525,7 +525,8 @@ class TokenAccumulator:
         self.chunk_size = max(1, chunk_size)
         self.buffer: List[str] = []
     
-    def add_token(self, token: str) -> Optional[str]:
+    async def add_token(self, token: str) -> Optional[str]:
+        """Add a token to the buffer and return accumulated tokens if chunk size is reached."""
         self.buffer.append(token)
         if len(self.buffer) >= self.chunk_size:
             result = ''.join(self.buffer)
@@ -533,7 +534,8 @@ class TokenAccumulator:
             return result
         return None
     
-    def flush(self) -> Optional[str]:
+    async def flush(self) -> Optional[str]:
+        """Flush any remaining tokens in the buffer."""
         if self.buffer:
             result = ''.join(self.buffer)
             self.buffer = []
@@ -561,7 +563,7 @@ class Longwriter(Controller):
             original_messages = request.messages
         
         try:
-            response = completion(
+            response = await acompletion(
                 api_base=self.api_base,
                 api_key=self.api_key,
                 model=model,  # Direct model use after routing decision
@@ -574,7 +576,7 @@ class Longwriter(Controller):
             )
             
             # Get the content from the response
-            content = response["choices"][0]["message"]["content"]
+            content = response.choices[0].message.content
             logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
             
             strategy = ContentStrategy.model_validate_json(content)
@@ -585,7 +587,6 @@ class Longwriter(Controller):
             
         except Exception as e:
             logging.error(f"\033[91mError creating content strategy: {str(e)}\033[0m")
-            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
             raise
 
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
@@ -600,7 +601,7 @@ class Longwriter(Controller):
         '''
         
         try:
-            response = completion(
+            response = await acompletion(
                 model=model,  # Direct model use after routing decision
                 api_base=self.api_base,
                 api_key=self.api_key,
@@ -613,14 +614,13 @@ class Longwriter(Controller):
             )
 
             # Get the content from the response
-            content = response["choices"][0]["message"]["content"]
+            content = response.choices[0].message.content
             logging.debug(f"\033[96mHTML Strategy Response:\n{content}\033[0m")
             
             return HTMLTagStrategy.model_validate_json(content)
             
         except Exception as e:
             logging.error(f"\033[91mError creating HTML strategy: {str(e)}\033[0m")
-            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
             raise
 
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
@@ -641,7 +641,7 @@ class Longwriter(Controller):
         '''
         
         try:
-            response = completion(
+            response = await acompletion(
                 model=model,  # Direct model use after routing decision
                 api_base=self.api_base,
                 api_key=self.api_key,
@@ -654,14 +654,13 @@ class Longwriter(Controller):
             )
 
             # Get the content from the response
-            content = response["choices"][0]["message"]["content"]
+            content = response.choices[0].message.content
             logging.debug(f"\033[96mContent Outline Response:\n{content}\033[0m")
             
             return ContentOutline.model_validate_json(content)
             
         except Exception as e:
             logging.error(f"\033[91mError creating content outline: {str(e)}\033[0m")
-            logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
             raise
 
     async def get_content_draft(
@@ -751,7 +750,8 @@ class Longwriter(Controller):
                 {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
             )
 
-        response = completion(
+        # Use acompletion for async streaming
+        response = await acompletion(
             model=model,  # Direct model use after routing decision
             messages=self.content_writer_messages,  # Use the maintained message history
             stream=True,
@@ -768,7 +768,7 @@ class Longwriter(Controller):
             if chunk.choices[0].delta.content is not None:
                 token = chunk.choices[0].delta.content
                 full_response += token
-                accumulated = accumulator.add_token(token)
+                accumulated = await accumulator.add_token(token)
                 if accumulated:
                     yield accumulated
         
@@ -779,7 +779,7 @@ class Longwriter(Controller):
         })
         
         # Flush any remaining tokens
-        final_chunk = accumulator.flush()
+        final_chunk = await accumulator.flush()
         if final_chunk:
             yield final_chunk
 
