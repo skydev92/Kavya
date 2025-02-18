@@ -301,7 +301,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         )
         if not has_sufficient_balance:
             error_msg = (
-                f"Insufficient token balance. Current balance: "
+                f"Insufficient token balance. Please email jur@dxpr.com to request more tokens. Current balance: "
                 f"{current_balance['token_in']} input tokens, "
                 f"{current_balance['token_out']} output tokens. "
                 f"Required: {estimated_prompt_tokens} input tokens, "
@@ -359,7 +359,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         )
         if not has_sufficient_balance:
             error_msg = (
-                f"Insufficient remaining token balance after routing. Current balance: "
+                f"Insufficient remaining token balance after routing. Please email jur@dxpr.com to request more tokens. Current balance: "
                 f"{current_balance['token_in']} input tokens, "
                 f"{current_balance['token_out']} output tokens. "
                 f"Required: {remaining_prompt_tokens} input tokens, "
