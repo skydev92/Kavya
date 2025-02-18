@@ -578,9 +578,11 @@ if args.verbose:
 
 if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
-    uvicorn.run(
+    config = uvicorn.Config(
         "routellm.openai_server:app",
         port=args.port,
         host="0.0.0.0",
-        workers=args.workers,
+        workers=args.workers
     )
+    server = uvicorn.Server(config)
+    server.run()
