@@ -250,6 +250,11 @@ class Controller:
 
         model = kwargs.get('model', 'unspecified')
         logging.info(f"Making {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
+        
+        # Store original_model if provided, before any model selection logic
+        if 'original_model' in kwargs:
+            self.original_model = kwargs.pop('original_model')
+            
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
@@ -339,6 +344,13 @@ class Controller:
                 enum_response = EnumResponse.from_enum(enum_class, enum_value)
                 response["choices"][0]["message"]["content"] = enum_response.model_dump()
 
+        # If we have an original_model stored, use it in the response
+        if hasattr(self, 'original_model'):
+            if isinstance(response, dict):
+                response['model'] = self.original_model
+            else:
+                response.model = self.original_model
+
         return response
 
     async def acompletion(
@@ -363,6 +375,11 @@ class Controller:
         model = kwargs.get('model', 'unspecified')
         logging.info(f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
         logging.debug("acontroller function started")
+        
+        # Store original_model if provided, before any model selection logic
+        if 'original_model' in kwargs:
+            self.original_model = kwargs.pop('original_model')
+            
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
@@ -465,6 +482,13 @@ class Controller:
             if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
                 enum_response = EnumResponse.from_enum(enum_class, enum_value)
                 response.choices[0].message.content = enum_response.model_dump()
+
+        # If we have an original_model stored, use it in the response
+        if hasattr(self, 'original_model'):
+            if isinstance(response, dict):
+                response['model'] = self.original_model
+            else:
+                response.model = self.original_model
 
         return response
 

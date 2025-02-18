@@ -30,7 +30,7 @@ def create_status_response_dict(status: str, step : int, total : int, phase : st
             }
         }
 
-async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]) -> AsyncGenerator:
+async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator], controller=None) -> AsyncGenerator:
     logging.debug("create_stream_response is triggered")
     if isinstance(response, dict):
         logging.debug("create_stream_response : response is a dict")
@@ -44,7 +44,10 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         else:
             content = response['content']
         
-        if "model" in response:
+        # Get model name, preferring original model from controller if available
+        if controller and hasattr(controller, 'original_model'):
+            model = controller.original_model
+        elif "model" in response:
             model = response['model']
         else:
             model = "predefined_prompt"
@@ -64,7 +67,14 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
     elif isinstance(response, CustomStreamWrapper):
         logging.debug("create_stream_response : response is a CustomStreamWrapper")
 
-        model = response.model
+        # Get model name, preferring original model from controller if available
+        if controller and hasattr(controller, 'original_model'):
+            model = controller.original_model
+        elif hasattr(response, 'model') and response.model:
+            model = response.model
+        else:
+            model = "predefined_prompt"
+            
         response_id = f"chatcmpl-{shortuuid.random()}"
         created_time = int(time.time())
 
@@ -73,18 +83,24 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         try:
             while True:
                 chunk = next(response)
+                if chunk is None:
+                    break
                 # if there's ever an error after an update, it likely comes from the line below
                 dict_chunk = chunk.json() # actually converts to dict because of older pydantic version
 
-                logging.debug("strange json : "+ json.dumps(json.loads(json.dumps(dict_chunk))))
-                content = dict_chunk['choices'][0]['delta']['content']
-                if content is not None:
-                    # Handle structured output in streaming chunks
-                    if isinstance(content, (dict, list)):
-                        content = json.dumps(content)
-                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
+                logging.debug("streaming chunk: "+ json.dumps(json.loads(json.dumps(dict_chunk))))
+                if 'choices' in dict_chunk and len(dict_chunk['choices']) > 0 and 'delta' in dict_chunk['choices'][0]:
+                    content = dict_chunk['choices'][0]['delta'].get('content')
+                    if content is not None:
+                        # Handle structured output in streaming chunks
+                        if isinstance(content, (dict, list)):
+                            content = json.dumps(content)
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}]})}\n\n"
         except StopIteration:
             pass
+        except Exception as e:
+            logging.error(f"Error in stream processing: {str(e)}")
+            # Continue with completion on error
 
         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model' : model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
     else:
@@ -93,22 +109,19 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
             yield f"data: {chunk.model_dump_json()}\n\n"
     yield "data: [DONE]\n\n"
 
-def predefined_completion_response(base_response, **kwargs):
+def predefined_completion_response(base_response, controller=None, **kwargs):
     """
     Construct a ChatCompletionResponse from a base response (dict) and various optional keyword arguments.
     
     Args:
         base_response (dict): a base response (dict) returned from the chat completion API
+        controller: Optional controller instance that may contain the original model name
         id (str, optional): id of the response. Defaults to None.
         object (str, optional): object of the response. Defaults to "chat.completion".
         created (int, optional): created time of the response. Defaults to int(time.time()).
         model (str, optional): model used for the response. Defaults to 'predefined_prompt'.
-        choices (List[ChatCompletionResponseChoice], optional): choices of the response. Defaults to [ChatCompletionResponseChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=base_response['choices'][0]['message']['content']),
-                    finish_reason="stop"
-                )].
-        usage (UsageInfo, optional): usage of the response. Defaults to UsageInfo(prompt_tokens=0, completion_tokens=0, total_tokens=0).
+        choices (List[ChatCompletionResponseChoice], optional): choices of the response.
+        usage (UsageInfo, optional): usage of the response.
     
     Returns:
         ChatCompletionResponse: a constructed ChatCompletionResponse
@@ -117,7 +130,13 @@ def predefined_completion_response(base_response, **kwargs):
     id = kwargs.get('id', f"chatcmpl-{shortuuid.random()}")
     object = kwargs.get('object', "chat.completion")
     created = kwargs.get('created', int(time.time()))
-    model = kwargs.get('model', 'predefined_prompt')
+    
+    # Get model name, preferring original model from controller if available
+    if controller and hasattr(controller, 'original_model'):
+        model = controller.original_model
+    else:
+        model = kwargs.get('model', 'predefined_prompt')
+    
     choices = kwargs.get('choices', [ChatCompletionResponseChoice(
                     index=0,
                     message=ChatMessage(role="assistant", content=base_response['choices'][0]['message']['content']),
@@ -133,7 +152,7 @@ def predefined_completion_response(base_response, **kwargs):
                 model=model,
                 choices=choices,
                 usage=usage
-            ).model_dump()
+            )
 
 class ErrorResponse(BaseModel):
     """Error response from the API."""
@@ -229,6 +248,10 @@ class ChatCompletionRequest(BaseModel):
     model: str = Field(
         ...,
         description="ID of the model to use"
+    )
+    original_model: Optional[str] = Field(
+        None,
+        description="Original model name before translation"
     )
     messages: Union[
         str,

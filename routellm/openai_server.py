@@ -240,8 +240,15 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     # First validate if it's a Kavya request
     try:
         kavya_request = routellm.models.KavyaRequest(**request_data)
-        # If validation passes, translate the model
-        request_data["model"] = app.controllers.default.model_translations[kavya_request.model]
+        # Store original model name before translation
+        original_model = kavya_request.model
+        # If validation passes, translate the model and store original
+        request_data["original_model"] = original_model
+        request_data["model"] = app.controllers.default.model_translations[original_model]
+        # Store original model in the controller for later use
+        app.controllers.default.original_model = original_model
+        app.controllers.completion.original_model = original_model
+        app.controllers.longwriter.original_model = original_model
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
         if "model" in request_data and isinstance(request_data["model"], str) and request_data["model"].startswith("kavya-"):
@@ -416,7 +423,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 content_outline, 
                                 model
                             ):
-                                async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
+                                async for chunk in routellm.models.create_stream_response({"content": token, "model": model}, controller=app.controllers.longwriter):
                                     yield chunk
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
@@ -436,26 +443,34 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Ensure user ID is set
                 kwargs["user"] = str(user_id)
                 
+                # Remove original_model from kwargs before API call
+                original_model = kwargs.pop('original_model', None)
+                
+                # Make the API call
                 res = app.controllers.completion.completion(**kwargs)
                 
                 is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
                 chosen_model = res['model'] if is_predefined else res.model
 
                 return StreamingResponse(
-                    routellm.models.create_stream_response(res),
+                    routellm.models.create_stream_response(res, controller=app.controllers.completion),
                     media_type="text/event-stream",
                 )
         else:
             # Handle non-streaming case
             kwargs = request.model_dump(exclude_none=True)
             kwargs["user"] = str(user_id)  # Ensure user ID is set
+            
+            # Remove original_model from kwargs before API call
+            original_model = kwargs.pop('original_model', None)
+            
             res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
             
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
             chosen_model = res['model'] if is_predefined else res.model_dump()['model']
 
             if is_predefined:
-                content = routellm.models.predefined_completion_response(res).model_dump()
+                content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
             else:
                 content = res.model_dump()
                 
