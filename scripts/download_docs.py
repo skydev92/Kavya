@@ -2,13 +2,13 @@ import os
 import subprocess
 import shutil
 from pathlib import Path
-import pkg_resources
 import tempfile
+from importlib.metadata import version, PackageNotFoundError
 
 def get_litellm_version():
     try:
-        return pkg_resources.get_distribution('litellm').version
-    except pkg_resources.DistributionNotFound:
+        return version('litellm')
+    except PackageNotFoundError:
         return None
 
 def download_docs_from_repo(repo_url, repo_name, docs_path, target_dir, branch='main'):
@@ -126,6 +126,72 @@ def download_all_docs():
         'google-cloud-sql',
         branch='main'
     )
+
+    # Download SQLAlchemy docs
+    clone_and_copy_docs(
+        'https://github.com/sqlalchemy/sqlalchemy.git',
+        'sqlalchemy',
+        'doc/build',
+        'sqlalchemy',
+        branch='main'
+    )
+
+    # Download pg8000 docs (README only)
+    clone_and_copy_docs(
+        'https://github.com/tlocke/pg8000.git',
+        'pg8000',
+        '',  # Root directory since we only want README.md
+        'pg8000',
+        branch='main',
+        specific_files=['README.md']  # Only copy README.md
+    )
+
+def clone_and_copy_docs(repo_url, repo_name, source_dir, dest_name, branch='main', specific_files=None):
+    """Clone a repository and copy its documentation.
+    
+    Args:
+        repo_url: URL of git repository
+        repo_name: Name of repository directory
+        source_dir: Directory containing docs in the repository
+        dest_name: Name of destination directory
+        branch: Git branch to use
+        specific_files: List of specific files to copy (optional)
+    """
+    temp_dir = Path(tempfile.mkdtemp())
+    try:
+        # Clone repository
+        repo_path = temp_dir / repo_name
+        subprocess.run(['git', 'clone', '--depth=1', '--branch', branch, repo_url, str(repo_path)], check=True)
+        
+        # Set source and destination paths
+        docs_source = repo_path / source_dir
+        docs_dir = Path('docs') / dest_name
+        
+        if specific_files:
+            # Copy specific files only
+            if docs_dir.exists():
+                shutil.rmtree(docs_dir)
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            
+            for file in specific_files:
+                src_file = repo_path / file
+                if src_file.exists():
+                    shutil.copy2(src_file, docs_dir)
+            print(f"Successfully copied specific files for {dest_name}")
+        else:
+            # Copy entire directory
+            if docs_dir.exists():
+                shutil.rmtree(docs_dir)
+            if docs_source.exists():
+                shutil.copytree(docs_source, docs_dir)
+                print(f"Successfully downloaded {dest_name} docs")
+            else:
+                print(f"Could not find docs in the repository for {dest_name}")
+    
+    finally:
+        # Clean up
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
 
 if __name__ == '__main__':
     download_all_docs() 
