@@ -29,7 +29,7 @@ RUN echo '#!/bin/bash' > start.sh && \
     echo '  /cloud_sql_proxy --structured-logs "$INSTANCE_CONNECTION_NAME" &' >> start.sh && \
     echo '  sleep 5  # Wait for proxy to start' >> start.sh && \
     echo 'fi' >> start.sh && \
-    echo 'exec python -m routellm.openai_server --verbose --routers mf --strong-model "gemini/gemini-2.0-flash-001" --weak-model "gemini/gemini-2.0-flash-lite-preview-02-05" --config config.yaml' >> start.sh && \
+    echo 'exec python -m routellm.openai_server --verbose --routers mf --strong-model "gpt-4o" --weak-model "gpt-4o-mini" --config config.yaml' >> start.sh && \
     chmod +x start.sh
 
 # Expose port for the application
