@@ -3,4 +3,4 @@ mf:
 
 model_translations:
     kavya-m1: router-mf-0.1
-    kavya-m1-EU: mistral/mistral-large-latest
+    kavya-m1-eu: mistral/mistral-large-latest
