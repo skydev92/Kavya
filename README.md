@@ -20,6 +20,7 @@
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
+- [Database Setup](#database-setup)
 
 ---
 
@@ -53,6 +54,7 @@
 - **Operating System**: Windows, macOS, or Linux
 - **Python**: 3.11 or higher
 - **Docker**: Latest stable version
+- **PostgreSQL**: 17 or higher (for development)
 
 ### Steps to Install and Run Kavya
 
@@ -62,22 +64,57 @@
    cd kavya
    ```
 
-2. **Build the Docker Image**
+2. **Set Up Development Environment**
+
+   a. **Install PostgreSQL** (macOS)
    ```bash
-   docker build -t kavya .
+   # Install PostgreSQL 17
+   brew install postgresql@17
+   
+   # Start PostgreSQL service
+   brew services start postgresql@17
+   
+   # Verify installation
+   postgres --version
+   ```
+
+   b. **Set Up Local Database**
+   ```bash
+   # Run the database setup script
+   python scripts/setup_local_db.py
+   
+   # This will:
+   # - Create a database user (kavya_user)
+   # - Create a database (kavya_db)
+   # - Set up the password (postgres)
+   # - Create/update your .env file
+   ```
+
+   c. **Test Database Connection**
+   ```bash
+   # Connect to the database
+   psql -h localhost -U kavya_user -d kavya_db
+   # When prompted for password, enter: postgres
+   
+   # You should see the PostgreSQL prompt:
+   kavya_db=>
+   # Type \q to exit
    ```
 
 3. **Run Kavya**
 
-   **Development Mode**
+   **Development Mode** (with local PostgreSQL)
    ```bash
+   # First ensure PostgreSQL is running
+   brew services start postgresql@17
+
    # Run with local source code mounting for fast development
    docker run --rm -it \
      --name kavya-dev \
      -p 8089:${PORT:-8080} \
      -v $(pwd)/routellm:/app/routellm \
      --env-file .env \
-     -e ENVIRONMENT=dev \  # Forces development mode with SQLite
+     -e ENVIRONMENT=dev \
      kavya
 
    # Now you can:
@@ -86,10 +123,9 @@
    # - Run the same command to restart with new code
    # - No rebuild needed for Python code changes
    # - Container will be named 'kavya-dev' for easy reference
-   # - Uses local SQLite database for development
    ```
 
-   **Production Mode**
+   **Production Mode** (with Google Cloud SQL)
    
    Without Docker (Direct Python):
    ```bash
@@ -105,33 +141,6 @@
      --config config.yaml \         # Use config.yaml for router settings
      --port 8089                    # Listen on port 8089
 
-   # Command breakdown:
-   # 1. export $(grep -v '^#' .env.prod | xargs)
-   #    - Loads all non-commented variables from .env.prod
-   #    - Sets them as environment variables
-   #
-   # 2. python -m routellm.openai_server
-   #    - Starts the OpenAI-compatible server
-   #
-   # 3. --verbose
-   #    - Enables detailed logging
-   #
-   # 4. --routers mf
-   #    - Uses the Matrix Factorization router
-   #    - Helps route requests to appropriate models
-   #
-   # 5. --strong-model gpt-4o
-   #    - Sets the powerful model for complex tasks
-   #
-   # 6. --weak-model gpt-4o-mini
-   #    - Sets the faster model for simpler tasks
-   #
-   # 7. --config config.yaml
-   #    - Provides router-specific configuration
-   #
-   # 8. --port 8089
-   #    - Sets the server port
-   #
    # Required environment variables in .env.prod:
    # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
    # - DB_USER=postgres
@@ -147,7 +156,7 @@
      --name kavya-prod \
      -p 8080:${PORT:-8080} \
      --env-file .env.prod \
-     kavya  # No ENVIRONMENT var needed - defaults to production mode
+     kavya
 
    # Required environment variables for production:
    # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
@@ -157,12 +166,6 @@
    # - DB_USER=kavya
    # - DB_NAME=kavya
    # - DB_SOCKET_DIR=/cloudsql
-   # Note: Ensure your .env.prod contains:
-   # - CLOUD_SQL_CONNECTION_NAME
-   # - DB_USER
-   # - DB_PASS
-   # - DB_NAME
-   # - JWT_PUBLIC_KEY_B64
    ```
 
    **Useful Docker Commands**
@@ -204,13 +207,39 @@ If you prefer not to use Docker, you can set up a virtual environment and run Ka
    pip install -r requirements.txt
    ```
 
-3. **Run Kavya**
+3. **Set Up Database** (if not done already)
+   ```bash
+   python scripts/setup_local_db.py
+   ```
+
+4. **Run Kavya**
    ```bash
    python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089
    ```
 
-4. **Access Kavya**
+5. **Access Kavya**
    Open your web browser and navigate to `http://localhost:8080` to start using Kavya.
+
+### Troubleshooting
+
+If you encounter database issues:
+
+1. **Check PostgreSQL Service**
+   ```bash
+   brew services list          # Check if PostgreSQL is running
+   brew services start postgresql@17  # Start if not running
+   ```
+
+2. **Test Connection**
+   ```bash
+   psql -h localhost -U kavya_user -d kavya_db
+   # Password: postgres
+   ```
+
+3. **Common Solutions**
+   - Ensure PostgreSQL service is running
+   - Verify your `.env` file has the correct `DATABASE_URL`
+   - For production, check that Cloud SQL Proxy is running
 
 ---
 
@@ -312,3 +341,113 @@ Authorization: Bearer YOUR_API_KEY
     - `chunk_size`: Number of tokens to accumulate before sending (default: 3)
 
   The chunking configuration helps reduce text editor refresh rate by accumulating tokens before sending them to the client. A larger chunk size means fewer but larger updates, while a smaller size provides more granular updates.
+
+## Database Setup
+
+### Development Environment
+
+The development environment uses a local PostgreSQL database. Setup is automated:
+
+1. **Install PostgreSQL** (if not already installed):
+   ```bash
+   # macOS
+   brew install postgresql@17
+   brew services start postgresql@17
+   
+   # Ubuntu/Debian
+   sudo apt-get update
+   sudo apt-get install postgresql-15
+   ```
+
+2. **Run the Setup Script**
+   ```bash
+   python scripts/setup_local_db.py
+   ```
+   This script will:
+   - Create the database user and database
+   - Set up the correct permissions
+   - Create/update your `.env` file with the correct configuration
+   - Test the connection
+
+3. **Verify Setup**
+   ```bash
+   # Test database connection
+   psql -h localhost -U kavya_user -d kavya_db
+   # Password: postgres
+   ```
+
+### Production Environment
+
+The production environment uses Google Cloud SQL. Required configuration in `.env.prod`:
+
+```bash
+ENVIRONMENT=prod
+INSTANCE_CONNECTION_NAME=your-project:region:instance
+DATABASE_URL=postgresql://kavya_user:your-prod-password@localhost:5432/kavya_db
+PRIVATE_IP=true  # Optional, set to true if using private IP
+```
+
+Note: `JWT_PUBLIC_KEY_B64` is required for both development and production environments.
+
+### Troubleshooting
+
+If you encounter database issues:
+
+1. **Check PostgreSQL Service**
+   ```bash
+   brew services list          # Check if PostgreSQL is running
+   brew services start postgresql@17  # Start if not running
+   ```
+
+2. **Test Connection**
+   ```bash
+   psql -h localhost -U kavya_user -d kavya_db
+   # Password: postgres
+   ```
+
+3. **Common Solutions**
+   - Ensure PostgreSQL service is running
+   - Verify your `.env` file has the correct `DATABASE_URL`
+   - For production, check that Cloud SQL Proxy is running
+
+---
+
+## Configuration
+
+### Environment Variables
+
+- **ENVIRONMENT**: Set to `dev` for development or `prod` for production.
+- **INSTANCE_CONNECTION_NAME**: The connection name for Google Cloud SQL.
+- **DB_USER**: The database user.
+- **DB_PASS**: The database password.
+- **DB_NAME**: The database name.
+- **PRIVATE_IP**: Optional, set to true if using private IP (default: false).
+
+### Configuration File
+
+The configuration file is located at `config.yaml`. You can customize the following settings:
+
+- **routers**: The router to use for content generation.
+- **strong-model**: The powerful model for complex tasks.
+- **weak-model**: The faster model for simpler tasks.
+- **config**: Additional router-specific configuration.
+
+---
+
+## Contributing
+
+We welcome contributions from the community. Please read our [Contribution Guidelines](CONTRIBUTING.md) for more information on how to contribute to Kavya.
+
+---
+
+## License
+
+Kavya is licensed under the MIT License. See [LICENSE](LICENSE) for more information.
+
+---
+
+## Contact
+
+For any questions or support, please contact us at [contact@kavya.com](mailto:contact@kavya.com).
+
+---

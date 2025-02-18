@@ -42,7 +42,7 @@ exclude = ["assets*", "benchmarks*"]
 exclude = ["assets*", "benchmarks*"]
 
 [tool.setuptools.package-data]
-"routellm" = ["docs/litellm/**/*", "docs/pydantic/**/*", "docs/google-cloud-sql/**/*", "docs/sqlite/**/*"]
+"routellm" = ["docs/litellm/**/*", "docs/pydantic/**/*", "docs/google-cloud-sql/**/*"]
 
 [tool.setuptools]
 script-files = ["scripts/download_docs.py"]

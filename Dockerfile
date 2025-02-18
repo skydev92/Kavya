@@ -4,11 +4,9 @@ WORKDIR /app
 
 RUN echo "Debug: Starting build process for RouteLLM server"
 
-# Install build dependencies, SQLite tools, and wget for Cloud SQL proxy
+# Install build dependencies and wget for Cloud SQL proxy
 RUN apt-get update && apt-get install -y \
     build-essential \
-    gcc \
-    sqlite3 \
     wget \
     && rm -rf /var/lib/apt/lists/*
 

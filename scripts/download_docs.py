@@ -99,35 +99,32 @@ def download_docs():
             shutil.rmtree(temp_dir)
 
 def download_all_docs():
-    """
-    Download documentation from all specified repositories.
-    """
+    """Download all documentation."""
     # Download LiteLLM docs
-    download_docs()
-    
+    clone_and_copy_docs(
+        'https://github.com/BerriAI/litellm.git',
+        'litellm',
+        'docs',
+        'litellm',
+        branch='main'
+    )
+
     # Download Pydantic docs
-    download_docs_from_repo(
+    clone_and_copy_docs(
         'https://github.com/pydantic/pydantic.git',
         'pydantic',
         'docs',
-        'pydantic'
+        'pydantic',
+        branch='main'
     )
-    
+
     # Download Google Cloud SQL docs
-    download_docs_from_repo(
+    clone_and_copy_docs(
         'https://github.com/GoogleCloudPlatform/python-docs-samples.git',
         'google-cloud-sql',
         'cloud-sql',
-        'google-cloud-sql'
-    )
-    
-    # Download SQLite docs
-    download_docs_from_repo(
-        'https://github.com/sqlite/sqlite.git',
-        'sqlite',
-        'doc',
-        'sqlite',
-        branch='master'  # SQLite uses 'master' as its default branch
+        'google-cloud-sql',
+        branch='main'
     )
 
 if __name__ == '__main__':
