@@ -519,6 +519,7 @@ class TokenAccumulator:
 class Longwriter(Controller):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.content_writer_messages = None  # Will be initialized during first content draft
     
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
@@ -639,10 +640,15 @@ class Longwriter(Controller):
             logging.error(f"\033[91mRaw response content: {response['choices'][0]['message']['content'] if response else 'No response'}\033[0m")
             raise
 
-    async def get_content_draft(self, section: OutlineSection, content_strategy: ContentStrategy, 
-                              html_strategy: HTMLTagStrategy, outline: ContentOutline, 
-                              preceding_content: str, model: str, 
-                              chunk_size: int = DEFAULT_CHUNK_SIZE) -> AsyncGenerator:
+    async def get_content_draft(
+        self,
+        section: OutlineSection, 
+        content_strategy: ContentStrategy, 
+        html_strategy: HTMLTagStrategy, 
+        outline: ContentOutline, 
+        model: str,
+        chunk_size: int = DEFAULT_CHUNK_SIZE
+    ) -> AsyncGenerator:
         logging.info(f"Making streaming completion call for content draft section '{section.title}' using model: {model}")
         # Extract tone from system prompt if present
         tone_instruction = ""
@@ -666,7 +672,7 @@ class Longwriter(Controller):
 
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
-        This section is part of a larger article, so ensure continuity with the preceding content.
+        This section is part of a larger article, so ensure continuity with previous sections.
 
         Key points:
         1. Use ONLY these HTML tags: {", ".join(html_strategy.tags)}
@@ -675,7 +681,7 @@ class Longwriter(Controller):
         4. Follow the content strategy and address key questions
         5. Aim for {section.target_word_count} words
         6. Be creative and engaging
-        7. Ensure continuity with the preceding sections, avoid repetitive phrases
+        7. Ensure continuity with previous sections, avoid repetitive phrases
         8. Keep in mind the overall structure of the article as outlined
         9. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
         10. Only use the specified HTML tags for formatting{tone_instruction}
@@ -706,34 +712,47 @@ class Longwriter(Controller):
         Here's the outline of the entire article:
         {outline.model_dump_json()}
 
-        Here's the content of the preceding sections:
-        {preceding_content}
-
         Now, write the next section: {section.title}
         '''
 
-        messages = [
-            {"role": "system", "content": content_writer_prompt},
-            {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
-        ]
+        # Initialize or update chat history
+        if self.content_writer_messages is None:
+            self.content_writer_messages = [
+                {"role": "system", "content": content_writer_prompt},
+                {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
+            ]
+        else:
+            # For subsequent sections, add to existing conversation
+            self.content_writer_messages.append(
+                {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
+            )
 
         response = completion(
             model=model,  # Direct model use after routing decision
-            messages=messages,
+            messages=self.content_writer_messages,  # Use the maintained message history
             stream=True,
             api_base=self.api_base,
             api_key=self.api_key,
             user=content_strategy.user  # Get user ID from content strategy
         )
         
+        # Use provided chunk_size or default
         accumulator = TokenAccumulator(chunk_size=chunk_size)
+        full_response = ""
         
-        for chunk in response:
+        async for chunk in response:
             if chunk.choices[0].delta.content is not None:
                 token = chunk.choices[0].delta.content
+                full_response += token
                 accumulated = accumulator.add_token(token)
                 if accumulated:
                     yield accumulated
+        
+        # Add the complete response to message history
+        self.content_writer_messages.append({
+            "role": "assistant",
+            "content": full_response
+        })
         
         # Flush any remaining tokens
         final_chunk = accumulator.flush()
@@ -755,14 +774,21 @@ class Longwriter(Controller):
             logging.error(error_msg)
             raise ValueError(error_msg)
             
-        full_content = ""
+        # Reset content writer messages for new content
+        self.content_writer_messages = None
+            
         content_strategy = await self.get_content_strategy(request, model)
         html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
         content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
         
         for section in content_outline.sections:
-            async for token in self.get_content_draft(section, content_strategy, html_strategy, content_outline, full_content, model):
-                full_content += token
+            async for token in self.get_content_draft(
+                section,
+                content_strategy,
+                html_strategy,
+                content_outline,
+                model
+            ):
                 yield token
 
     async def acompletion(

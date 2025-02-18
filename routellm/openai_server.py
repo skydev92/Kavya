@@ -398,10 +398,6 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             user=str(user_id)  # Add user ID to content request
                         ) 
 
-                        full_content = ""
-
-                        # status response
-                    
                         logging.debug("Creating content strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
                         content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
@@ -418,11 +414,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 content_strategy, 
                                 html_strategy, 
                                 content_outline, 
-                                full_content, 
-                                model,
-                                chunk_size=DEFAULT_CHUNK_SIZE
+                                model
                             ):
-                                full_content += token
                                 async for chunk in routellm.models.create_stream_response({"content": token, "model": model}):
                                     yield chunk
                     except Exception as e:
