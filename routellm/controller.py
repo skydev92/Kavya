@@ -554,7 +554,13 @@ class Longwriter(Controller):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         content_strategist_prompt = '''
-        You are a content strategist. Based on the E-E-A-T framework, provide a content strategy.
+        You are a professional content strategist. Create a comprehensive content strategy that ensures:
+        - Expertise in the subject matter
+        - Authority in the field
+        - Trustworthiness of information
+        - User engagement and value
+        
+        Provide a content strategy that incorporates these principles without explicitly referencing them.
         '''
         
         # Store the original messages for later use
