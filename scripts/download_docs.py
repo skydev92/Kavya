@@ -146,6 +146,15 @@ def download_all_docs():
         specific_files=['README.md']  # Only copy README.md
     )
 
+    # Download FastAPI docs
+    clone_and_copy_docs(
+        'https://github.com/fastapi/fastapi.git',
+        'fastapi',
+        'docs/en/docs',
+        'fastapi',
+        branch='master'
+    )
+
 def clone_and_copy_docs(repo_url, repo_name, source_dir, dest_name, branch='main', specific_files=None):
     """Clone a repository and copy its documentation.
     
