@@ -393,6 +393,19 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 async def iter_response():
                     logging.debug("iter_response")
                     try:
+                        # First yield router usage information if available
+                        if hasattr(request, 'router_usage') and request.router_usage:
+                            router_usage_event = {
+                                "jsonrpc": "2.0",
+                                "method": "agent/cost_disclosure",
+                                "params": {
+                                    "prompt_tokens": request.router_usage["prompt_tokens"],
+                                    "completion_tokens": request.router_usage["completion_tokens"],
+                                    "description": "Router analysis"
+                                }
+                            }
+                            yield "data: "+json.dumps(router_usage_event) + "\n\n"
+
                         # Default HTML tags
                         allowed_html_tags = "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul"
                         # Check if custom tags are provided in request
@@ -410,24 +423,57 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         logging.debug("Creating content strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
                         content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
+                        # Disclose content strategy costs
+                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                            description="Content strategy generation"
+                        )) + "\n\n"
+                        
                         logging.debug("Creating HTML strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
                         html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_strategy, model)
+                        # Disclose HTML strategy costs
+                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                            description="HTML strategy generation"
+                        )) + "\n\n"
+                        
                         logging.debug("Creating Content outline")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
                         content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
+                        # Disclose content outline costs
+                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                            description="Content outline generation"
+                        )) + "\n\n"
                         
                         # Use async iteration for sections
+                        response_id = f"chatcmpl-{shortuuid.random()}"
+                        created_time = int(time.time())
+                        initial_usage = {
+                            "prompt_tokens": app.controllers.longwriter.cost_tracker.prompt_tokens
+                        }
+                        # Send initial assistant role
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
+                        
                         for section in content_outline.sections:
-                            async for token in app.controllers.longwriter.get_content_draft(
+                            async for token, token_count in app.controllers.longwriter.get_content_draft(
                                 section, 
                                 content_strategy, 
                                 html_strategy, 
                                 content_outline, 
                                 model
                             ):
-                                async for chunk in routellm.models.create_stream_response({"content": token, "model": model}, controller=app.controllers.longwriter):
-                                    yield chunk
+                                # Send content chunk
+                                usage = {"completion_tokens": token_count}
+                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                        
+                        # Send final stop message
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+                        yield "data: [DONE]\n\n"
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
                         logging.error(error_msg)
@@ -449,30 +495,95 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Remove original_model from kwargs before API call
                 original_model = kwargs.pop('original_model', None)
                 
+                # Get router usage from the request object where it was stored during basic_routing
+                router_usage = getattr(request, 'router_usage', None)
+                
+                # Remove router_usage from kwargs if present
+                kwargs.pop('router_usage', None)
+                
                 # Make the API call asynchronously
                 async def generate_stream():
                     try:
+                        # First yield router usage information if available
+                        if router_usage:
+                            router_usage_event = {
+                                "jsonrpc": "2.0",
+                                "method": "agent/cost_disclosure",
+                                "params": {
+                                    "prompt_tokens": router_usage["prompt_tokens"],
+                                    "completion_tokens": router_usage["completion_tokens"],
+                                    "description": "Router analysis"
+                                }
+                            }
+                            yield f"data: {json.dumps(router_usage_event)}\n\n"
+                        
+                        # Initialize response_id and created_time at the start
+                        response_id = f"chatcmpl-{shortuuid.random()}"
+                        created_time = int(time.time())
+                        
                         # Add router and threshold to kwargs
                         kwargs["router"] = "mf"
                         kwargs["threshold"] = 0.1
+                        
+                        # Initialize cost tracker
+                        app.controllers.completion.user = str(user_id)  # Set user ID for token tracking
+                        app.controllers.completion.cost_tracker = RequestCostTracker()  # Initialize cost tracker
+
+                        # Initialize prompt tokens
+                        messages_content = " ".join([msg["content"] for msg in kwargs.get("messages", [])])
+                        app.controllers.completion.cost_tracker.prompt_tokens = len(messages_content.split())
                         
                         # Ensure we're using acompletion for async streaming
                         res = await app.controllers.completion.acompletion(**kwargs)
                         
                         if isinstance(res, str):
                             # Handle string responses directly without streaming
-                            response_id = f"chatcmpl-{shortuuid.random()}"
-                            created_time = int(time.time())
                             model = kwargs.get('model', 'unknown')
                             
-                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}]})}\n\n"
-                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}]})}\n\n"
-                            yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
-                            yield "data: [DONE]\n\n"
+                            # Get usage information from the controller
+                            usage = {
+                                "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
+                                "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
+                                "total_tokens": app.controllers.completion.cost_tracker.get_total()
+                            }
+                            
+                            # Get current token balance
+                            try:
+                                current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
+                                if current_balance:
+                                    total_spent_input_tokens = float(current_balance['token_in'])
+                                    total_spent_output_tokens = float(current_balance['token_out'])
+                                    
+                                    # First chunk with role and usage
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                    
+                                    # Content chunk
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                    
+                                    # Final chunk with finish reason and updated usage
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                            except Exception as e:
+                                logging.error(f"Error getting token balance: {str(e)}")
+                                # Yield chunks without balance information
+                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
                         else:
                             # Handle streaming responses
-                            async for chunk in routellm.models.create_stream_response(res, controller=app.controllers.completion):
+                            async for chunk in routellm.models.create_stream_response(res, controller=app.controllers.completion, completion_tokens=1):
                                 yield chunk
+                            
+                            # Update token usage in database
+                            try:
+                                app.db.update_usage_with_response(
+                                    account_id=int(app.controllers.completion.user),
+                                    prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
+                                    completion_tokens=app.controllers.completion.cost_tracker.completion_tokens
+                                )
+                            except Exception as e:
+                                logging.error(f"Error updating token balance: {str(e)}", exc_info=True)
+                        
+                        yield "data: [DONE]\n\n"
                             
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
@@ -489,18 +600,32 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             kwargs = request.model_dump(exclude_none=True)
             kwargs["user"] = str(user_id)  # Ensure user ID is set
             
-            # Remove original_model from kwargs before API call
+            # Remove original_model and router_usage from kwargs before API call
             original_model = kwargs.pop('original_model', None)
+            kwargs.pop('router_usage', None)
             
             res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
             
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
             chosen_model = res['model'] if is_predefined else res.model_dump()['model']
 
-            if is_predefined:
-                content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
-            else:
-                content = res.model_dump()
+            # Get current token balance
+            try:
+                current_balance = app.db.get_balance(account_id=user_id)
+                if is_predefined:
+                    content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
+                    content['total_spent_input_tokens'] = float(current_balance['token_in'])
+                    content['total_spent_output_tokens'] = float(current_balance['token_out'])
+                else:
+                    content = res.model_dump()
+                    content['total_spent_input_tokens'] = float(current_balance['token_in'])
+                    content['total_spent_output_tokens'] = float(current_balance['token_out'])
+            except Exception as e:
+                logging.error(f"Error getting token balance: {str(e)}")
+                if is_predefined:
+                    content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
+                else:
+                    content = res.model_dump()
                 
             return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
             

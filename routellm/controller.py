@@ -2,7 +2,7 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional, Callable, AsyncGenerator, List
+from typing import Any, Optional, Callable, AsyncGenerator, List, Tuple
 
 import pandas as pd
 import litellm
@@ -109,15 +109,25 @@ class ModelPair:
 class RequestCostTracker:
     def __init__(self):
         self.cost = 0.0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
         self.lock = Lock()
     
     def add_cost(self, cost: float):
         with self.lock:
             self.cost += cost
     
+    def update_prompt_tokens(self, tokens: int):
+        with self.lock:
+            self.prompt_tokens += tokens
+    
+    def update_completion_tokens(self, tokens: int):
+        with self.lock:
+            self.completion_tokens += tokens
+    
     def get_total(self) -> float:
         with self.lock:
-            return self.cost
+            return self.prompt_tokens + self.completion_tokens
 
 class Controller:
     def __init__(
@@ -524,31 +534,42 @@ class TokenAccumulator:
     def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE):
         self.chunk_size = max(1, chunk_size)
         self.buffer: List[str] = []
+        self.token_count = 0
     
-    async def add_token(self, token: str) -> Optional[str]:
+    async def add_token(self, token: str) -> Optional[Tuple[str, int]]:
         """Add a token to the buffer and return accumulated tokens if chunk size is reached."""
         self.buffer.append(token)
-        if len(self.buffer) >= self.chunk_size:
+        self.token_count += 1  # Each token from the model is one token
+        if self.token_count >= self.chunk_size:
             result = ''.join(self.buffer)
+            tokens_to_return = self.token_count
             self.buffer = []
-            return result
-        return None
+            self.token_count = 0
+            return result, tokens_to_return
+        return None, 0
     
-    async def flush(self) -> Optional[str]:
+    async def flush(self) -> Optional[Tuple[str, int]]:
         """Flush any remaining tokens in the buffer."""
         if self.buffer:
             result = ''.join(self.buffer)
+            tokens_to_return = self.token_count
             self.buffer = []
-            return result
-        return None
+            self.token_count = 0
+            return result, tokens_to_return
+        return None, 0
 
 class Longwriter(Controller):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.content_writer_messages = None  # Will be initialized during first content draft
+        self.cost_tracker = RequestCostTracker()  # Initialize cost tracker
+        self.user = None  # Will be set during API calls
     
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
+        # Reset cost tracker for new request
+        self.cost_tracker = RequestCostTracker()
+        self.user = request.user
         # First check if model supports response schema
         if not supports_function_calling(model=model):
             raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
@@ -580,6 +601,11 @@ class Longwriter(Controller):
                 response_format=ContentStrategy,
                 user=request.user  # Propagate user ID
             )
+            
+            # Update cost tracker with response usage
+            if hasattr(response, 'usage'):
+                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
+                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
             
             # Get the content from the response
             content = response.choices[0].message.content
@@ -618,6 +644,11 @@ class Longwriter(Controller):
                 response_format=HTMLTagStrategy,
                 user=content_strategy.user  # Get user ID directly from content_strategy
             )
+
+            # Update cost tracker with response usage
+            if hasattr(response, 'usage'):
+                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
+                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
 
             # Get the content from the response
             content = response.choices[0].message.content
@@ -658,6 +689,11 @@ class Longwriter(Controller):
                 response_format=ContentOutline,
                 user=content_strategy.user  # Get user ID from content strategy
             )
+
+            # Update cost tracker with response usage
+            if hasattr(response, 'usage'):
+                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
+                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
 
             # Get the content from the response
             content = response.choices[0].message.content
@@ -774,9 +810,9 @@ class Longwriter(Controller):
             if chunk.choices[0].delta.content is not None:
                 token = chunk.choices[0].delta.content
                 full_response += token
-                accumulated = await accumulator.add_token(token)
+                accumulated, token_count = await accumulator.add_token(token)
                 if accumulated:
-                    yield accumulated
+                    yield accumulated, token_count
         
         # Add the complete response to message history
         self.content_writer_messages.append({
@@ -785,9 +821,9 @@ class Longwriter(Controller):
         })
         
         # Flush any remaining tokens
-        final_chunk = await accumulator.flush()
+        final_chunk, final_count = await accumulator.flush()
         if final_chunk:
-            yield final_chunk
+            yield final_chunk, final_count
 
     async def content_creation_agent(self, request: ContentRequest, model: str):
         """Main content generation method that coordinates the content creation process."""
@@ -808,18 +844,41 @@ class Longwriter(Controller):
         self.content_writer_messages = None
             
         content_strategy = await self.get_content_strategy(request, model)
+        # Disclose content strategy costs
+        disclosure = routellm.models.create_cost_disclosure_dict(
+            prompt_tokens=self.cost_tracker.prompt_tokens,
+            completion_tokens=self.cost_tracker.completion_tokens,
+            description='Content strategy generation'
+        )
+        yield f"data: {json.dumps(disclosure)}\n\n"
+        
         html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
+        # Disclose HTML strategy costs
+        disclosure = routellm.models.create_cost_disclosure_dict(
+            prompt_tokens=self.cost_tracker.prompt_tokens,
+            completion_tokens=self.cost_tracker.completion_tokens,
+            description='HTML strategy generation'
+        )
+        yield f"data: {json.dumps(disclosure)}\n\n"
+        
         content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
+        # Disclose content outline costs
+        disclosure = routellm.models.create_cost_disclosure_dict(
+            prompt_tokens=self.cost_tracker.prompt_tokens,
+            completion_tokens=self.cost_tracker.completion_tokens,
+            description='Content outline generation'
+        )
+        yield f"data: {json.dumps(disclosure)}\n\n"
         
         for section in content_outline.sections:
-            async for token in self.get_content_draft(
+            async for token, token_count in self.get_content_draft(
                 section,
                 content_strategy,
                 html_strategy,
                 content_outline,
                 model
             ):
-                yield token
+                yield token, token_count
 
     async def acompletion(
         self,
@@ -847,8 +906,8 @@ class Longwriter(Controller):
             allowed_html_tags=kwargs.get("allowed_html_tags", "")
         )
 
-        async for token in self.content_creation_agent(request, kwargs["model"]):
-            yield token
+        async for token, token_count in self.content_creation_agent(request, kwargs["model"]):
+            yield token, token_count
 
 class Controllers:
     def __init__(self, **kwargs):
@@ -989,6 +1048,13 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
             prompt_tokens=response.usage.prompt_tokens,
             completion_tokens=response.usage.completion_tokens
         ))
+
+        # Store router usage in the request object
+        request.router_usage = {
+            "prompt_tokens": response.usage.prompt_tokens,
+            "completion_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens
+        }
 
         try:
             # Get the content directly from the response

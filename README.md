@@ -133,13 +133,8 @@
    ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
 
    # Then load production environment variables and start server
-   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server \
-     --verbose \                    # Enable verbose logging
-     --routers mf \                 # Use the 'mf' router
-     --strong-model gpt-4o \        # Set the strong model
-     --weak-model gpt-4o-mini \     # Set the weak model
-     --config config.yaml \         # Use config.yaml for router settings
-     --port 8089                    # Listen on port 8089
+   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089
+
 
    # Required environment variables in .env.prod:
    # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>

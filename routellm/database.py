@@ -540,7 +540,7 @@ class Database:
         cursor.execute("""
         SELECT token_in, token_out, transactions 
         FROM account_totals 
-        WHERE account_id = ?
+        WHERE account_id = %s
         """, (account_id,))
         result = cursor.fetchone()
         if result:
@@ -558,7 +558,7 @@ class Database:
         cursor.execute("""
         SELECT date, transaction_count, token_in, token_out 
         FROM account_daily_summary 
-        WHERE account_id = ? AND date BETWEEN ? AND ?
+        WHERE account_id = %s AND date BETWEEN %s AND %s
         ORDER BY date
         """, (account_id, start_date, end_date))
         return cursor.fetchall()
@@ -708,7 +708,7 @@ class Database:
         cursor.execute("""
         SELECT token_in, token_out, transactions 
         FROM account_totals 
-        WHERE account_id = ?
+        WHERE account_id = %s
         """, (account_id,))
         result = cursor.fetchone()
         
@@ -745,7 +745,7 @@ class Database:
         cursor.execute("""
         SELECT date, transaction_count, token_in, token_out 
         FROM account_daily_summary 
-        WHERE account_id = ? AND date BETWEEN ? AND ?
+        WHERE account_id = %s AND date BETWEEN %s AND %s
         ORDER BY date
         """, (account_id, start_date, end_date))
         
