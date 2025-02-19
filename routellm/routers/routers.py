@@ -20,6 +20,7 @@ from routellm.routers.similarity_weighted.utils import (
     compute_elo_mle_with_tie,
     compute_tiers,
     preprocess_battles,
+    get_embedding_for_text,
 )
 
 
@@ -39,7 +40,13 @@ class Router(abc.ABC):
         pass
 
     def route(self, prompt, threshold, routed_pair):
-        if self.calculate_strong_win_rate(prompt) >= threshold:
+        winrate = self.calculate_strong_win_rate(prompt)
+        
+        # Special case: if winrate is -1.0, it means the text is extremely long (>100K tokens)
+        if winrate == -1.0:
+            return "gemini/gemini-2.0-flash"
+            
+        if winrate >= threshold:
             return routed_pair.strong
         else:
             return routed_pair.weak
@@ -178,32 +185,35 @@ class SWRankingRouter(Router):
         self,
         prompt,
     ):
-        prompt_emb = (
-            (
-                OPENAI_CLIENT.embeddings.create(
-                    input=[prompt], model=self.embedding_model
-                )
+        try:
+            prompt_emb = get_embedding_for_text(prompt, model=self.embedding_model)
+            
+            # If prompt is too long or embedding failed, route to strong model
+            if prompt_emb is None:
+                print(f"Routing to strong model due to token limit or embedding error")
+                return 1.0
+                
+            similarities = np.dot(self.arena_conv_embedding, prompt_emb) / (
+                np.linalg.norm(self.arena_conv_embedding, axis=1)
+                * np.linalg.norm(prompt_emb)
             )
-            .data[0]
-            .embedding
-        )
-        similarities = np.dot(self.arena_conv_embedding, prompt_emb) / (
-            np.linalg.norm(self.arena_conv_embedding, axis=1)
-            * np.linalg.norm(prompt_emb)
-        )
 
-        weightings = self.get_weightings(similarities)
-        res = compute_elo_mle_with_tie(self.arena_df, sample_weight=weightings)
+            weightings = self.get_weightings(similarities)
+            res = compute_elo_mle_with_tie(self.arena_df, sample_weight=weightings)
 
-        weak_score, strong_score = (
-            res[self.model2tier[self.weak_model]],
-            res[self.model2tier[self.strong_model]],
-        )
-        weak_winrate = 1 / (1 + 10 ** ((strong_score - weak_score) / 400))
-        strong_winrate = 1 - weak_winrate
+            weak_score, strong_score = (
+                res[self.model2tier[self.weak_model]],
+                res[self.model2tier[self.strong_model]],
+            )
+            weak_winrate = 1 / (1 + 10 ** ((strong_score - weak_score) / 400))
+            strong_winrate = 1 - weak_winrate
 
-        # If the expected strong winrate is greater than the threshold, use strong
-        return strong_winrate
+            # If the expected strong winrate is greater than the threshold, use strong
+            return strong_winrate
+        except Exception as e:
+            # If anything fails, route to strong model for safety
+            print(f"Error in SWRankingRouter, routing to strong model: {str(e)}")
+            return 1.0
 
 
 @no_parallel

@@ -7,11 +7,9 @@ import pandas as pd
 from openai import OpenAI
 from sklearn.linear_model import LogisticRegression
 from dotenv import load_dotenv
+from routellm.utils import get_embedding_for_text, OPENAI_CLIENT
 
 load_dotenv()
-
-OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
 
 def compute_tiers(model_ratings, num_tiers):
     n = len(model_ratings)

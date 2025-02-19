@@ -784,15 +784,14 @@ class Longwriter(Controller):
         if self.content_writer_messages is None:
             self.content_writer_messages = [
                 {"role": "system", "content": content_writer_prompt},
-                {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
+                {"role": "user", "content": f"Write next section:\n{section.model_dump_json()}"}
             ]
         else:
-            # For subsequent sections, add to existing conversation
+            # For subsequent sections, use the same format
             self.content_writer_messages.append(
-                {"role": "user", "content": f"Section to write: {section.model_dump_json()}\nStrategy: {content_strategy.model_dump_json()}"}
+                {"role": "user", "content": f"Write next section:\n{section.model_dump_json()}"}
             )
 
-        # Use acompletion for async streaming
         response = await acompletion(
             model=model,  # Direct model use after routing decision
             messages=self.content_writer_messages,  # Use the maintained message history

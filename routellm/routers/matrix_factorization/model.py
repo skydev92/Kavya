@@ -2,6 +2,8 @@ import torch
 from huggingface_hub import PyTorchModelHubMixin
 
 from routellm.routers.similarity_weighted.utils import OPENAI_CLIENT
+from routellm.utils import get_embedding_for_text
+import litellm
 
 MODEL_IDS = {
     "RWKV-4-Raven-14B": 0,
@@ -111,11 +113,10 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
         model_embed = self.P(model_id)
         model_embed = torch.nn.functional.normalize(model_embed, p=2, dim=1)
 
-        prompt_embed = (
-            OPENAI_CLIENT.embeddings.create(input=[prompt], model=self.embedding_model)
-            .data[0]
-            .embedding
-        )
+        prompt_embed = get_embedding_for_text(prompt, model=self.embedding_model)
+        if prompt_embed is None:
+            return torch.tensor([-float('inf'), float('inf')], device=self.get_device())
+            
         prompt_embed = torch.tensor(prompt_embed, device=self.get_device())
         prompt_embed = self.text_proj(prompt_embed)
 
@@ -123,6 +124,25 @@ class MFModel(torch.nn.Module, PyTorchModelHubMixin):
 
     @torch.no_grad()
     def pred_win_rate(self, model_a, model_b, prompt):
+        # Check token count first
+        try:
+            token_count = litellm.token_counter(text=prompt)
+            print(f"Token count: {token_count}")
+            
+            # If text is extremely long (>100K tokens), route to Gemini Flash
+            if token_count > 100000:
+                print(f"Text length {token_count} tokens exceeds 100K tokens, routing to Gemini Flash")
+                return -1.0  # Special value to indicate Gemini Flash routing
+            
+            # Regular token limit check for embedding model
+            if token_count > 8000:
+                print(f"Text length {token_count} tokens exceeds maximum 8K tokens, routing to strong model")
+                return 1.0  # Route to strong model
+        except Exception as e:
+            print(f"Error counting tokens: {str(e)}, routing to strong model")
+            return 1.0  # Route to strong model on error
+            
+        # Only try to get embeddings if text is within limits
         logits = self.forward([model_a, model_b], prompt)
         winrate = torch.sigmoid(logits[0] - logits[1]).item()
         return winrate

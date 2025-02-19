@@ -8,6 +8,7 @@ import tqdm
 from datasets import Dataset, load_dataset
 
 from routellm.routers.similarity_weighted.utils import preprocess_battles
+from routellm.utils import OPENAI_CLIENT
 
 
 def get_embeddings(battles_df):
@@ -17,17 +18,13 @@ def get_embeddings(battles_df):
         lambda s: json.loads(s)[0].strip()
     )
 
-    client = openai.OpenAI(
-        api_key=os.environ["OPENAI_API_KEY"], base_url="https://api.openai.com/v1"
-    )
-
     batch_size = 2000
     embeddings = []
     user_prompts = battles_df["first_turn"].tolist()
 
     for i in tqdm.tqdm(range(0, len(user_prompts), batch_size)):
         battles = user_prompts[i : i + batch_size]
-        responses = client.embeddings.create(
+        responses = OPENAI_CLIENT.embeddings.create(
             input=battles, model="text-embedding-3-small"
         ).data
         embeddings.extend([data.embedding for data in responses])
