@@ -13,6 +13,7 @@ from datetime import datetime
 import signal
 import time
 import shortuuid
+import re
 
 import logging
 import fastapi
@@ -459,6 +460,17 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         # Send initial assistant role
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
                         
+                        # Initialize word buffer for tracking total words
+                        word_buffer = ""
+                        
+                        def count_words(text: str) -> int:
+                            """Count words in text after stripping HTML tags."""
+                            # Remove HTML tags using regex
+                            text_without_html = re.sub(r'<[^>]+>', '', text)
+                            # Split on whitespace and filter out empty strings
+                            words = [word for word in text_without_html.split() if word.strip()]
+                            return len(words)
+
                         for section in content_outline.sections:
                             async for token, token_count in app.controllers.longwriter.get_content_draft(
                                 section, 
@@ -467,9 +479,28 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 content_outline, 
                                 model
                             ):
-                                # Send content chunk
-                                usage = {"completion_tokens": token_count}
+                                # Accumulate content for word counting
+                                word_buffer += token
+                                current_word_count = count_words(word_buffer)
+                                
+                                # Send content chunk with word count
+                                usage = {
+                                    "completion_tokens": token_count,
+                                    "word_count": current_word_count
+                                }
                                 yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                        
+                        # Update database with final word count
+                        try:
+                            final_word_count = count_words(word_buffer)
+                            app.db.update_usage_with_response(
+                                account_id=int(user_id),
+                                prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                                completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                                word_count=final_word_count
+                            )
+                        except Exception as e:
+                            logging.error(f"Error updating word count in database: {str(e)}", exc_info=True)
                         
                         # Send final stop message
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"

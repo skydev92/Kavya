@@ -4,6 +4,7 @@ import shortuuid
 import logging
 import sys
 from datetime import datetime
+import re
 
 from pydantic import BaseModel, Field, field_validator
 from typing import AsyncGenerator, Dict, List, Literal, Optional, Union, Any
@@ -59,6 +60,18 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         "prompt_tokens": controller.cost_tracker.prompt_tokens if hasattr(controller, 'cost_tracker') else 0
     }
     
+    # Initialize word counter for streamed content
+    word_buffer = ""
+    word_count = 0
+    
+    def count_words(text: str) -> int:
+        """Count words in text after stripping HTML tags."""
+        # Remove HTML tags using regex
+        text_without_html = re.sub(r'<[^>]+>', '', text)
+        # Split on whitespace and filter out empty strings
+        words = [word for word in text_without_html.split() if word.strip()]
+        return len(words)
+    
     # First chunk with role and initial prompt token usage - only once per stream
     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
     
@@ -66,10 +79,13 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
     if isinstance(response, dict):
         content = response.get('content', '')
         if content:
+            # Count words in content
+            word_count = count_words(content)
             # Use provided completion tokens
             if completion_tokens > 0:
                 usage = {
-                    "completion_tokens": completion_tokens
+                    "completion_tokens": completion_tokens,
+                    "word_count": word_count
                 }
                 yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
     elif isinstance(response, (CustomStreamWrapper, AsyncGenerator)):
@@ -86,6 +102,9 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
                     content = chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else None
                 
                 if content:
+                    # Accumulate content for word counting
+                    word_buffer += content
+                    
                     # Use provided completion tokens
                     if completion_tokens > 0:
                         # Update controller's total count
@@ -94,7 +113,8 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
                         
                         # Report only the new tokens for this chunk
                         usage = {
-                            "completion_tokens": completion_tokens
+                            "completion_tokens": completion_tokens,
+                            "word_count": count_words(word_buffer)  # Count total words so far
                         }
                         
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
@@ -112,8 +132,30 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
             logging.error(f"Error in stream processing: {str(e)}", exc_info=True)
             raise
     
+    # Count any remaining words in buffer
+    if word_buffer:
+        word_count = count_words(word_buffer)
+    
+    # Update database with word count if we have a controller with user info
+    if hasattr(controller, 'user') and word_count > 0:
+        try:
+            from routellm.database import Database
+            db = Database()
+            db.update_usage_with_response(
+                account_id=int(controller.user),
+                prompt_tokens=initial_usage['prompt_tokens'],
+                completion_tokens=controller.cost_tracker.completion_tokens if hasattr(controller, 'cost_tracker') else 0,
+                word_count=word_count
+            )
+        except Exception as e:
+            logging.error(f"Error updating word count in database: {str(e)}", exc_info=True)
+    
     # Final chunk with finish reason - only once per stream
-    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+    final_usage = {
+        'completion_tokens': controller.cost_tracker.completion_tokens if hasattr(controller, 'cost_tracker') else 0,
+        'word_count': word_count
+    }
+    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': final_usage})}\n\n"
     yield "data: [DONE]\n\n"
 
 def predefined_completion_response(base_response, controller=None, **kwargs):
@@ -574,6 +616,11 @@ class AccountTokenBalance(BaseModel):
         ge=0,
         description="Total number of transactions"
     )
+    word_count: int = Field(
+        ...,
+        ge=0,
+        description="Total number of words in streamed content"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -582,7 +629,8 @@ class AccountTokenBalance(BaseModel):
                     "account_id": 1,
                     "token_in": 3000000.0,
                     "token_out": 1000000.0,
-                    "transactions": 42
+                    "transactions": 42,
+                    "word_count": 1000
                 }
             ]
         }
@@ -615,6 +663,11 @@ class DailyUsageSummary(BaseModel):
         ge=0.0,
         description="Output tokens used"
     )
+    word_count: int = Field(
+        ...,
+        ge=0,
+        description="Number of words in streamed content"
+    )
     last_updated: str = Field(
         ...,
         description="Last update timestamp in ISO format"
@@ -629,6 +682,7 @@ class DailyUsageSummary(BaseModel):
                     "transaction_count": 5,
                     "token_in": 1500.0,
                     "token_out": 300.0,
+                    "word_count": 250,
                     "last_updated": "2024-02-20T15:30:45Z"
                 }
             ]

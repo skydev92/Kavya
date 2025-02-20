@@ -329,7 +329,8 @@ class Database:
             account_id INTEGER PRIMARY KEY,
             token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_in >= 0),
             token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_out >= 0),
-            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0)
+            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
+            word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0)
         )
         """)
 
@@ -341,6 +342,7 @@ class Database:
             transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
             token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
             token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
+            word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0),
             last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (account_id, date)
         )
@@ -382,13 +384,14 @@ class Database:
             placeholder=self.param_style
         ).strip()
 
-    def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int) -> None:
+    def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
         """Update token usage in the database with proper transaction handling."""
         transaction_id = f"txn-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
         logging.info(f"=== DATABASE UPDATE START [ID: {transaction_id}] ===")
         logging.info(f"Account ID: {account_id}")
         logging.info(f"Prompt Tokens: {prompt_tokens}")
         logging.info(f"Completion Tokens: {completion_tokens}")
+        logging.info(f"Word Count: {word_count}")
 
         max_retries = 5
         base_delay = 0.2
@@ -401,7 +404,7 @@ class Database:
                     cursor = connection.get_cursor()
                     # Get current balance with row-level locking
                     cursor.execute("""
-                        SELECT token_in, token_out, transactions 
+                        SELECT token_in, token_out, transactions, word_count 
                         FROM account_totals 
                         WHERE account_id = %s
                         FOR UPDATE NOWAIT
@@ -411,18 +414,19 @@ class Database:
                     if not current_balance:
                         # Initialize account if it doesn't exist
                         cursor.execute("""
-                            INSERT INTO account_totals (account_id, token_in, token_out, transactions)
-                            VALUES (%s, 3000000, 1000000, 0)
+                            INSERT INTO account_totals (account_id, token_in, token_out, transactions, word_count)
+                            VALUES (%s, 3000000, 1000000, 0, 0)
                             ON CONFLICT (account_id) DO UPDATE 
                             SET token_in = EXCLUDED.token_in
-                            RETURNING token_in, token_out, transactions
+                            RETURNING token_in, token_out, transactions, word_count
                             """, (account_id,))
                         current_balance = cursor.fetchone()
 
                     current_balance_dict = {
                         "token_in": float(current_balance[0]),
                         "token_out": float(current_balance[1]),
-                        "transactions": int(current_balance[2])
+                        "transactions": int(current_balance[2]),
+                        "word_count": int(current_balance[3])
                     }
                     logging.info(f"[ID: {transaction_id}] Current Balance: {current_balance_dict}")
 
@@ -431,14 +435,16 @@ class Database:
                         UPDATE account_totals 
                         SET token_in = token_in - %s,
                             token_out = token_out - %s,
-                            transactions = transactions + 1
+                            transactions = transactions + 1,
+                            word_count = word_count + %s
                         WHERE account_id = %s
                         AND token_in >= %s
                         AND token_out >= %s
-                        RETURNING token_in, token_out, transactions;
+                        RETURNING token_in, token_out, transactions, word_count;
                         """, (
                             prompt_tokens,
                             completion_tokens,
+                            word_count,
                             account_id,
                             prompt_tokens,
                             completion_tokens
@@ -462,30 +468,33 @@ class Database:
                     cursor.execute("""
                         INSERT INTO account_daily_summary (
                             account_id, date, token_in, token_out, 
-                            transaction_count, last_updated
+                            transaction_count, word_count, last_updated
                         )
                         VALUES (
                             %s, %s, %s, %s,
-                            1, CURRENT_TIMESTAMP
+                            1, %s, CURRENT_TIMESTAMP
                         )
                         ON CONFLICT (account_id, date) 
                         DO UPDATE SET
                             token_in = account_daily_summary.token_in + %s,
                             token_out = account_daily_summary.token_out + %s,
                             transaction_count = account_daily_summary.transaction_count + 1,
+                            word_count = account_daily_summary.word_count + %s,
                             last_updated = CURRENT_TIMESTAMP;
                         """, (
                             account_id,
                             today,
                             prompt_tokens,
                             completion_tokens,
+                            word_count,
                             prompt_tokens,
-                            completion_tokens
+                            completion_tokens,
+                            word_count
                         ))
 
                     # Log final balances after successful update
                     cursor.execute("""
-                        SELECT token_in, token_out, transactions 
+                        SELECT token_in, token_out, transactions, word_count 
                         FROM account_totals 
                         WHERE account_id = %s
                         """, (account_id,))
@@ -493,12 +502,13 @@ class Database:
                     final_balance_dict = {
                         "token_in": float(final_balance[0]),
                         "token_out": float(final_balance[1]),
-                        "transactions": int(final_balance[2])
+                        "transactions": int(final_balance[2]),
+                        "word_count": int(final_balance[3])
                     }
                     
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance_dict}")
-                    return  # Success, exit the retry loop
+                    return
 
             except Exception as e:
                 attempt += 1
@@ -585,7 +595,8 @@ class Database:
                     account_id INTEGER PRIMARY KEY,
                     token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_in >= 0),
                     token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_out >= 0),
-                    transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0)
+                    transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
+                    word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0)
                 )
                 """)
 
@@ -597,6 +608,7 @@ class Database:
                     transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
                     token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
                     token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
+                    word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0),
                     last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (account_id, date)
                 )
