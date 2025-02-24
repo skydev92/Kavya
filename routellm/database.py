@@ -223,42 +223,42 @@ class Database:
             VALUES (%s)
             ON CONFLICT (account_id) DO UPDATE SET
                 account_id = account_totals.account_id
-            RETURNING token_in, token_out, transactions
+            RETURNING token_balance_in, token_balance_out, transactions
         """,
         'update_balance': """
             WITH updated_totals AS (
                 UPDATE account_totals SET
-                    token_in = token_in - %s,
-                    token_out = token_out - %s,
+                    token_balance_in = token_balance_in - %s,
+                    token_balance_out = token_balance_out - %s,
                     transactions = transactions + 1
                 WHERE account_id = %s
-                    AND token_in >= %s 
-                    AND token_out >= %s
-                RETURNING token_in, token_out, transactions
+                    AND token_balance_in >= %s 
+                    AND token_balance_out >= %s
+                RETURNING token_balance_in, token_balance_out, transactions
             ),
             daily_update AS (
-                INSERT INTO account_daily_summary (account_id, date, token_in, token_out, transaction_count)
+                INSERT INTO account_daily_summary (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
                 VALUES (%s, %s::date, %s, %s, 1)
                 ON CONFLICT(account_id, date) DO UPDATE SET
                     transaction_count = account_daily_summary.transaction_count + 1,
-                    token_in = account_daily_summary.token_in + EXCLUDED.token_in,
-                    token_out = account_daily_summary.token_out + EXCLUDED.token_out,
+                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
+                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
                     last_updated = CURRENT_TIMESTAMP
             )
             SELECT * FROM updated_totals
         """,
         'update_daily': """
             INSERT INTO account_daily_summary 
-                (account_id, date, token_in, token_out, transaction_count)
+                (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
             VALUES (%s, %s::date, %s, %s, 1)
             ON CONFLICT(account_id, date) DO UPDATE SET
                 transaction_count = COALESCE(account_daily_summary.transaction_count, 0) + 1,
-                token_in = account_daily_summary.token_in + EXCLUDED.token_in,
-                token_out = account_daily_summary.token_out + EXCLUDED.token_out,
+                daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
+                daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
                 last_updated = CURRENT_TIMESTAMP
         """,
         'check_balance': """
-            SELECT token_in, token_out, transactions
+            SELECT token_balance_in, token_balance_out, transactions
             FROM account_totals
             WHERE account_id = %s;
         """
@@ -327,10 +327,13 @@ class Database:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS account_totals (
             account_id INTEGER PRIMARY KEY,
-            token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_in >= 0),
-            token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_out >= 0),
-            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-            word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0)
+            token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
+            token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
+            word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
+            total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
+            total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
+            total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
+            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0)
         )
         """)
 
@@ -340,9 +343,9 @@ class Database:
             account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
             date DATE NOT NULL,
             transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-            token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
-            token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
-            word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0),
+            daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
+            daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
+            daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
             last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (account_id, date)
         )
@@ -385,7 +388,7 @@ class Database:
         ).strip()
 
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
-        """Update token usage in the database with proper transaction handling."""
+        """Update token and word usage in the database with proper transaction handling."""
         transaction_id = f"txn-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
         logging.info(f"=== DATABASE UPDATE START [ID: {transaction_id}] ===")
         logging.info(f"Account ID: {account_id}")
@@ -404,7 +407,8 @@ class Database:
                     cursor = connection.get_cursor()
                     # Get current balance with row-level locking
                     cursor.execute("""
-                        SELECT token_in, token_out, transactions, word_count 
+                        SELECT token_balance_in, token_balance_out, word_balance, transactions, 
+                               total_token_usage_in, total_token_usage_out, total_word_usage
                         FROM account_totals 
                         WHERE account_id = %s
                         FOR UPDATE NOWAIT
@@ -414,44 +418,58 @@ class Database:
                     if not current_balance:
                         # Initialize account if it doesn't exist
                         cursor.execute("""
-                            INSERT INTO account_totals (account_id, token_in, token_out, transactions, word_count)
-                            VALUES (%s, 3000000, 1000000, 0, 0)
+                            INSERT INTO account_totals (
+                                account_id, token_balance_in, token_balance_out, word_balance,
+                                total_token_usage_in, total_token_usage_out, total_word_usage, transactions
+                            )
+                            VALUES (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
                             ON CONFLICT (account_id) DO UPDATE 
-                            SET token_in = EXCLUDED.token_in
-                            RETURNING token_in, token_out, transactions, word_count
+                            SET token_balance_in = EXCLUDED.token_balance_in
+                            RETURNING token_balance_in, token_balance_out, word_balance, transactions,
+                                    total_token_usage_in, total_token_usage_out, total_word_usage
                             """, (account_id,))
                         current_balance = cursor.fetchone()
 
                     current_balance_dict = {
-                        "token_in": float(current_balance[0]),
-                        "token_out": float(current_balance[1]),
-                        "transactions": int(current_balance[2]),
-                        "word_count": int(current_balance[3])
+                        "token_balance_in": float(current_balance[0]),
+                        "token_balance_out": float(current_balance[1]),
+                        "word_balance": int(current_balance[2]),
+                        "transactions": int(current_balance[3]),
+                        "total_token_usage_in": float(current_balance[4]),
+                        "total_token_usage_out": float(current_balance[5]),
+                        "total_word_usage": int(current_balance[6])
                     }
                     logging.info(f"[ID: {transaction_id}] Current Balance: {current_balance_dict}")
 
-                    # Update account totals with explicit check
+                    # Update account totals with explicit check for tokens only
                     cursor.execute("""
                         UPDATE account_totals 
-                        SET token_in = token_in - %s,
-                            token_out = token_out - %s,
-                            transactions = transactions + 1,
-                            word_count = word_count + %s
+                        SET token_balance_in = token_balance_in - %s,
+                            token_balance_out = token_balance_out - %s,
+                            word_balance = GREATEST(0, word_balance - %s),  -- Allow reaching zero but not negative
+                            total_token_usage_in = total_token_usage_in + %s,
+                            total_token_usage_out = total_token_usage_out + %s,
+                            total_word_usage = total_word_usage + %s,
+                            transactions = transactions + 1
                         WHERE account_id = %s
-                        AND token_in >= %s
-                        AND token_out >= %s
-                        RETURNING token_in, token_out, transactions, word_count;
+                        AND token_balance_in >= %s
+                        AND token_balance_out >= %s
+                        RETURNING token_balance_in, token_balance_out, word_balance, transactions,
+                                total_token_usage_in, total_token_usage_out, total_word_usage;
                         """, (
                             prompt_tokens,
                             completion_tokens,
                             word_count,
+                            prompt_tokens,
+                            completion_tokens,
+                            word_count,  # Still track the full word count in total_word_usage
                             account_id,
                             prompt_tokens,
                             completion_tokens
                         ))
 
                     if cursor.rowcount == 0:
-                        error_msg = "Insufficient token balance"
+                        error_msg = "Insufficient balance"
                         logging.error(f"=== DATABASE UPDATE FAILED [ID: {transaction_id}]: {error_msg} ===")
                         raise InsufficientTokensError(
                             message=error_msg,
@@ -459,7 +477,8 @@ class Database:
                             required_tokens=TokenUsageUpdate(
                                 account_id=account_id,
                                 prompt_tokens=prompt_tokens,
-                                completion_tokens=completion_tokens
+                                completion_tokens=completion_tokens,
+                                word_count=word_count
                             )
                         )
 
@@ -467,43 +486,47 @@ class Database:
                     today = datetime.now().strftime("%Y-%m-%d")
                     cursor.execute("""
                         INSERT INTO account_daily_summary (
-                            account_id, date, token_in, token_out, 
-                            transaction_count, word_count, last_updated
+                            account_id, date, daily_token_usage_in, daily_token_usage_out, 
+                            daily_word_usage, transaction_count, last_updated
                         )
                         VALUES (
                             %s, %s, %s, %s,
-                            1, %s, CURRENT_TIMESTAMP
+                            %s, 1, CURRENT_TIMESTAMP
                         )
                         ON CONFLICT (account_id, date) 
                         DO UPDATE SET
-                            token_in = account_daily_summary.token_in + %s,
-                            token_out = account_daily_summary.token_out + %s,
+                            daily_token_usage_in = account_daily_summary.daily_token_usage_in + %s,
+                            daily_token_usage_out = account_daily_summary.daily_token_usage_out + %s,
+                            daily_word_usage = account_daily_summary.daily_word_usage + %s,  -- Track full word usage
                             transaction_count = account_daily_summary.transaction_count + 1,
-                            word_count = account_daily_summary.word_count + %s,
                             last_updated = CURRENT_TIMESTAMP;
                         """, (
                             account_id,
                             today,
                             prompt_tokens,
                             completion_tokens,
-                            word_count,
+                            word_count,  # Full word count
                             prompt_tokens,
                             completion_tokens,
-                            word_count
+                            word_count   # Full word count
                         ))
 
                     # Log final balances after successful update
                     cursor.execute("""
-                        SELECT token_in, token_out, transactions, word_count 
+                        SELECT token_balance_in, token_balance_out, word_balance, transactions,
+                               total_token_usage_in, total_token_usage_out, total_word_usage
                         FROM account_totals 
                         WHERE account_id = %s
                         """, (account_id,))
                     final_balance = cursor.fetchone()
                     final_balance_dict = {
-                        "token_in": float(final_balance[0]),
-                        "token_out": float(final_balance[1]),
-                        "transactions": int(final_balance[2]),
-                        "word_count": int(final_balance[3])
+                        "token_balance_in": float(final_balance[0]),
+                        "token_balance_out": float(final_balance[1]),
+                        "word_balance": int(final_balance[2]),
+                        "transactions": int(final_balance[3]),
+                        "total_token_usage_in": float(final_balance[4]),
+                        "total_token_usage_out": float(final_balance[5]),
+                        "total_word_usage": int(final_balance[6])
                     }
                     
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
@@ -548,15 +571,15 @@ class Database:
         connection = self._get_connection()
         cursor = connection.get_cursor()
         cursor.execute("""
-        SELECT token_in, token_out, transactions 
+        SELECT token_balance_in, token_balance_out, transactions 
         FROM account_totals 
         WHERE account_id = %s
         """, (account_id,))
         result = cursor.fetchone()
         if result:
             return {
-                "token_in": result[0],
-                "token_out": result[1],
+                "token_balance_in": result[0],
+                "token_balance_out": result[1],
                 "transactions": result[2]
             }
         return None
@@ -566,7 +589,7 @@ class Database:
         connection = self._get_connection()
         cursor = connection.get_cursor()
         cursor.execute("""
-        SELECT date, transaction_count, token_in, token_out 
+        SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage 
         FROM account_daily_summary 
         WHERE account_id = %s AND date BETWEEN %s AND %s
         ORDER BY date
@@ -593,10 +616,13 @@ class Database:
                 cursor.execute("""
                 CREATE TABLE account_totals (
                     account_id INTEGER PRIMARY KEY,
-                    token_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_in >= 0),
-                    token_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_out >= 0),
-                    transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-                    word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0)
+                    token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
+                    token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
+                    word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
+                    total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
+                    total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
+                    total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
+                    transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0)
                 )
                 """)
 
@@ -606,9 +632,9 @@ class Database:
                     account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
                     date DATE NOT NULL,
                     transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-                    token_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_in >= 0),
-                    token_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (token_out >= 0),
-                    word_count INTEGER NOT NULL DEFAULT 0 CHECK (word_count >= 0),
+                    daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
+                    daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
+                    daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
                     last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (account_id, date)
                 )
@@ -629,31 +655,36 @@ class Database:
             logging.error(f"Error creating tables: {str(e)}")
             raise
 
-    def check_sufficient_balance(self, account_id: int, prompt_tokens: int, completion_tokens: int) -> tuple[bool, dict]:
+    def check_sufficient_balance(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> tuple[bool, dict]:
         """Check if account has sufficient balance for the requested operation without updating the balance."""
         try:
             with self.get_transaction() as connection:
                 cursor = connection.get_cursor()
                 
                 # First ensure account exists and get current balance
-                cursor.execute(
-                    self._get_sql('upsert_account'),
-                    (account_id,)
-                )
+                cursor.execute("""
+                    INSERT INTO account_totals (account_id)
+                    VALUES (%s)
+                    ON CONFLICT (account_id) DO UPDATE SET
+                        account_id = account_totals.account_id
+                    RETURNING token_balance_in, token_balance_out, word_balance, transactions
+                """, (account_id,))
                 result = cursor.fetchone()
                 if not result:
                     raise RuntimeError("Failed to get or create account")
                 
                 current_balance = {
-                    "token_in": float(result[0]),
-                    "token_out": float(result[1]),
-                    "transactions": int(result[2])
+                    "token_balance_in": float(result[0]),
+                    "token_balance_out": float(result[1]),
+                    "word_balance": int(result[2]),
+                    "transactions": int(result[3])
                 }
                 
-                # Check if balance is sufficient
+                # Check if balance is sufficient for both tokens and words
                 has_sufficient_balance = (
-                    current_balance["token_in"] >= prompt_tokens and 
-                    current_balance["token_out"] >= completion_tokens
+                    current_balance["token_balance_in"] >= prompt_tokens and 
+                    current_balance["token_balance_out"] >= completion_tokens and
+                    current_balance["word_balance"] >= word_count
                 )
                 
                 return has_sufficient_balance, current_balance
@@ -674,11 +705,11 @@ class Database:
                 for account_id in account_ids:
                     cursor.execute(
                         """
-                        INSERT INTO account_totals (account_id, token_in, token_out, transactions)
+                        INSERT INTO account_totals (account_id, token_balance_in, token_balance_out, transactions)
                         VALUES (?, 3000000, 1000000, 0)
                         ON CONFLICT(account_id) DO UPDATE SET
-                            token_in = 3000000,
-                            token_out = 1000000,
+                            token_balance_in = 3000000,
+                            token_balance_out = 1000000,
                             transactions = 0
                         """,
                         (account_id,)
@@ -718,7 +749,7 @@ class Database:
         connection = self._get_connection()
         cursor = connection.get_cursor()
         cursor.execute("""
-        SELECT token_in, token_out, transactions 
+        SELECT token_balance_in, token_balance_out, transactions 
         FROM account_totals 
         WHERE account_id = %s
         """, (account_id,))
@@ -727,8 +758,8 @@ class Database:
         if result:
             return AccountTokenBalance(
                 account_id=account_id,
-                token_in=float(result[0]),
-                token_out=float(result[1]),
+                token_balance_in=float(result[0]),
+                token_balance_out=float(result[1]),
                 transactions=int(result[2])
             )
         
@@ -743,8 +774,8 @@ class Database:
             
         return AccountTokenBalance(
             account_id=account_id,
-            token_in=float(result[0]),
-            token_out=float(result[1]),
+            token_balance_in=float(result[0]),
+            token_balance_out=float(result[1]),
             transactions=int(result[2])
         )
 
@@ -755,7 +786,7 @@ class Database:
         connection = self._get_connection()
         cursor = connection.get_cursor()
         cursor.execute("""
-        SELECT date, transaction_count, token_in, token_out 
+        SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage, last_updated 
         FROM account_daily_summary 
         WHERE account_id = %s AND date BETWEEN %s AND %s
         ORDER BY date
@@ -767,8 +798,9 @@ class Database:
                 account_id=account_id,
                 date=row[0],
                 transaction_count=int(row[1]),
-                token_in=float(row[2]),
-                token_out=float(row[3]),
-                last_updated=row[4]
+                daily_token_usage_in=float(row[2]),
+                daily_token_usage_out=float(row[3]),
+                daily_word_usage=int(row[4]),
+                last_updated=row[5]
             ))
         return results

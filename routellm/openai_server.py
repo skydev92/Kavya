@@ -294,21 +294,25 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     messages_content = " ".join([msg["content"] for msg in request.messages])
     estimated_prompt_tokens = len(messages_content.split()) * 1.5  # Rough estimate
     estimated_completion_tokens = 500  # Conservative estimate for completion
+    estimated_word_count = 100  # Conservative estimate for word count
     
     # Check balance without updating
     try:
         has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
-            completion_tokens=int(estimated_completion_tokens)
+            completion_tokens=int(estimated_completion_tokens),
+            word_count=estimated_word_count
         )
         if not has_sufficient_balance:
             error_msg = (
-                f"Insufficient token balance. Please email jur@dxpr.com to request more tokens. Current balance: "
-                f"{current_balance['token_in']} input tokens, "
-                f"{current_balance['token_out']} output tokens. "
+                f"Insufficient balance. Please email jur@dxpr.com to request more tokens. Current balance: "
+                f"{current_balance['token_balance_in']} input tokens, "
+                f"{current_balance['token_balance_out']} output tokens, "
+                f"{current_balance['word_balance']} words. "
                 f"Required: {estimated_prompt_tokens} input tokens, "
-                f"{estimated_completion_tokens} output tokens."
+                f"{estimated_completion_tokens} output tokens, "
+                f"{estimated_word_count} words."
             )
             logging.error(f"Account {user_id}: {error_msg}")
             return JSONResponse(
@@ -322,10 +326,12 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 },
                 status_code=402,  # Payment Required
                 headers={
-                    "X-Current-Balance-In": str(current_balance['token_in']),
-                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Current-Balance-In": str(current_balance['token_balance_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_balance_out']),
+                    "X-Current-Balance-Words": str(current_balance['word_balance']),
                     "X-Required-Tokens-In": str(estimated_prompt_tokens),
-                    "X-Required-Tokens-Out": str(estimated_completion_tokens)
+                    "X-Required-Tokens-Out": str(estimated_completion_tokens),
+                    "X-Required-Words": str(estimated_word_count)
                 }
             )
     except Exception as e:
@@ -358,15 +364,18 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(remaining_prompt_tokens),
-            completion_tokens=int(estimated_completion_tokens)
+            completion_tokens=int(estimated_completion_tokens),
+            word_count=estimated_word_count
         )
         if not has_sufficient_balance:
             error_msg = (
-                f"Insufficient remaining token balance after routing. Please email jur@dxpr.com to request more tokens. Current balance: "
-                f"{current_balance['token_in']} input tokens, "
-                f"{current_balance['token_out']} output tokens. "
+                f"Insufficient remaining balance after routing. Please email jur@dxpr.com to request more tokens. Current balance: "
+                f"{current_balance['token_balance_in']} input tokens, "
+                f"{current_balance['token_balance_out']} output tokens, "
+                f"{current_balance['word_balance']} words. "
                 f"Required: {remaining_prompt_tokens} input tokens, "
-                f"{estimated_completion_tokens} output tokens."
+                f"{estimated_completion_tokens} output tokens, "
+                f"{estimated_word_count} words."
             )
             logging.error(f"Account {user_id}: {error_msg}")
             return JSONResponse(
@@ -380,10 +389,12 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 },
                 status_code=402,
                 headers={
-                    "X-Current-Balance-In": str(current_balance['token_in']),
-                    "X-Current-Balance-Out": str(current_balance['token_out']),
+                    "X-Current-Balance-In": str(current_balance['token_balance_in']),
+                    "X-Current-Balance-Out": str(current_balance['token_balance_out']),
+                    "X-Current-Balance-Words": str(current_balance['word_balance']),
                     "X-Required-Tokens-In": str(remaining_prompt_tokens),
-                    "X-Required-Tokens-Out": str(estimated_completion_tokens)
+                    "X-Required-Tokens-Out": str(estimated_completion_tokens),
+                    "X-Required-Words": str(estimated_word_count)
                 }
             )
         
@@ -582,8 +593,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             try:
                                 current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
                                 if current_balance:
-                                    total_spent_input_tokens = float(current_balance['token_in'])
-                                    total_spent_output_tokens = float(current_balance['token_out'])
+                                    total_spent_input_tokens = float(current_balance['token_balance_in'])
+                                    total_spent_output_tokens = float(current_balance['token_balance_out'])
                                     
                                     # First chunk with role and usage
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
@@ -645,12 +656,12 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 current_balance = app.db.get_balance(account_id=user_id)
                 if is_predefined:
                     content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
-                    content['total_spent_input_tokens'] = float(current_balance['token_in'])
-                    content['total_spent_output_tokens'] = float(current_balance['token_out'])
+                    content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
+                    content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
                 else:
                     content = res.model_dump()
-                    content['total_spent_input_tokens'] = float(current_balance['token_in'])
-                    content['total_spent_output_tokens'] = float(current_balance['token_out'])
+                    content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
+                    content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
             except Exception as e:
                 logging.error(f"Error getting token balance: {str(e)}")
                 if is_predefined:

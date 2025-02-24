@@ -595,31 +595,46 @@ class TokenAmount(BaseModel):
         return v
 
 class AccountTokenBalance(BaseModel):
-    """Current token balance for an account."""
+    """Current token and word balances for an account."""
     account_id: int = Field(
         ..., 
         gt=0,
         description="Unique identifier for the account"
     )
-    token_in: float = Field(
+    token_balance_in: float = Field(
         ...,
         ge=0.0,
         description="Available input tokens"
     )
-    token_out: float = Field(
+    token_balance_out: float = Field(
         ...,
         ge=0.0,
         description="Available output tokens"
+    )
+    word_balance: int = Field(
+        ...,
+        ge=0,
+        description="Available word count balance"
+    )
+    total_token_usage_in: float = Field(
+        ...,
+        ge=0.0,
+        description="Total input tokens used historically"
+    )
+    total_token_usage_out: float = Field(
+        ...,
+        ge=0.0,
+        description="Total output tokens used historically"
+    )
+    total_word_usage: int = Field(
+        ...,
+        ge=0,
+        description="Total words streamed historically"
     )
     transactions: int = Field(
         ...,
         ge=0,
         description="Total number of transactions"
-    )
-    word_count: int = Field(
-        ...,
-        ge=0,
-        description="Total number of words in streamed content"
     )
 
     model_config = {
@@ -627,17 +642,20 @@ class AccountTokenBalance(BaseModel):
             "examples": [
                 {
                     "account_id": 1,
-                    "token_in": 3000000.0,
-                    "token_out": 1000000.0,
-                    "transactions": 42,
-                    "word_count": 1000
+                    "token_balance_in": 3000000.0,
+                    "token_balance_out": 1000000.0,
+                    "word_balance": 10000,
+                    "total_token_usage_in": 50000.0,
+                    "total_token_usage_out": 10000.0,
+                    "total_word_usage": 2500,
+                    "transactions": 42
                 }
             ]
         }
     }
 
 class DailyUsageSummary(BaseModel):
-    """Daily token usage summary for an account."""
+    """Daily token and word usage summary for an account."""
     account_id: int = Field(
         ...,
         gt=0,
@@ -653,20 +671,20 @@ class DailyUsageSummary(BaseModel):
         ge=0,
         description="Number of transactions on this date"
     )
-    token_in: float = Field(
+    daily_token_usage_in: float = Field(
         ...,
         ge=0.0,
-        description="Input tokens used"
+        description="Input tokens used on this date"
     )
-    token_out: float = Field(
+    daily_token_usage_out: float = Field(
         ...,
         ge=0.0,
-        description="Output tokens used"
+        description="Output tokens used on this date"
     )
-    word_count: int = Field(
+    daily_word_usage: int = Field(
         ...,
         ge=0,
-        description="Number of words in streamed content"
+        description="Number of words streamed on this date"
     )
     last_updated: str = Field(
         ...,
@@ -680,9 +698,9 @@ class DailyUsageSummary(BaseModel):
                     "account_id": 1,
                     "date": "2024-02-20",
                     "transaction_count": 5,
-                    "token_in": 1500.0,
-                    "token_out": 300.0,
-                    "word_count": 250,
+                    "daily_token_usage_in": 1500.0,
+                    "daily_token_usage_out": 300.0,
+                    "daily_word_usage": 250,
                     "last_updated": "2024-02-20T15:30:45Z"
                 }
             ]
@@ -690,7 +708,7 @@ class DailyUsageSummary(BaseModel):
     }
 
 class TokenUsageUpdate(BaseModel):
-    """Token usage update request."""
+    """Token and word usage update request."""
     account_id: int = Field(
         ...,
         gt=0,
@@ -706,6 +724,11 @@ class TokenUsageUpdate(BaseModel):
         ge=0,
         description="Number of completion tokens to deduct"
     )
+    word_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of words to deduct from word balance"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -713,7 +736,8 @@ class TokenUsageUpdate(BaseModel):
                 {
                     "account_id": 1,
                     "prompt_tokens": 150,
-                    "completion_tokens": 50
+                    "completion_tokens": 50,
+                    "word_count": 25
                 }
             ]
         }
@@ -758,8 +782,8 @@ class InsufficientTokensError(TokenError):
                     "type": "token_error",
                     "current_balance": {
                         "account_id": 1,
-                        "token_in": 100.0,
-                        "token_out": 50.0,
+                        "token_balance_in": 100.0,
+                        "token_balance_out": 50.0,
                         "transactions": 10
                     },
                     "required_tokens": {
@@ -799,8 +823,8 @@ class TokenUsageResponse(BaseModel):
                     "account_id": 1,
                     "new_balance": {
                         "account_id": 1,
-                        "token_in": 2999850.0,
-                        "token_out": 999950.0,
+                        "token_balance_in": 2999850.0,
+                        "token_balance_out": 999950.0,
                         "transactions": 11
                     },
                     "usage": {
