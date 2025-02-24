@@ -1040,34 +1040,36 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
 
 {RoutingAnalysis.model_json_schema()}
 {xml_guidance}
-REJECT using Longwriter (set needs_structure=False) for unstructured content such as:
-* Simple questions and answers
-* Direct translations or paraphrasing
-* Quick summaries or bullet points
-* Step-by-step instructions
-* Factual queries
-* Definition requests
-* Comparison queries (A vs B)
-* Long lists of items or examples
-* Data tables or spreadsheet-like content
-* Reference lists and documentation
-* Changelog entries
-* Feature or product specifications
-* Data analysis reports
-* FAQ entries
-* Meeting minutes or transcripts
 
-Only set needs_structure=True for content that genuinely benefits from an outline, such as:
-* Long-form articles
-* Complex tutorials with multiple sections
-* In-depth research papers
-* Comprehensive guides
-* Case studies
-* White papers
-* Product documentation with multiple features
-* Educational curriculum materials
-* Business proposals
-* Marketing content strategies"""
+When analyzing the prompt, set these fields accurately:
+
+1. length_score: Estimate the probability (0.0-1.0) that the response will exceed 700 words based on the prompt's requirements.
+
+2. needs_structure: Set to true if the content would benefit from organization into sections with headings.
+
+3. is_data_dump: Set to true if the content is primarily lists or data without narrative flow.
+
+For the needs_structure field specifically:
+- Set needs_structure=FALSE for content that:
+  * Requires a single, direct response
+  * Can be answered in a few paragraphs
+  * Doesn't benefit from organization into sections
+  * Focuses on answering a specific question
+  * Provides factual information without narrative
+  * Requires minimal organization or flow
+  * Can be presented in a linear, sequential manner
+  * Doesn't need headings or subheadings
+
+- Set needs_structure=TRUE for content that:
+  * Benefits from being organized into multiple sections
+  * Requires a logical flow with introduction, body, and conclusion
+  * Would be enhanced by headings and subheadings
+  * Needs a coherent narrative structure
+  * Involves developing multiple related points or arguments
+  * Requires strategic organization of information
+  * Benefits from a planned outline
+  * Needs to guide the reader through complex information
+  * Would be improved by hierarchical organization"""
                 },
                 {
                     "role": "user",
@@ -1131,10 +1133,11 @@ Only set needs_structure=True for content that genuinely benefits from an outlin
             # 2. Content benefits from structure
             # 3. Not just a data dump
             use_longwriter = (
-                analysis.length_score > 0.8 and 
+                analysis.length_score > 0.7 and 
                 analysis.needs_structure and 
                 not analysis.is_data_dump
             )
+            
             
             logging.debug(f"\033[93mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m")
             logging.debug("\033[95m=====================\033[0m")
