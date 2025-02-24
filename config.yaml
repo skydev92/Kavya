@@ -4,3 +4,6 @@ mf:
 model_translations:
     kavya-m1: router-mf-0.1
     kavya-m1-eu: mistral/mistral-large-latest
+
+general_settings:
+    basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions

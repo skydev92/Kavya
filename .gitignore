@@ -183,3 +183,5 @@ cython_debug/
 # Cloud SQL
 cloud-sql-proxy
 cloud-sql-proxy.linux.amd64
+
+.specstory

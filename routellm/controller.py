@@ -36,14 +36,10 @@ from pydantic import BaseModel
 
 # Model translation mapping
 def get_model_translations(config):
-    """Get model translations from config, with fallback to defaults."""
-    if config and "model_translations" in config:
-        return config["model_translations"]
-    # Default fallback if not in config
-    return {
-        "kavya-m1": "router-mf-0.1",
-        "kavya-m1-eu": "router-mf-0.1"
-    }
+    """Get model translations from config."""
+    if not config or "model_translations" not in config:
+        raise ValueError("Config must include model_translations")
+    return config["model_translations"]
 
 # Default config for routers augmented using golden label data from GPT-4.
 # This is exactly the same as config.example.yaml.
@@ -141,17 +137,26 @@ class Controller:
         progress_bar: bool = False,
         suppress_warnings: bool = False,
     ):
+        # Require config with all necessary settings
+        if not config:
+            raise ValueError("Config is required")
+            
+        # Validate all required config sections
+        if "model_translations" not in config:
+            raise ValueError("Config must include model_translations")
+        if "general_settings" not in config:
+            raise ValueError("Config must include general_settings")
+        if "basic_router_max_chars" not in config["general_settings"]:
+            raise ValueError("general_settings must include basic_router_max_chars")
+
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
         self.api_base = api_base
         self.api_key = api_key
         self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
-        self.model_translations = get_model_translations(config)
-
-        if config is None:
-            config = GPT_4_AUGMENTED_CONFIG
-
+        self.model_translations = config["model_translations"]
+        self.basic_router_max_chars = config["general_settings"]["basic_router_max_chars"]
 
         router_pbar = None
         if progress_bar:
@@ -911,6 +916,16 @@ class Longwriter(Controller):
 class Controllers:
     def __init__(self, **kwargs):
         self.controllers = {}
+        
+        # Require config with general settings
+        config = kwargs.get('config')
+        if not config or 'general_settings' not in config:
+            raise ValueError("Config must include general_settings with basic_router_max_chars")
+            
+        if 'basic_router_max_chars' not in config['general_settings']:
+            raise ValueError("general_settings must include basic_router_max_chars")
+            
+        self.basic_router_max_chars = config['general_settings']['basic_router_max_chars']
         self.create_controller("default", **kwargs)
 
     def create_controller(self, id, **kwargs):
@@ -998,7 +1013,23 @@ class Controllers:
                 # Store the routed model in the request for later use
                 request.model = routed_model
 
-        # Check both length and content type requirements
+        # Trim long prompts for basic router analysis
+        prompt = request.messages[-1]["content"]
+        if len(prompt) > self.basic_router_max_chars:
+            start = prompt[:self.basic_router_max_chars//3]  # Keep first third
+            end = prompt[-self.basic_router_max_chars//3:]   # Keep last third
+            prompt = f"{start}\n...[middle trimmed]...\n{end}"
+        
+        xml_guidance = ""
+        if "<TASK>" in prompt:
+            xml_guidance = """
+IMPORTANT: For prompts containing <TASK> XML tags, analyze ONLY the task between the tags.
+Example: If prompt contains "<TASK>write a one-line bio</TASK>" with 1000 words of context,
+analyze only "write a one-line bio" - ignore both context length and complexity.
+Focus on whether the requested task itself needs structure and organization,
+not the structure of the provided context or reference materials.
+"""
+
         routing_request = ChatCompletionRequest(
             model=default_controller.model_pair.weak,  # Always use weak model for checks
             messages=[
@@ -1007,11 +1038,40 @@ class Controllers:
                     "content": f"""You are a routing analyzer that evaluates if content requires Longwriter's capabilities.
 Analyze the prompt and return a JSON object that exactly matches this Pydantic model:
 
-{RoutingAnalysis.model_json_schema()}"""
+{RoutingAnalysis.model_json_schema()}
+{xml_guidance}
+REJECT using Longwriter (set needs_structure=False) for unstructured content such as:
+* Simple questions and answers
+* Direct translations or paraphrasing
+* Quick summaries or bullet points
+* Step-by-step instructions
+* Factual queries
+* Definition requests
+* Comparison queries (A vs B)
+* Long lists of items or examples
+* Data tables or spreadsheet-like content
+* Reference lists and documentation
+* Changelog entries
+* Feature or product specifications
+* Data analysis reports
+* FAQ entries
+* Meeting minutes or transcripts
+
+Only set needs_structure=True for content that genuinely benefits from an outline, such as:
+* Long-form articles
+* Complex tutorials with multiple sections
+* In-depth research papers
+* Comprehensive guides
+* Case studies
+* White papers
+* Product documentation with multiple features
+* Educational curriculum materials
+* Business proposals
+* Marketing content strategies"""
                 },
                 {
                     "role": "user",
-                    "content": "Analyze this prompt: " + request.messages[-1]["content"]
+                    "content": "Analyze this prompt: " + prompt
                 }
             ],
             stream=False,  # Force non-streaming for routing
