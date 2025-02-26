@@ -686,10 +686,6 @@ class DailyUsageSummary(BaseModel):
         ge=0,
         description="Number of words streamed on this date"
     )
-    last_updated: str = Field(
-        ...,
-        description="Last update timestamp in ISO format"
-    )
 
     model_config = {
         "json_schema_extra": {
@@ -700,8 +696,7 @@ class DailyUsageSummary(BaseModel):
                     "transaction_count": 5,
                     "daily_token_usage_in": 1500.0,
                     "daily_token_usage_out": 300.0,
-                    "daily_word_usage": 250,
-                    "last_updated": "2024-02-20T15:30:45Z"
+                    "daily_word_usage": 250
                 }
             ]
         }
