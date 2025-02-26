@@ -49,7 +49,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # Database health check interval (seconds)
-DB_HEALTH_CHECK_INTERVAL = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "60"))
+DB_HEALTH_CHECK_INTERVAL = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "600"))
 
 async def periodic_db_health_check(app: fastapi.FastAPI):
     """Periodically check database health and reset connections if needed"""

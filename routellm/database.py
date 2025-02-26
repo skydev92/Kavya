@@ -46,7 +46,7 @@ DEFAULT_CONNECT_TIMEOUT = 10000  # milliseconds (10 seconds)
 DEFAULT_COMMAND_TIMEOUT = 30000  # milliseconds (30 seconds)
 DEFAULT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
 DEFAULT_STATEMENT_TIMEOUT = 60000  # milliseconds (60 seconds)
-DEFAULT_VALIDATION_INTERVAL = 60000  # milliseconds (60 seconds)
+DEFAULT_VALIDATION_INTERVAL = 180000  # milliseconds (60 seconds)
 # Add constants for retry handling specific to token updates
 DEFAULT_TOKEN_UPDATE_RETRIES = 10
 DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 200  # milliseconds (0.2 seconds)
@@ -179,18 +179,7 @@ class PostgreSQLConnection(DatabaseConnection):
                         timeout=self.connect_timeout / 1000,  # Convert from ms to seconds for pg8000
                     )
                     
-                    # Set timeouts after connection is established
-                    # Don't use context manager as pg8000 cursor doesn't support it
-                    cursor = conn.cursor()
-                    try:
-                        # Set timeouts directly with millisecond values
-                        cursor.execute(f"SET lock_timeout TO {self.lock_timeout}")
-                        cursor.execute(f"SET statement_timeout TO {self.statement_timeout}")
-                        cursor.execute(f"SET idle_in_transaction_session_timeout TO {self.idle_in_transaction_timeout}")
-                        conn.commit()  # Commit the timeout settings
-                    finally:
-                        cursor.close()
-                    
+                    # Skip setting timeouts as they're already configured as needed
                     logging.info(f"Successfully connected to Cloud SQL in {time.time() - start_time:.2f}s")
                     return conn
                 except Exception as e:
@@ -237,15 +226,8 @@ class PostgreSQLConnection(DatabaseConnection):
             # For local connections, set timeouts on the first connection
             connection = self.engine.raw_connection()
             try:
-                cursor = connection.cursor()
-                try:
-                    # Set timeouts directly with millisecond values
-                    cursor.execute(f"SET lock_timeout TO {self.lock_timeout}")
-                    cursor.execute(f"SET statement_timeout TO {self.statement_timeout}")
-                    cursor.execute(f"SET idle_in_transaction_session_timeout TO {self.idle_in_transaction_timeout}")
-                    connection.commit()  # Commit the timeout settings
-                finally:
-                    cursor.close()
+                # Skip setting timeouts as they're already configured as needed
+                pass
             finally:
                 connection.close()
 
@@ -460,10 +442,7 @@ class PostgreSQLConnection(DatabaseConnection):
         logging.info("Ensuring required tables exist")
         cursor = connection.get_cursor()
         
-        # Set appropriate timeouts for table creation
-        cursor.execute(f"SET lock_timeout TO {DEFAULT_INIT_LOCK_TIMEOUT}")
-        cursor.execute(f"SET statement_timeout TO {DEFAULT_STATEMENT_TIMEOUT}")
-        cursor.execute(f"SET idle_in_transaction_session_timeout TO {DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT}")
+        # Skip setting timeouts as they're already configured as needed
         
         # Create account_totals table if it doesn't exist
         cursor.execute("""
@@ -1081,24 +1060,6 @@ class Database:
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
         
-        # Set database-level parameters for better error handling
-        try:
-            if self.env == "prod":
-                # Get the database name from the connection object
-                db_name = connection.db_name if hasattr(connection, 'db_name') else None
-                
-                if db_name:
-                    # Set appropriate timeouts at the database level
-                    # These will apply to all new connections to the database
-                    cursor.execute(f"ALTER DATABASE {db_name} SET lock_timeout TO {DEFAULT_LOCK_TIMEOUT}")
-                    cursor.execute(f"ALTER DATABASE {db_name} SET statement_timeout TO {DEFAULT_STATEMENT_TIMEOUT}")
-                    cursor.execute(f"ALTER DATABASE {db_name} SET idle_in_transaction_session_timeout TO {DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT}")
-                    logging.info(f"Set database-level parameters for {db_name}")
-                else:
-                    logging.warning("Could not set database-level parameters: db_name is not available from connection")
-        except Exception as e:
-            logging.warning(f"Error setting database-level parameters: {str(e)}")
-        
         if self.env == "dev":
             connection.commit()
             
@@ -1579,9 +1540,7 @@ class Database:
                 # This is safe because we're only reading, and we'll do a proper check with locks during the actual update
                 cursor = connection.get_cursor()
                 
-                # Set extremely short timeouts for this read-only operation
-                cursor.execute(f"SET lock_timeout TO {DEFAULT_FAST_LOCK_TIMEOUT}")  # Ultra short timeout
-                cursor.execute(f"SET statement_timeout TO {DEFAULT_FAST_STATEMENT_TIMEOUT}")  # Ultra short statement timeout
+                # Skip setting timeouts as they're already configured as needed
                 
                 # First ensure the account exists with a non-blocking insert
                 try:
@@ -1856,9 +1815,7 @@ class Database:
             with self.get_transaction() as db:
                 cursor = db.get_cursor()
                 
-                # Set appropriate timeouts for batch processing
-                cursor.execute(f"SET lock_timeout = '{DEFAULT_FAST_LOCK_TIMEOUT * 2}'")
-                cursor.execute(f"SET statement_timeout = '{DEFAULT_FAST_STATEMENT_TIMEOUT * 2}'")
+                # Skip setting timeouts as they're already configured as needed
                 
                 # Process each account update with SKIP LOCKED to prevent blocking
                 for account_id, prompt_tokens, completion_tokens in account_updates:
