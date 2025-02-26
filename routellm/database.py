@@ -392,13 +392,17 @@ class PostgreSQLConnection(DatabaseConnection):
             
         try:
             # Execute a simple query to check connection
-            with self.connection.begin():
-                result = self.connection.execute(text("SELECT 1")).scalar()
-                
-            is_valid = result == 1
+            cursor = self.get_cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            
+            is_valid = result is not None and result[0] == 1
             if is_valid:
                 self._set_last_validation_time(current_time)
-            return is_valid
+                return True
+            else:
+                logging.warning("Connection validation failed: unexpected result")
+                return False
         except Exception as e:
             logging.warning(f"Connection validation failed: {str(e)}")
             self._is_connected = False

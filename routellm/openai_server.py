@@ -57,9 +57,32 @@ async def periodic_db_health_check(app: fastapi.FastAPI):
         try:
             if hasattr(app, 'db'):
                 logging.info("Performing periodic database health check")
-                # Get a validated connection to ensure the database is healthy
-                app.db.get_validated_connection()
-                logging.info("Database health check completed successfully")
+                try:
+                    # Get a validated connection to ensure the database is healthy
+                    connection = app.db.get_validated_connection()
+                    cursor = connection.get_cursor()
+                    cursor.execute("SELECT 1")
+                    result = cursor.fetchone()
+                    if result and result[0] == 1:
+                        logging.info("Database health check completed successfully")
+                    else:
+                        logging.warning("Database health check returned unexpected result")
+                        # Force connection reset on next access
+                        if hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
+                            try:
+                                app.db._local.db.invalidate()
+                                delattr(app.db._local, 'db')
+                            except Exception as e:
+                                logging.error(f"Error invalidating connection: {str(e)}")
+                except Exception as e:
+                    logging.error(f"Database health check query failed: {type(e).__name__}: {str(e)}")
+                    # Force connection reset on next access
+                    if hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
+                        try:
+                            app.db._local.db.invalidate()
+                            delattr(app.db._local, 'db')
+                        except Exception as inner_e:
+                            logging.error(f"Error invalidating connection: {str(inner_e)}")
         except Exception as e:
             logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
             # Force connection reset on next access
@@ -296,7 +319,7 @@ async def health_db():
         except Exception as e:
             logging.error(f"Error checking PostgreSQL port status: {str(e)}")
         
-        # Validate database connection
+        # Validate database connection using a simple query
         connection = db.get_validated_connection()
         cursor = connection.get_cursor()
         cursor.execute("SELECT 1")
