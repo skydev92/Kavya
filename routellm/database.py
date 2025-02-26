@@ -51,8 +51,11 @@ DEFAULT_VALIDATION_INTERVAL = 60  # seconds
 DEFAULT_TOKEN_UPDATE_RETRIES = 5  # More retries for critical token updates
 DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 0.5  # Longer initial backoff for token updates
 # Add constants for fast operation timeouts
-DEFAULT_FAST_LOCK_TIMEOUT = 1000  # milliseconds
-DEFAULT_FAST_STATEMENT_TIMEOUT = 5000  # milliseconds
+DEFAULT_FAST_LOCK_TIMEOUT = 250  # milliseconds - increased from 100ms for better stability
+DEFAULT_FAST_STATEMENT_TIMEOUT = 1000  # milliseconds - increased from 500ms for better stability
+# Add constants for restart recovery
+DEFAULT_RESTART_DETECTION_WINDOW = 300  # seconds (5 minutes) - window to detect potential restarts
+DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0  # Multiply backoff times during suspected restart periods
 # Add constants for advisory locks
 # https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
@@ -486,6 +489,7 @@ class Database:
         self.param_style = "%s"  # Always use PostgreSQL style
         self._update_lock = threading.Lock()  # Add global lock for updates
         self._validation_interval = int(os.getenv("DB_VALIDATION_INTERVAL", str(DEFAULT_VALIDATION_INTERVAL)))
+        
         logging.info(f"Initializing database in {'development' if self.env == 'dev' else 'production'} environment")
         
         # Don't initialize the database connection here - do it lazily
