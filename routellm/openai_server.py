@@ -14,6 +14,8 @@ import signal
 import time
 import shortuuid
 import re
+import subprocess
+import socket
 
 import logging
 import fastapi
@@ -23,14 +25,14 @@ import litellm
 from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Depends
+from fastapi import Depends, BackgroundTasks
 
 from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE, RequestCostTracker
 from routellm.routers.routers import ROUTER_CLS
 from routellm.auth import JWTBearer
 from routellm.models import InsufficientTokensError
 import routellm.models 
-from routellm.database import Database
+from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
 
 from dotenv import load_dotenv
 
@@ -46,9 +48,36 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
+# Database health check interval (seconds)
+DB_HEALTH_CHECK_INTERVAL = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "60"))
+
+async def periodic_db_health_check(app: fastapi.FastAPI):
+    """Periodically check database health and reset connections if needed"""
+    while True:
+        try:
+            if hasattr(app, 'db'):
+                logging.info("Performing periodic database health check")
+                # Get a validated connection to ensure the database is healthy
+                app.db.get_validated_connection()
+                logging.info("Database health check completed successfully")
+        except Exception as e:
+            logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
+            # Force connection reset on next access
+            if hasattr(app, 'db') and hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
+                try:
+                    app.db._local.db.invalidate()
+                    delattr(app.db._local, 'db')
+                except Exception:
+                    pass
+        
+        # Wait for the next check interval
+        await asyncio.sleep(DB_HEALTH_CHECK_INTERVAL)
+
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     """Initialize and cleanup application state"""
+    health_check_task = None
+    
     try:
         app.controllers = Controllers(
             routers=args.routers,
@@ -84,21 +113,31 @@ async def lifespan(app: fastapi.FastAPI):
         
         # Test database connection by trying to create tables
         try:
-            # Get a test connection to verify database is working
-            test_conn = app.db._get_connection()
-            cursor = test_conn.get_cursor()
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
+            # Initialize the database (creates tables if needed)
+            app.db.initialize_database()
+            
+            # Start periodic health check task
+            health_check_task = asyncio.create_task(periodic_db_health_check(app))
+            logging.info("Database health check task started")
+            
             yield
         except Exception as e:
-            logging.error(f"Database connection test failed: {str(e)}")
+            logging.error(f"Database initialization failed: {type(e).__name__}: {str(e)}")
             raise Exception("Application startup failed - database initialization error") from e
         
     except Exception as e:
-        logging.error(f"Failed to initialize application: {str(e)}")
-        raise Exception("Application startup failed - database initialization error") from e
+        logging.error(f"Failed to initialize application: {type(e).__name__}: {str(e)}")
+        raise Exception("Application startup failed") from e
     
     finally:
+        # Cancel health check task
+        if health_check_task:
+            health_check_task.cancel()
+            try:
+                await health_check_task
+            except asyncio.CancelledError:
+                pass
+            
         # Cleanup on shutdown
         if hasattr(app, 'db') and app.db:
             app.db.close()
@@ -219,6 +258,152 @@ async def health_check():
     </html>
     """
     return HTMLResponse(content=html_content, status_code=200)
+
+@app.get("/health/db")
+async def health_db():
+    """Check database health and connection status"""
+    try:
+        # Get database connection
+        db = app.db
+        
+        # Check if Cloud SQL Proxy is running (if applicable)
+        cloud_sql_proxy_running = False
+        if os.getenv("INSTANCE_CONNECTION_NAME"):
+            try:
+                # Check if cloud_sql_proxy process is running
+                result = subprocess.run(
+                    ["pgrep", "-f", "cloud_sql_proxy"], 
+                    capture_output=True, 
+                    text=True
+                )
+                cloud_sql_proxy_running = result.returncode == 0
+                
+                if not cloud_sql_proxy_running:
+                    logging.warning("Cloud SQL Proxy does not appear to be running")
+            except Exception as e:
+                logging.error(f"Error checking Cloud SQL Proxy status: {str(e)}")
+        
+        # Check if port 5432 is open
+        port_open = False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex(('127.0.0.1', 5432))
+                port_open = result == 0
+                
+            if not port_open:
+                logging.warning("PostgreSQL port 5432 is not open")
+        except Exception as e:
+            logging.error(f"Error checking PostgreSQL port status: {str(e)}")
+        
+        # Validate database connection
+        connection = db.get_validated_connection()
+        cursor = connection.get_cursor()
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+            
+        # Get connection pool stats if available
+        pool_stats = {}
+        if hasattr(db, '_local') and hasattr(db._local, 'db') and hasattr(db._local.db, 'engine'):
+            engine = db._local.db.engine
+            if hasattr(engine, 'pool'):
+                pool = engine.pool
+                pool_stats = {
+                    "pool_size": getattr(pool, 'size', None),
+                    "pool_overflow": getattr(pool, 'overflow', None),
+                    "pool_checked_out": getattr(pool, 'checkedout', None),
+                }
+            
+        # Return health status
+        return {
+            "status": "healthy",
+            "message": "Database connection is working properly",
+            "timestamp": datetime.now().isoformat(),
+            "query_result": result[0] if result else None,
+            "environment": os.getenv("ENVIRONMENT", "unknown"),
+            "instance_connection_name": os.getenv("INSTANCE_CONNECTION_NAME", "N/A"),
+            "cloud_sql_proxy": {
+                "running": cloud_sql_proxy_running,
+                "port_open": port_open
+            },
+            "connection_pool": pool_stats
+        }
+    except Exception as e:
+        logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "unhealthy",
+                "message": f"Database connection failed: {str(e)}",
+                "timestamp": datetime.now().isoformat(),
+                "error_type": type(e).__name__,
+                "environment": os.getenv("ENVIRONMENT", "unknown"),
+            }
+        )
+
+@app.get("/v1/account/balance")
+async def get_account_balance(user_id: int = Depends(JWTBearer())):
+    """Get account balance for the authenticated user."""
+    logging.info(f"Account balance check for user {user_id}")
+    
+    try:
+        # Get account balance
+        balance = app.db.get_account_balance_model(account_id=user_id)
+        
+        # Get daily usage for the current month
+        today = datetime.now()
+        start_date = f"{today.year}-{today.month:02d}-01"
+        end_date = today.strftime("%Y-%m-%d")
+        
+        daily_usage = app.db.get_daily_usage_model(
+            account_id=user_id,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Calculate monthly totals
+        monthly_totals = {
+            "prompt_tokens": sum(day.daily_token_usage_in for day in daily_usage),
+            "completion_tokens": sum(day.daily_token_usage_out for day in daily_usage),
+            "word_count": sum(day.daily_word_usage for day in daily_usage),
+            "transaction_count": sum(day.transaction_count for day in daily_usage)
+        }
+        
+        return JSONResponse(
+            content={
+                "account_id": balance.account_id,
+                "balance": {
+                    "token_balance_in": balance.token_balance_in,
+                    "token_balance_out": balance.token_balance_out,
+                    "word_balance": balance.word_balance if hasattr(balance, 'word_balance') else 0,
+                    "transactions": balance.transactions
+                },
+                "monthly_usage": {
+                    "month": f"{today.year}-{today.month:02d}",
+                    "prompt_tokens": monthly_totals["prompt_tokens"],
+                    "completion_tokens": monthly_totals["completion_tokens"],
+                    "word_count": monthly_totals["word_count"],
+                    "transaction_count": monthly_totals["transaction_count"]
+                },
+                "daily_usage": [day.model_dump() for day in daily_usage]
+            },
+            status_code=200
+        )
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logging.error(f"Error getting account balance: {error_type}: {error_msg}")
+        
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"Failed to retrieve account balance: {error_msg}",
+                    "type": error_type,
+                    "code": "balance_retrieval_failed"
+                }
+            },
+            status_code=500
+        )
 
 # ------------------------------------------------------------------------------
 # API ENDPOINTS
@@ -753,3 +938,48 @@ if not asyncio.get_event_loop().is_running():
     )
     server = uvicorn.Server(config)
     server.run()
+
+def main():
+    """Main entry point for the server"""
+    args = parse_args()
+    
+    # Configure logging
+    logging_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(
+        level=logging_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    )
+    
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Initialize database connection in the main thread
+    try:
+        logging.info("Initializing database connection in main thread")
+        db = get_db()
+        # Perform a simple validation query to ensure connection is working
+        with db.transaction() as cursor:
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+        logging.info("Database connection successfully initialized")
+    except Exception as e:
+        logging.error(f"Failed to initialize database connection: {str(e)}")
+        # Continue anyway, as the connection will be retried when needed
+    
+    # Start periodic health check task
+    if not args.disable_health_check:
+        asyncio.create_task(periodic_health_check())
+    
+    # Create the FastAPI app
+    app = create_app(args, config)
+    
+    # Start the server
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+    )
+
+if __name__ == "__main__":
+    main()
