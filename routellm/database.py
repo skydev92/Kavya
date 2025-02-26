@@ -38,27 +38,30 @@ logging.basicConfig(
 # Constants for connection management
 DEFAULT_POOL_SIZE = 10
 DEFAULT_MAX_OVERFLOW = 5
-DEFAULT_POOL_TIMEOUT = 30
-DEFAULT_POOL_RECYCLE = 300  # 5 minutes instead of 30 minutes
-DEFAULT_MAX_RETRIES = 5  # Increased from 3
-DEFAULT_RETRY_BACKOFF = 0.2  # Increased from 0.1
-DEFAULT_CONNECT_TIMEOUT = 5  # seconds
-DEFAULT_COMMAND_TIMEOUT = 15  # seconds - increased from 10
-DEFAULT_LOCK_TIMEOUT = 10  # seconds - separate from command timeout
-DEFAULT_STATEMENT_TIMEOUT = 30  # seconds
-DEFAULT_VALIDATION_INTERVAL = 60  # seconds
+DEFAULT_POOL_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_POOL_RECYCLE = 300000  # milliseconds (5 minutes)
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_RETRY_BACKOFF = 200  # milliseconds (0.2 seconds)
+DEFAULT_CONNECT_TIMEOUT = 5000  # milliseconds (5 seconds)
+DEFAULT_COMMAND_TIMEOUT = 15000  # milliseconds (15 seconds)
+DEFAULT_LOCK_TIMEOUT = 15000  # milliseconds (15 seconds)
+DEFAULT_STATEMENT_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_VALIDATION_INTERVAL = 60000  # milliseconds (60 seconds)
 # Add constants for retry handling specific to token updates
-DEFAULT_TOKEN_UPDATE_RETRIES = 5  # More retries for critical token updates
-DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 0.5  # Longer initial backoff for token updates
+DEFAULT_TOKEN_UPDATE_RETRIES = 5
+DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 500  # milliseconds (0.5 seconds)
 # Add constants for fast operation timeouts
-DEFAULT_FAST_LOCK_TIMEOUT = 250  # milliseconds - increased from 100ms for better stability
-DEFAULT_FAST_STATEMENT_TIMEOUT = 1000  # milliseconds - increased from 500ms for better stability
+DEFAULT_FAST_LOCK_TIMEOUT = 250  # milliseconds
+DEFAULT_FAST_STATEMENT_TIMEOUT = 1000  # milliseconds
 # Add constants for restart recovery
-DEFAULT_RESTART_DETECTION_WINDOW = 300  # seconds (5 minutes) - window to detect potential restarts
-DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0  # Multiply backoff times during suspected restart periods
+DEFAULT_RESTART_DETECTION_WINDOW = 300000  # milliseconds (5 minutes)
+DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0
 # Add constants for advisory locks
 # https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
+# Add constants for initialization
+DEFAULT_INIT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 60000  # milliseconds (60 seconds)
 
 class DatabaseConnection:
     def __init__(self):
@@ -119,6 +122,7 @@ class PostgreSQLConnection(DatabaseConnection):
         self.statement_timeout = int(os.getenv("DB_STATEMENT_TIMEOUT", str(DEFAULT_STATEMENT_TIMEOUT)))
         self.token_update_retries = int(os.getenv("DB_TOKEN_UPDATE_RETRIES", str(DEFAULT_TOKEN_UPDATE_RETRIES)))
         self.token_update_backoff = float(os.getenv("DB_TOKEN_UPDATE_BACKOFF_BASE", str(DEFAULT_TOKEN_UPDATE_BACKOFF_BASE)))
+        self.idle_in_transaction_timeout = int(os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", str(DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT)))
         
         if instance_connection_name:
             # Parse credentials from DATABASE_URL for Cloud SQL
@@ -167,17 +171,21 @@ class PostgreSQLConnection(DatabaseConnection):
                         password=self.db_pass,
                         db=self.db_name,
                         ip_type=IPTypes.PRIVATE if self.private_ip else IPTypes.PUBLIC,
-                        timeout=self.connect_timeout
+                        timeout=self.connect_timeout / 1000,  # Convert from ms to seconds for pg8000
                     )
-                    # Set autocommit temporarily to configure session
-                    conn.autocommit = True
+                    
+                    # Set timeouts after connection is established
+                    # Don't use context manager as pg8000 cursor doesn't support it
                     cursor = conn.cursor()
-                    cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED")
-                    cursor.execute(f"SET lock_timeout = '{self.lock_timeout}s'")
-                    cursor.execute(f"SET statement_timeout = '{self.statement_timeout}s'")
-                    cursor.execute("SET idle_in_transaction_session_timeout = '60s'")  # 1 minute timeout for idle transactions
-                    # Restore autocommit to False for normal operations
-                    conn.autocommit = False
+                    try:
+                        # Set timeouts directly with millisecond values
+                        cursor.execute(f"SET lock_timeout TO {self.lock_timeout}")
+                        cursor.execute(f"SET statement_timeout TO {self.statement_timeout}")
+                        cursor.execute(f"SET idle_in_transaction_session_timeout TO {self.idle_in_transaction_timeout}")
+                        conn.commit()  # Commit the timeout settings
+                    finally:
+                        cursor.close()
+                    
                     logging.info(f"Successfully connected to Cloud SQL in {time.time() - start_time:.2f}s")
                     return conn
                 except Exception as e:
@@ -195,26 +203,46 @@ class PostgreSQLConnection(DatabaseConnection):
                 creator=getconn,
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
-                pool_timeout=self.pool_timeout,
-                pool_recycle=self.pool_recycle,
+                pool_timeout=self.pool_timeout / 1000,  # Convert from ms to seconds
+                pool_recycle=self.pool_recycle / 1000,  # Convert from ms to seconds
                 pool_pre_ping=True,
                 isolation_level="READ COMMITTED",
-                connect_args={"timeout": self.connect_timeout},
                 echo=os.getenv("SQL_DEBUG", "").lower() in ("true", "1", "yes")
             )
         else:  # Development mode with local PostgreSQL
             logging.info(f"Connecting to local PostgreSQL at {self.db_host}:{self.db_port}")
+            
+            # Define common connection options for local PostgreSQL
+            connect_args = {
+                "timeout": self.connect_timeout / 1000,  # Convert from ms to seconds for pg8000
+            }
+            
             self.engine = create_engine(
                 self.database_url,
                 pool_size=self.pool_size,
                 max_overflow=self.max_overflow,
-                pool_timeout=self.pool_timeout,
-                pool_recycle=self.pool_recycle,
+                pool_timeout=self.pool_timeout / 1000,  # Convert from ms to seconds
+                pool_recycle=self.pool_recycle / 1000,  # Convert from ms to seconds
                 pool_pre_ping=True,
                 isolation_level="READ COMMITTED",
-                connect_args={"timeout": self.connect_timeout},
+                connect_args=connect_args,
                 echo=os.getenv("SQL_DEBUG", "").lower() in ("true", "1", "yes")
             )
+            
+            # For local connections, set timeouts on the first connection
+            connection = self.engine.raw_connection()
+            try:
+                cursor = connection.cursor()
+                try:
+                    # Set timeouts directly with millisecond values
+                    cursor.execute(f"SET lock_timeout TO {self.lock_timeout}")
+                    cursor.execute(f"SET statement_timeout TO {self.statement_timeout}")
+                    cursor.execute(f"SET idle_in_transaction_session_timeout TO {self.idle_in_transaction_timeout}")
+                    connection.commit()  # Commit the timeout settings
+                finally:
+                    cursor.close()
+            finally:
+                connection.close()
 
         # Configure retry handling using event listeners
         @event.listens_for(self.engine, "handle_error")
@@ -257,15 +285,6 @@ class PostgreSQLConnection(DatabaseConnection):
         try:
             logging.info("Obtaining raw connection from engine")
             self.connection = self.engine.raw_connection()
-            # Set autocommit temporarily to configure session
-            self.connection.autocommit = True
-            cursor = self.get_cursor()
-            cursor.execute("SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED")
-            cursor.execute(f"SET lock_timeout = '{self.lock_timeout}s'")
-            cursor.execute(f"SET statement_timeout = '{self.statement_timeout}s'")
-            cursor.execute("SET idle_in_transaction_session_timeout = '60s'")  # 1 minute timeout for idle transactions
-            # Restore autocommit to False for normal operations
-            self.connection.autocommit = False
             
             # Validate the connection
             self.validate()
@@ -601,9 +620,6 @@ class Database:
             with self.get_transaction() as db:
                 cursor = db.get_cursor()
                 
-                # Set a longer lock timeout just for this initialization
-                cursor.execute("SET lock_timeout = '30s'")
-                
                 # First try a simple read query to verify basic connectivity
                 cursor.execute("SELECT 1 as test")
                 if cursor.fetchone()[0] != 1:
@@ -810,21 +826,23 @@ class Database:
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
         
-        # Set SQL statement timeouts for better error handling
+        # Set database-level parameters for better error handling
         try:
             if self.env == "prod":
                 # Get the database name from the connection object
                 db_name = connection.db_name if hasattr(connection, 'db_name') else None
                 
                 if db_name:
-                    # Set appropriate timeouts for production
-                    cursor.execute(f"ALTER DATABASE {db_name} SET lock_timeout = '{DEFAULT_LOCK_TIMEOUT}s'")
-                    cursor.execute(f"ALTER DATABASE {db_name} SET statement_timeout = '{DEFAULT_STATEMENT_TIMEOUT}s'")
-                    cursor.execute(f"ALTER DATABASE {db_name} SET idle_in_transaction_session_timeout = '60s'")
+                    # Set appropriate timeouts at the database level
+                    # These will apply to all new connections to the database
+                    cursor.execute(f"ALTER DATABASE {db_name} SET lock_timeout TO {DEFAULT_LOCK_TIMEOUT}")
+                    cursor.execute(f"ALTER DATABASE {db_name} SET statement_timeout TO {DEFAULT_STATEMENT_TIMEOUT}")
+                    cursor.execute(f"ALTER DATABASE {db_name} SET idle_in_transaction_session_timeout TO {DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT}")
+                    logging.info(f"Set database-level parameters for {db_name}")
                 else:
-                    logging.warning("Could not set database-level timeouts: db_name is not available from connection")
+                    logging.warning("Could not set database-level parameters: db_name is not available from connection")
         except Exception as e:
-            logging.warning(f"Error setting database-level timeouts: {str(e)}")
+            logging.warning(f"Error setting database-level parameters: {str(e)}")
         
         if self.env == "dev":
             connection.commit()
@@ -1174,8 +1192,8 @@ class Database:
                 cursor = connection.get_cursor()
                 
                 # Set extremely short timeouts for this read-only operation
-                cursor.execute(f"SET lock_timeout = '100ms'")  # Ultra short timeout
-                cursor.execute(f"SET statement_timeout = '500ms'")  # Ultra short statement timeout
+                cursor.execute(f"SET lock_timeout TO {DEFAULT_FAST_LOCK_TIMEOUT}")  # Ultra short timeout
+                cursor.execute(f"SET statement_timeout TO {DEFAULT_FAST_STATEMENT_TIMEOUT}")  # Ultra short statement timeout
                 
                 # First ensure the account exists with a non-blocking insert
                 try:
@@ -1451,8 +1469,8 @@ class Database:
                 cursor = db.get_cursor()
                 
                 # Set appropriate timeouts for batch processing
-                cursor.execute(f"SET lock_timeout = '{DEFAULT_FAST_LOCK_TIMEOUT * 2}ms'")
-                cursor.execute(f"SET statement_timeout = '{DEFAULT_FAST_STATEMENT_TIMEOUT * 2}ms'")
+                cursor.execute(f"SET lock_timeout = '{DEFAULT_FAST_LOCK_TIMEOUT * 2}'")
+                cursor.execute(f"SET statement_timeout = '{DEFAULT_FAST_STATEMENT_TIMEOUT * 2}'")
                 
                 # Process each account update with SKIP LOCKED to prevent blocking
                 for account_id, prompt_tokens, completion_tokens in account_updates:
