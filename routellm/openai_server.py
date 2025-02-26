@@ -55,34 +55,49 @@ async def lifespan(app: fastapi.FastAPI):
     """Initialize and cleanup application state"""
     
     try:
+        # Load config
+        config = yaml.safe_load(open(args.config, "r")) if args.config else None
+        
+        # Get default model pair from config or command line arguments
+        default_strong_model = args.strong_model
+        default_weak_model = args.weak_model
+        
+        # If config has model_pairs section, use it to override defaults
+        if config and "model_pairs" in config and "default" in config["model_pairs"]:
+            default_strong_model = config["model_pairs"]["default"].get("strong", default_strong_model)
+            default_weak_model = config["model_pairs"]["default"].get("weak", default_weak_model)
+        
         app.controllers = Controllers(
             routers=args.routers,
-            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-            strong_model=args.strong_model,
-            weak_model=args.weak_model,
+            config=config,
+            strong_model=default_strong_model,
+            weak_model=default_weak_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         app.controllers.create_controller("completion", 
             routers=args.routers,
-            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-            strong_model=args.strong_model,
-            weak_model=args.weak_model,
+            config=config,
+            strong_model=default_strong_model,
+            weak_model=default_weak_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         app.controllers.create_controller("longwriter", 
             routers=args.routers,
-            config=yaml.safe_load(open(args.config, "r")) if args.config else None,
-            strong_model=args.strong_model,
-            weak_model=args.weak_model,
+            config=config,
+            strong_model=default_strong_model,
+            weak_model=default_weak_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         logging.debug("Default controllers based on arguments, initialized successfully")
+        
+        # Store model pairs from config for later use
+        app.model_pairs = config.get("model_pairs", {}) if config else {}
         
         # Initialize database
         app.db = Database()
@@ -403,6 +418,20 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         app.controllers.default.original_model = original_model
         app.controllers.completion.original_model = original_model
         app.controllers.longwriter.original_model = original_model
+        
+        # Check if we have a specific model pair for this Kavya model
+        if hasattr(app, 'model_pairs') and original_model in app.model_pairs:
+            # Get the model pair for this Kavya model
+            model_pair = app.model_pairs[original_model]
+            logging.info(f"Using model pair for {original_model}: strong={model_pair.get('strong')}, weak={model_pair.get('weak')}")
+            
+            # Update the model pair in all controllers
+            for controller_name in ['default', 'completion', 'longwriter']:
+                controller = app.controllers.controllers[controller_name]
+                if 'strong' in model_pair:
+                    controller.model_pair.strong = model_pair['strong']
+                if 'weak' in model_pair:
+                    controller.model_pair.weak = model_pair['weak']
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
         if "model" in request_data and isinstance(request_data["model"], str) and request_data["model"].startswith("kavya-"):
@@ -885,9 +914,17 @@ parser.add_argument(
     type=str,
     default=None,
 )
-parser.add_argument("--strong-model", type=str, default="gpt-4-1106-preview")
 parser.add_argument(
-    "--weak-model", type=str, default="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1"
+    "--strong-model", 
+    type=str, 
+    default=None,
+    help="The strong model to use (can be overridden by config.yaml)"
+)
+parser.add_argument(
+    "--weak-model", 
+    type=str, 
+    default=None,
+    help="The weak model to use (can be overridden by config.yaml)"
 )
 args = parser.parse_args()
 

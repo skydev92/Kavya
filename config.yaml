@@ -5,5 +5,14 @@ model_translations:
     kavya-m1: router-mf-0.1
     kavya-m1-eu: mistral/mistral-large-latest
 
+# Model pairs for different model types
+model_pairs:
+    default:
+        strong: gpt-4o
+        weak: gpt-4o-mini
+    kavya-m1-eu:
+        strong: mistral/mistral-large-latest
+        weak: mistral/mistral-medium-latest
+
 general_settings:
     basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions
