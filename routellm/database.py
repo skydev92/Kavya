@@ -378,7 +378,26 @@ class Database:
                 db.rollback()
             except Exception as rollback_error:
                 logging.error(f"Error during rollback: {str(rollback_error)}")
-            logging.error(f"Transaction failed: {str(e)}")
+            
+            error_type = type(e).__name__
+            error_details = str(e)
+            
+            # Specifically target network errors for detailed logging
+            if "network" in error_details.lower():
+                # Log the exact error type and representation
+                logging.error(f"Transaction network error - Type: {error_type}, Repr: {repr(e)}")
+                
+                # Try to get connection state information
+                try:
+                    if hasattr(db, 'connection') and db.connection:
+                        conn_info = "Connection exists"
+                    else:
+                        conn_info = "No connection"
+                    logging.error(f"Connection state: {conn_info}")
+                except Exception:
+                    pass
+            
+            logging.error(f"Transaction failed: {error_type}: {error_details}")
             raise
 
     def _get_sql(self, template_name: str) -> str:
@@ -690,7 +709,29 @@ class Database:
                 return has_sufficient_balance, current_balance
                 
         except Exception as e:
-            logging.error(f"Error checking balance: {str(e)}")
+            error_type = type(e).__name__
+            error_details = str(e)
+            
+            # Specifically target network errors for detailed logging
+            if "network" in error_details.lower():
+                # Log the exact error type and representation
+                logging.error(f"Network error details - Type: {error_type}, Repr: {repr(e)}")
+                
+                # Log environment information
+                env = os.getenv("ENVIRONMENT", "Not set")
+                instance_name = os.getenv("INSTANCE_CONNECTION_NAME", "Not set")
+                logging.error(f"Environment context - ENVIRONMENT: {env}, INSTANCE_CONNECTION_NAME: {instance_name}")
+                
+                # Check if Cloud SQL Proxy is running
+                try:
+                    import subprocess
+                    result = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+                    proxy_running = "cloud-sql-proxy" in result.stdout
+                    logging.error(f"Cloud SQL Proxy running: {proxy_running}")
+                except Exception:
+                    pass
+            
+            logging.error(f"Error checking balance: {error_type}: {error_details}")
             raise
 
     def initialize_test_accounts(self, account_ids: list[int]):
