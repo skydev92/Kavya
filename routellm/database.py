@@ -36,20 +36,20 @@ logging.basicConfig(
 )
 
 # Constants for connection management
-DEFAULT_POOL_SIZE = 10
-DEFAULT_MAX_OVERFLOW = 5
+DEFAULT_POOL_SIZE = 5
+DEFAULT_MAX_OVERFLOW = 10
 DEFAULT_POOL_TIMEOUT = 30000  # milliseconds (30 seconds)
-DEFAULT_POOL_RECYCLE = 300000  # milliseconds (5 minutes)
+DEFAULT_POOL_RECYCLE = 1800000  # milliseconds (30 minutes)
 DEFAULT_MAX_RETRIES = 5
-DEFAULT_RETRY_BACKOFF = 200  # milliseconds (0.2 seconds)
-DEFAULT_CONNECT_TIMEOUT = 5000  # milliseconds (5 seconds)
-DEFAULT_COMMAND_TIMEOUT = 15000  # milliseconds (15 seconds)
-DEFAULT_LOCK_TIMEOUT = 15000  # milliseconds (15 seconds)
-DEFAULT_STATEMENT_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_RETRY_BACKOFF = 500  # milliseconds (0.5 seconds)
+DEFAULT_CONNECT_TIMEOUT = 10000  # milliseconds (10 seconds)
+DEFAULT_COMMAND_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_STATEMENT_TIMEOUT = 60000  # milliseconds (60 seconds)
 DEFAULT_VALIDATION_INTERVAL = 60000  # milliseconds (60 seconds)
 # Add constants for retry handling specific to token updates
-DEFAULT_TOKEN_UPDATE_RETRIES = 5
-DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 500  # milliseconds (0.5 seconds)
+DEFAULT_TOKEN_UPDATE_RETRIES = 10
+DEFAULT_TOKEN_UPDATE_BACKOFF_BASE = 200  # milliseconds (0.2 seconds)
 # Add constants for fast operation timeouts
 DEFAULT_FAST_LOCK_TIMEOUT = 250  # milliseconds
 DEFAULT_FAST_STATEMENT_TIMEOUT = 1000  # milliseconds
@@ -61,7 +61,7 @@ DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
 # Add constants for initialization
 DEFAULT_INIT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
-DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 60000  # milliseconds (60 seconds)
+DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 300000  # milliseconds (5 minutes)
 
 class DatabaseConnection:
     def __init__(self):
@@ -123,6 +123,11 @@ class PostgreSQLConnection(DatabaseConnection):
         self.token_update_retries = int(os.getenv("DB_TOKEN_UPDATE_RETRIES", str(DEFAULT_TOKEN_UPDATE_RETRIES)))
         self.token_update_backoff = float(os.getenv("DB_TOKEN_UPDATE_BACKOFF_BASE", str(DEFAULT_TOKEN_UPDATE_BACKOFF_BASE)))
         self.idle_in_transaction_timeout = int(os.getenv("DB_IDLE_IN_TRANSACTION_TIMEOUT", str(DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT)))
+        
+        # Add VACUUM optimization settings
+        self.fillfactor_account_totals = int(os.getenv("DB_FILLFACTOR_ACCOUNT_TOTALS", "90"))
+        self.fillfactor_account_daily = int(os.getenv("DB_FILLFACTOR_ACCOUNT_DAILY", "95"))
+        self.autovacuum_enabled = os.getenv("DB_AUTOVACUUM_ENABLED", "true").lower() in ("true", "1", "yes")
         
         if instance_connection_name:
             # Parse credentials from DATABASE_URL for Cloud SQL
@@ -450,6 +455,203 @@ class PostgreSQLConnection(DatabaseConnection):
         logging.info("Invalidating database connection")
         self.close()
 
+    def _ensure_tables_exist(self, connection):
+        """Ensure all required tables exist in the database"""
+        logging.info("Ensuring required tables exist")
+        cursor = connection.get_cursor()
+        
+        # Set appropriate timeouts for table creation
+        cursor.execute(f"SET lock_timeout TO {DEFAULT_INIT_LOCK_TIMEOUT}")
+        cursor.execute(f"SET statement_timeout TO {DEFAULT_STATEMENT_TIMEOUT}")
+        cursor.execute(f"SET idle_in_transaction_session_timeout TO {DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT}")
+        
+        # Create account_totals table if it doesn't exist
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS account_totals (
+            account_id INTEGER PRIMARY KEY,
+            token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
+            token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
+            word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
+            total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
+            total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
+            total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
+            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
+            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        # Create account_daily_summary table if it doesn't exist
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS account_daily_summary (
+            account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
+            date DATE NOT NULL,
+            transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
+            daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
+            daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
+            daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
+            PRIMARY KEY (account_id, date)
+        )
+        """)
+        
+        # Create or update indices for better performance
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
+        ON account_totals(token_balance_in, token_balance_out, word_balance)
+        """)
+        
+        cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
+        ON account_daily_summary(date)
+        """)
+        
+        # Update the account_totals table to include the last_updated column if it doesn't exist
+        try:
+            cursor.execute("""
+            SELECT column_name FROM information_schema.columns 
+            WHERE table_name='account_totals' AND column_name='last_updated'
+            """)
+            has_last_updated = cursor.fetchone() is not None
+            
+            if not has_last_updated:
+                cursor.execute("""
+                ALTER TABLE account_totals ADD COLUMN last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                """)
+                logging.info("Added last_updated column to account_totals table")
+        except Exception as e:
+            logging.warning(f"Error checking for last_updated column: {str(e)}")
+        
+        # Apply VACUUM optimizations
+        self._optimize_table_storage(cursor)
+        
+        connection.commit()
+        logging.info("Tables and indices verified")
+        
+    def _optimize_table_storage(self, cursor):
+        """Apply VACUUM optimizations to tables"""
+        try:
+            # Set FILLFACTOR for account_totals (frequently updated)
+            cursor.execute(f"""
+                ALTER TABLE account_totals SET (fillfactor = {self.fillfactor_account_totals})
+            """)
+            
+            # Set FILLFACTOR for account_daily_summary (less frequently updated)
+            cursor.execute(f"""
+                ALTER TABLE account_daily_summary SET (fillfactor = {self.fillfactor_account_daily})
+            """)
+            
+            # Configure autovacuum settings if enabled
+            if self.autovacuum_enabled:
+                # For account_totals (frequently updated, needs more aggressive vacuuming)
+                cursor.execute("""
+                    ALTER TABLE account_totals SET (
+                        autovacuum_vacuum_scale_factor = 0.05,
+                        autovacuum_analyze_scale_factor = 0.02,
+                        autovacuum_vacuum_threshold = 50,
+                        autovacuum_analyze_threshold = 50
+                    )
+                """)
+                
+                # For account_daily_summary (append-mostly table)
+                cursor.execute("""
+                    ALTER TABLE account_daily_summary SET (
+                        autovacuum_vacuum_scale_factor = 0.1,
+                        autovacuum_analyze_scale_factor = 0.05,
+                        autovacuum_vacuum_threshold = 100,
+                        autovacuum_analyze_threshold = 100
+                    )
+                """)
+            
+            logging.info("Table storage optimized with VACUUM settings")
+        except Exception as e:
+            logging.warning(f"Error applying VACUUM optimizations: {str(e)}")
+    
+    def check_database_health(self):
+        """Check database health metrics related to VACUUM"""
+        try:
+            with self.engine.connect() as conn:
+                # Check for tables with high dead tuple percentages
+                result = conn.execute(text("""
+                    SELECT relname as table_name,
+                           n_dead_tup as dead_tuples,
+                           n_live_tup as live_tuples,
+                           CASE WHEN n_live_tup > 0 
+                                THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
+                                ELSE 0 
+                           END as dead_tuple_pct
+                    FROM pg_stat_user_tables
+                    WHERE n_live_tup + n_dead_tup > 0
+                    ORDER BY dead_tuple_pct DESC
+                """))
+                
+                for row in result:
+                    table_name = row[0]
+                    dead_tuple_pct = row[3]
+                    
+                    # Log warning for tables with high dead tuple percentage
+                    if dead_tuple_pct > 20:  # 20% threshold
+                        logging.warning(f"Table {table_name} has {dead_tuple_pct}% dead tuples - consider VACUUM")
+                
+                # Check transaction ID age
+                result = conn.execute(text("""
+                    SELECT datname, age(datfrozenxid) as xid_age
+                    FROM pg_database
+                    WHERE datname = current_database()
+                """))
+                
+                row = result.fetchone()
+                if row and row[1] > 1000000000:  # 1 billion threshold
+                    logging.warning(f"Database {row[0]} has transaction ID age of {row[1]} - approaching wraparound")
+                
+                return True
+        except Exception as e:
+            logging.error(f"Error checking database health: {str(e)}")
+            return False
+    
+    def run_maintenance(self, full=False):
+        """Run VACUUM ANALYZE on tables"""
+        try:
+            with self.engine.begin() as conn:
+                vacuum_type = "VACUUM FULL" if full else "VACUUM"
+                conn.execute(text(f"{vacuum_type} ANALYZE"))
+                logging.info(f"{vacuum_type} ANALYZE completed on all tables")
+                return True
+        except Exception as e:
+            logging.error(f"Error running database maintenance: {str(e)}")
+            return False
+
+    def run_vacuum(self, full=False, table_name=None):
+        """
+        Run VACUUM on the database to reclaim space and update statistics.
+        
+        Args:
+            full: Whether to run VACUUM FULL (locks tables, use during low traffic)
+            table_name: Specific table to vacuum (None for all tables)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            connection = self._get_connection()
+            if hasattr(connection, 'run_maintenance'):
+                return connection.run_maintenance(full=full)
+            
+            # Fallback if connection doesn't have run_maintenance method
+            with self.get_transaction() as db:
+                cursor = db.get_cursor()
+                
+                vacuum_type = "VACUUM FULL" if full else "VACUUM"
+                if table_name:
+                    cursor.execute(f"{vacuum_type} ANALYZE {table_name}")
+                    logging.info(f"{vacuum_type} ANALYZE completed on {table_name}")
+                else:
+                    cursor.execute(f"{vacuum_type} ANALYZE")
+                    logging.info(f"{vacuum_type} ANALYZE completed on all tables")
+                
+                return True
+        except Exception as e:
+            logging.error(f"Error running VACUUM: {str(e)}")
+            return False
+
 class Database:
     # Default balance values
     DEFAULT_TOKEN_BALANCE_IN = 3000000
@@ -646,6 +848,12 @@ class Database:
                         logging.warning("Test account does not exist, but database is accessible")
                     else:
                         logging.info("Successfully verified test account exists")
+                    
+                    # Check database health metrics
+                    self._check_database_health()
+                    
+                    # Apply VACUUM optimizations if needed
+                    self._apply_vacuum_optimizations(connection)
                         
                     logging.info("Successfully verified database access")
                     return
@@ -658,6 +866,53 @@ class Database:
         except Exception as e:
             logging.error(f"Failed to verify database access: {type(e).__name__}: {str(e)}")
             raise RuntimeError(f"Database initialization failed - could not access database: {str(e)}")
+    
+    def _check_database_health(self):
+        """Check database health metrics and log warnings if needed"""
+        try:
+            # Only run health check occasionally to avoid overhead
+            current_time = time.time()
+            last_check_time = getattr(self, '_last_health_check_time', 0)
+            
+            # Check once per hour by default
+            health_check_interval = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "3600"))
+            
+            if current_time - last_check_time > health_check_interval:
+                logging.info("Running database health check")
+                
+                connection = self._get_connection()
+                if hasattr(connection, 'check_database_health'):
+                    connection.check_database_health()
+                
+                self._last_health_check_time = current_time
+                logging.info("Database health check completed")
+        except Exception as e:
+            # Don't fail initialization if health check fails
+            logging.warning(f"Database health check failed: {str(e)}")
+    
+    def _apply_vacuum_optimizations(self, connection):
+        """Apply VACUUM optimizations to tables if needed"""
+        try:
+            # Only apply optimizations occasionally to avoid overhead
+            current_time = time.time()
+            last_optimize_time = getattr(self, '_last_optimize_time', 0)
+            
+            # Apply optimizations once per day by default
+            optimize_interval = int(os.getenv("DB_OPTIMIZE_INTERVAL", "86400"))
+            
+            if current_time - last_optimize_time > optimize_interval:
+                logging.info("Applying VACUUM optimizations")
+                
+                if hasattr(connection, '_optimize_table_storage'):
+                    cursor = connection.get_cursor()
+                    connection._optimize_table_storage(cursor)
+                    connection.commit()
+                
+                self._last_optimize_time = current_time
+                logging.info("VACUUM optimizations applied")
+        except Exception as e:
+            # Don't fail initialization if optimization fails
+            logging.warning(f"Failed to apply VACUUM optimizations: {str(e)}")
 
     @contextmanager
     def get_transaction(self):
@@ -963,6 +1218,12 @@ class Database:
                     # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
                     # This will either update immediately or skip if locked
                     cursor.execute("""
+                        WITH locked_account AS (
+                            SELECT account_id 
+                            FROM account_totals 
+                            WHERE account_id = %s
+                            FOR UPDATE SKIP LOCKED
+                        )
                         UPDATE account_totals
                         SET token_balance_in = GREATEST(0, token_balance_in - %s),
                             token_balance_out = GREATEST(0, token_balance_out - %s), 
@@ -973,6 +1234,7 @@ class Database:
                             total_word_usage = total_word_usage + %s,
                             last_updated = CURRENT_TIMESTAMP
                         WHERE account_id = %s
+                          AND account_id IN (SELECT account_id FROM locked_account)
                           AND token_balance_in >= %s
                           AND token_balance_out >= %s
                           AND word_balance >= %s
@@ -980,6 +1242,7 @@ class Database:
                                 transactions, total_token_usage_in, total_token_usage_out, 
                                 total_word_usage
                     """, (
+                        account_id,
                         prompt_tokens, completion_tokens, word_count,
                         prompt_tokens, completion_tokens, word_count,
                         account_id, 
@@ -988,13 +1251,30 @@ class Database:
                     
                     updated_result = cursor.fetchone()
                     if not updated_result:
-                        # Check if it's an insufficient balance issue
-                        cursor.execute("SELECT token_balance_in, token_balance_out, word_balance FROM account_totals WHERE account_id = %s", (account_id,))
+                        # Check if it's a lock issue or insufficient balance
+                        cursor.execute("""
+                            SELECT token_balance_in, token_balance_out, word_balance,
+                                   pg_try_advisory_lock(account_id) as has_lock
+                            FROM account_totals 
+                            WHERE account_id = %s
+                        """, (account_id,))
+                        
                         balance = cursor.fetchone()
                         
                         if balance:
-                            logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
-                            raise RuntimeError(f"Insufficient token balance for account {account_id}")
+                            if not balance[3]:  # Could not get advisory lock
+                                # This is likely a lock contention issue, retry
+                                raise RuntimeError("Could not acquire lock on account, will retry")
+                            
+                            # Check if it's an insufficient balance issue
+                            if (balance[0] < prompt_tokens or 
+                                balance[1] < completion_tokens or 
+                                balance[2] < word_count):
+                                logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
+                                raise RuntimeError(f"Insufficient token balance for account {account_id}")
+                            else:
+                                # Some other issue, retry
+                                raise RuntimeError("Update failed but account exists and has sufficient balance, will retry")
                         else:
                             # This should never happen with our upsert, but just in case
                             raise RuntimeError(f"Failed to create or update account {account_id}")
@@ -1029,6 +1309,10 @@ class Database:
                     
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
+                    
+                    # Periodically check for dead tuples after updates
+                    self._check_dead_tuples_after_update()
+                    
                     return final_balance
                     
             except Exception as e:
@@ -1043,9 +1327,12 @@ class Database:
                 is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
                 is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
                 is_failed_transaction = "in failed transaction" in error_msg.lower()
+                is_lock_contention = "could not acquire lock" in error_msg.lower()
                 
                 # For recoverable errors, retry with backoff
-                is_retryable = is_lock_timeout or is_statement_timeout or is_deadlock or is_serialize_failure or is_transaction_aborted or is_failed_transaction
+                is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
+                               is_serialize_failure or is_transaction_aborted or 
+                               is_failed_transaction or is_lock_contention)
                 
                 if is_retryable and retry_count < max_retries:
                     # Shorter exponential backoff with small random jitter
@@ -1065,15 +1352,20 @@ class Database:
                         error_category = "serialization failure"
                     elif is_transaction_aborted or is_failed_transaction:
                         error_category = "transaction aborted"
+                    elif is_lock_contention:
+                        error_category = "lock contention"
+                    
+                    # Convert milliseconds to seconds for sleep
+                    wait_time_seconds = wait_time / 1000.0
                     
                     logging.warning(
                         f"[ID: {transaction_id}] Database {error_category} detected "
                         f"(attempt {retry_count}/{max_retries}): {error_type}: {error_msg}. "
-                        f"Retrying in {wait_time:.2f}s"
+                        f"Retrying in {wait_time_seconds:.2f}s"
                     )
                     
                     # Sleep with backoff
-                    time.sleep(wait_time)
+                    time.sleep(wait_time_seconds)
                     
                     # For any error, force a new connection on the next attempt
                     # This is handled at the beginning of the loop with force_new=True
@@ -1091,6 +1383,102 @@ class Database:
             error_msg = f"Failed to update token usage after {max_retries} attempts"
             logging.error(f"[ID: {transaction_id}] CRITICAL: {error_msg}")
             raise RuntimeError(error_msg)
+    
+    def _check_dead_tuples_after_update(self):
+        """
+        Periodically check for dead tuples after database updates.
+        If too many dead tuples are found, log a warning and consider running VACUUM.
+        """
+        try:
+            # Only check occasionally to avoid overhead
+            current_time = time.time()
+            last_check_time = getattr(self, '_last_dead_tuple_check_time', 0)
+            check_interval = int(os.getenv("DB_DEAD_TUPLE_CHECK_INTERVAL", "1800"))  # Default: once per 30 minutes
+            
+            if current_time - last_check_time > check_interval:
+                # Get transaction count to determine if we should check
+                transaction_threshold = int(os.getenv("DB_TRANSACTION_THRESHOLD", "500"))  # Lowered from 1000
+                last_transaction_count = getattr(self, '_last_transaction_count', 0)
+                
+                with self.get_transaction() as db:
+                    cursor = db.get_cursor()
+                    cursor.execute("SELECT SUM(transactions) FROM account_totals")
+                    result = cursor.fetchone()
+                    if result and result[0]:
+                        current_transaction_count = int(result[0])
+                        transaction_diff = current_transaction_count - last_transaction_count
+                        
+                        # If we've had enough transactions since last check, check for dead tuples
+                        if transaction_diff > transaction_threshold:
+                            logging.info(f"Checking for dead tuples after {transaction_diff} transactions")
+                            
+                            # Check dead tuples in account_totals
+                            cursor.execute("""
+                                SELECT n_dead_tup, n_live_tup,
+                                       CASE WHEN n_live_tup > 0 
+                                            THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
+                                            ELSE 0 
+                                       END as dead_tuple_pct
+                                FROM pg_stat_user_tables
+                                WHERE relname = 'account_totals'
+                            """)
+                            
+                            account_totals_result = cursor.fetchone()
+                            if account_totals_result:
+                                dead_tuple_pct = account_totals_result[2]
+                                logging.info(f"account_totals table has {dead_tuple_pct}% dead tuples")
+                                
+                                if dead_tuple_pct > 15:  # Lowered from 20%
+                                    logging.warning(f"account_totals table has {dead_tuple_pct}% dead tuples - consider running VACUUM")
+                                    
+                                    # Auto-vacuum if enabled and dead tuple percentage is high
+                                    auto_vacuum_threshold = int(os.getenv("DB_AUTO_VACUUM_THRESHOLD", "30"))  # Lowered from 50%
+                                    if dead_tuple_pct > auto_vacuum_threshold:
+                                        logging.info(f"Auto-vacuuming account_totals table ({dead_tuple_pct}% dead tuples)")
+                                        try:
+                                            cursor.execute("VACUUM ANALYZE account_totals")
+                                            logging.info(f"Successfully vacuumed account_totals table")
+                                        except Exception as e:
+                                            logging.warning(f"Failed to vacuum account_totals: {str(e)}")
+                            
+                            # Check dead tuples in account_daily_summary
+                            cursor.execute("""
+                                SELECT n_dead_tup, n_live_tup,
+                                       CASE WHEN n_live_tup > 0 
+                                            THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
+                                            ELSE 0 
+                                       END as dead_tuple_pct
+                                FROM pg_stat_user_tables
+                                WHERE relname = 'account_daily_summary'
+                            """)
+                            
+                            daily_summary_result = cursor.fetchone()
+                            if daily_summary_result:
+                                dead_tuple_pct = daily_summary_result[2]
+                                logging.info(f"account_daily_summary table has {dead_tuple_pct}% dead tuples")
+                                
+                                if dead_tuple_pct > 15:  # Lowered from 20%
+                                    logging.warning(f"account_daily_summary table has {dead_tuple_pct}% dead tuples - consider running VACUUM")
+                                    
+                                    # Auto-vacuum if enabled and dead tuple percentage is high
+                                    auto_vacuum_threshold = int(os.getenv("DB_AUTO_VACUUM_THRESHOLD", "30"))  # Lowered from 50%
+                                    if dead_tuple_pct > auto_vacuum_threshold:
+                                        logging.info(f"Auto-vacuuming account_daily_summary table ({dead_tuple_pct}% dead tuples)")
+                                        try:
+                                            cursor.execute("VACUUM ANALYZE account_daily_summary")
+                                            logging.info(f"Successfully vacuumed account_daily_summary table")
+                                        except Exception as e:
+                                            logging.warning(f"Failed to vacuum account_daily_summary: {str(e)}")
+                            
+                            # Update the last check time and transaction count
+                            self._last_dead_tuple_check_time = current_time
+                            self._last_transaction_count = current_transaction_count
+                            
+                            # Log completion of check
+                            logging.info("Dead tuple check completed")
+        except Exception as e:
+            logging.warning(f"Error checking for dead tuples: {str(e)}")
+            # Don't propagate the exception - this is a background task
 
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""

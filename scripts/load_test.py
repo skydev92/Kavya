@@ -16,7 +16,7 @@ logging.basicConfig(
 
 # Test request payload
 TEST_PAYLOAD = {
-    "model": "kavya-m1",
+    "model": "kavya-m1-eu",
     "messages": [
         {
             "role": "system",
