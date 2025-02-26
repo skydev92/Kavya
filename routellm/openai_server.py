@@ -48,58 +48,11 @@ def signal_handler(signum, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-# Database health check interval (seconds)
-DB_HEALTH_CHECK_INTERVAL = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "600"))
-
-async def periodic_db_health_check(app: fastapi.FastAPI):
-    """Periodically check database health and reset connections if needed"""
-    while True:
-        try:
-            if hasattr(app, 'db'):
-                logging.info("Performing periodic database health check")
-                try:
-                    # Get a validated connection to ensure the database is healthy
-                    connection = app.db.get_validated_connection()
-                    cursor = connection.get_cursor()
-                    cursor.execute("SELECT 1")
-                    result = cursor.fetchone()
-                    if result and result[0] == 1:
-                        logging.info("Database health check completed successfully")
-                    else:
-                        logging.warning("Database health check returned unexpected result")
-                        # Force connection reset on next access
-                        if hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
-                            try:
-                                app.db._local.db.invalidate()
-                                delattr(app.db._local, 'db')
-                            except Exception as e:
-                                logging.error(f"Error invalidating connection: {str(e)}")
-                except Exception as e:
-                    logging.error(f"Database health check query failed: {type(e).__name__}: {str(e)}")
-                    # Force connection reset on next access
-                    if hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
-                        try:
-                            app.db._local.db.invalidate()
-                            delattr(app.db._local, 'db')
-                        except Exception as inner_e:
-                            logging.error(f"Error invalidating connection: {str(inner_e)}")
-        except Exception as e:
-            logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
-            # Force connection reset on next access
-            if hasattr(app, 'db') and hasattr(app.db, '_local') and hasattr(app.db._local, 'db'):
-                try:
-                    app.db._local.db.invalidate()
-                    delattr(app.db._local, 'db')
-                except Exception:
-                    pass
-        
-        # Wait for the next check interval
-        await asyncio.sleep(DB_HEALTH_CHECK_INTERVAL)
+# Removed periodic database health check
 
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     """Initialize and cleanup application state"""
-    health_check_task = None
     
     try:
         app.controllers = Controllers(
@@ -139,9 +92,7 @@ async def lifespan(app: fastapi.FastAPI):
             # Initialize the database (creates tables if needed)
             app.db.initialize_database()
             
-            # Start periodic health check task
-            health_check_task = asyncio.create_task(periodic_db_health_check(app))
-            logging.info("Database health check task started")
+            # Removed health check task initialization
             
             yield
         except Exception as e:
@@ -153,14 +104,6 @@ async def lifespan(app: fastapi.FastAPI):
         raise Exception("Application startup failed") from e
     
     finally:
-        # Cancel health check task
-        if health_check_task:
-            health_check_task.cancel()
-            try:
-                await health_check_task
-            except asyncio.CancelledError:
-                pass
-            
         # Cleanup on shutdown
         if hasattr(app, 'db') and app.db:
             app.db.close()

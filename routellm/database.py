@@ -828,8 +828,7 @@ class Database:
                     else:
                         logging.info("Successfully verified test account exists")
                     
-                    # Check database health metrics
-                    self._check_database_health()
+                    # Removed database health check
                     
                     # Apply VACUUM optimizations if needed
                     self._apply_vacuum_optimizations(connection)
@@ -845,29 +844,6 @@ class Database:
         except Exception as e:
             logging.error(f"Failed to verify database access: {type(e).__name__}: {str(e)}")
             raise RuntimeError(f"Database initialization failed - could not access database: {str(e)}")
-    
-    def _check_database_health(self):
-        """Check database health metrics and log warnings if needed"""
-        try:
-            # Only run health check occasionally to avoid overhead
-            current_time = time.time()
-            last_check_time = getattr(self, '_last_health_check_time', 0)
-            
-            # Check once per hour by default
-            health_check_interval = int(os.getenv("DB_HEALTH_CHECK_INTERVAL", "3600"))
-            
-            if current_time - last_check_time > health_check_interval:
-                logging.info("Running database health check")
-                
-                connection = self._get_connection()
-                if hasattr(connection, 'check_database_health'):
-                    connection.check_database_health()
-                
-                self._last_health_check_time = current_time
-                logging.info("Database health check completed")
-        except Exception as e:
-            # Don't fail initialization if health check fails
-            logging.warning(f"Database health check failed: {str(e)}")
     
     def _apply_vacuum_optimizations(self, connection):
         """Apply VACUUM optimizations to tables if needed"""
