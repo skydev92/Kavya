@@ -12,7 +12,7 @@ pg8000>=1.29.0
 SQLAlchemy>=2.0.0
 
 pandas
-litellm>=1.60.6
+litellm>=1.61.19
 pyyaml
 pydantic>=2.0.0
 numpy<2

@@ -20,7 +20,7 @@ dependencies = [
 	'openai',
 	'transformers',
 	'datasets',
-	'litellm'
+	'litellm>=1.61.19'
 ]
 
 [project.optional-dependencies]
