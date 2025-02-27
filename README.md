@@ -133,7 +133,7 @@
    ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
 
    # Then load production environment variables and start server
-   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089
+   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server --verbose --routers mf --config config.yaml --port 8089
 
 
    # Required environment variables in .env.prod:
@@ -209,7 +209,7 @@ If you prefer not to use Docker, you can set up a virtual environment and run Ka
 
 4. **Run Kavya**
    ```bash
-   python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089
+   python -m routellm.openai_server --verbose --routers mf --config config.yaml --port 8089
    ```
 
 5. **Access Kavya**

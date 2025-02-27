@@ -698,8 +698,9 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         yield "data: [DONE]\n\n"
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
-                        logging.error(error_msg)
+                        logging.error(error_msg, exc_info=True)
                         yield f"data: {json.dumps({'error': {'message': error_msg}})}\n\n"
+                        yield "data: [DONE]\n\n"
                 return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})
             else:
                 # Use the routed model if available, otherwise use completion's default model
@@ -743,10 +744,6 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         response_id = f"chatcmpl-{shortuuid.random()}"
                         created_time = int(time.time())
                         
-                        # Add router and threshold to kwargs
-                        kwargs["router"] = "mf"
-                        kwargs["threshold"] = 0.1
-                        
                         # Initialize cost tracker
                         app.controllers.completion.user = str(user_id)  # Set user ID for token tracking
                         app.controllers.completion.cost_tracker = RequestCostTracker()  # Initialize cost tracker
@@ -755,45 +752,178 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         messages_content = " ".join([msg["content"] for msg in kwargs.get("messages", [])])
                         app.controllers.completion.cost_tracker.prompt_tokens = len(messages_content.split())
                         
-                        # Ensure we're using acompletion for async streaming
-                        res = await app.controllers.completion.acompletion(**kwargs)
-                        
-                        if isinstance(res, str):
-                            # Handle string responses directly without streaming
-                            model = kwargs.get('model', 'unknown')
+                        try:
+                            # Call acompletion and handle the response differently based on its type
+                            res = await app.controllers.completion.acompletion(**kwargs)
                             
-                            # Get usage information from the controller
-                            usage = {
-                                "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
-                                "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
-                                "total_tokens": app.controllers.completion.cost_tracker.get_total()
-                            }
-                            
-                            # Get current token balance
-                            try:
-                                current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
-                                if current_balance:
-                                    total_spent_input_tokens = float(current_balance['token_balance_in'])
-                                    total_spent_output_tokens = float(current_balance['token_balance_out'])
+                            # Check if the result is an async generator (streaming)
+                            if hasattr(res, "__aiter__"):
+                                # First yield role assistant
+                                role_chunk = {
+                                    'id': response_id,
+                                    'object': 'chat.completion.chunk',
+                                    'created': created_time,
+                                    'model': original_model or kwargs.get('model', 'unknown'),
+                                    'choices': [
+                                        {
+                                            'index': 0,
+                                            'delta': {'role': 'assistant'},
+                                            'finish_reason': None
+                                        }
+                                    ],
+                                    'usage': {
+                                        'prompt_tokens': app.controllers.completion.cost_tracker.prompt_tokens
+                                    }
+                                }
+                                yield f"data: {json.dumps(role_chunk)}\n\n"
+                                
+                                # For streaming response, iterate through the async generator
+                                async for chunk in res:
+                                    # Handle different types of yielded values
+                                    token = None
+                                    token_count = 0
                                     
-                                    # First chunk with role and usage
-                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                    # Case 1: Tuple of (token, token_count)
+                                    if isinstance(chunk, tuple) and len(chunk) == 2:
+                                        token, token_count = chunk
+                                    # Case 2: Just a string token
+                                    elif isinstance(chunk, str):
+                                        token = chunk
+                                        token_count = 1  # Default to 1 token
+                                    # Case 3: ModelResponseStream object
+                                    elif hasattr(chunk, 'choices') and len(chunk.choices) > 0 and hasattr(chunk.choices[0], 'delta'):
+                                        delta = chunk.choices[0].delta
+                                        if hasattr(delta, 'content') and delta.content is not None:
+                                            token = delta.content
+                                            token_count = 1
+                                        else:
+                                            # Skip this chunk if it doesn't have content
+                                            continue
+                                    # Case 4: Other object types (skip)
+                                    else:
+                                        logging.warning(f"Unexpected chunk type in stream: {type(chunk)}")
+                                        continue
                                     
-                                    # Content chunk
+                                    # Check if this is a cost disclosure message (JSON string)
+                                    try:
+                                        # Try to parse as JSON to see if it's a cost disclosure
+                                        json_obj = json.loads(token)
+                                        if isinstance(json_obj, dict) and json_obj.get("jsonrpc") == "2.0" and json_obj.get("method") == "agent/cost_disclosure":
+                                            # This is a cost disclosure message, yield it directly
+                                            yield f"data: {token}\n\n"
+                                            continue
+                                    except (json.JSONDecodeError, TypeError):
+                                        # Not JSON or not a cost disclosure, treat as normal token
+                                        pass
+                                        
+                                    # Process regular token as before
+                                    # Convert to stream response format
+                                    chunk_response = {
+                                        'id': response_id,
+                                        'object': 'chat.completion.chunk',
+                                        'created': created_time,
+                                        'model': original_model or kwargs.get('model', 'unknown'),
+                                        'choices': [
+                                            {
+                                                'index': 0,
+                                                'delta': {'content': token},
+                                                'finish_reason': None
+                                            }
+                                        ],
+                                        'usage': {
+                                            'completion_tokens': token_count,
+                                            'word_count': 1  # Approximate word count
+                                        }
+                                    }
+                                    yield f"data: {json.dumps(chunk_response)}\n\n"
+                                
+                                # Send final stop message
+                                final_chunk = {
+                                    'id': response_id,
+                                    'object': 'chat.completion.chunk',
+                                    'created': created_time,
+                                    'model': original_model or kwargs.get('model', 'unknown'),
+                                    'choices': [
+                                        {
+                                            'index': 0,
+                                            'delta': {},
+                                            'finish_reason': 'stop'
+                                        }
+                                    ],
+                                    'usage': {
+                                        'completion_tokens': app.controllers.completion.cost_tracker.completion_tokens,
+                                        'word_count': 1  # Approximate word count
+                                    }
+                                }
+                                yield f"data: {json.dumps(final_chunk)}\n\n"
+                            elif isinstance(res, str):
+                                # Handle string responses directly without streaming
+                                model = kwargs.get('model', 'unknown')
+                                
+                                # Get usage information from the controller
+                                usage = {
+                                    "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
+                                    "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
+                                    "total_tokens": app.controllers.completion.cost_tracker.get_total()
+                                }
+                                
+                                # Get current token balance
+                                try:
+                                    current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
+                                    if current_balance:
+                                        total_spent_input_tokens = float(current_balance['token_balance_in'])
+                                        total_spent_output_tokens = float(current_balance['token_balance_out'])
+                                        
+                                        # First chunk with role and usage
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                        
+                                        # Content chunk
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                        
+                                        # Final chunk with finish reason and updated usage
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                except Exception as e:
+                                    logging.error(f"Error getting token balance: {str(e)}")
+                                    # Yield chunks without balance information
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                    
-                                    # Final chunk with finish reason and updated usage
-                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
-                            except Exception as e:
-                                logging.error(f"Error getting token balance: {str(e)}")
-                                # Yield chunks without balance information
-                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
-                        else:
-                            # Handle streaming responses
-                            async for chunk in routellm.models.create_stream_response(res, controller=app.controllers.completion, completion_tokens=1):
-                                yield chunk
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
+                            else:
+                                # Handle dictionary-like responses from non-streaming acompletion
+                                # Return the response formatted as a stream
+                                model = res.get('model', kwargs.get('model', 'unknown'))
+                                content = ""
+                                if 'choices' in res and res['choices'] and 'message' in res['choices'][0]:
+                                    content = res['choices'][0]['message'].get('content', '')
+                                
+                                # Get usage information
+                                usage = res.get('usage', {
+                                    "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
+                                    "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
+                                    "total_tokens": app.controllers.completion.cost_tracker.get_total()
+                                })
+                                
+                                # Get current token balance
+                                try:
+                                    current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
+                                    if current_balance:
+                                        total_spent_input_tokens = float(current_balance['token_balance_in'])
+                                        total_spent_output_tokens = float(current_balance['token_balance_out'])
+                                        
+                                        # First chunk with role and usage
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                        
+                                        # Content chunk
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                        
+                                        # Final chunk with finish reason and updated usage
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                except Exception as e:
+                                    logging.error(f"Error getting token balance: {str(e)}")
+                                    # Yield chunks without balance information
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
                             
                             # Update token usage in database
                             try:
@@ -804,19 +934,30 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 )
                             except Exception as e:
                                 logging.error(f"Error updating token balance: {str(e)}", exc_info=True)
-                        
-                        yield "data: [DONE]\n\n"
+                                # Important: Hard failure for database updates as per requirements
+                                raise RuntimeError(f"Critical database update failure: {str(e)}")
                             
+                            yield "data: [DONE]\n\n"
+                        except litellm.RateLimitError as e:
+                            error_msg = f"Rate limit exceeded, please try again in a moment: {str(e)}"
+                            logging.error(error_msg)
+                            # Send a more user-friendly error message for rate limits
+                            yield f"data: {json.dumps({'error': {'message': 'The service is experiencing high demand. Please try again in a few moments.', 'type': 'rate_limit_error', 'code': 429}})}\n\n"
+                            yield "data: [DONE]\n\n"
+                        except Exception as e:
+                            error_msg = f"Error during streaming: {str(e)}"
+                            logging.error(error_msg, exc_info=True)
+                            # Send a more detailed error message to help troubleshoot
+                            yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'server_error', 'code': 500}})}\n\n"
+                            yield "data: [DONE]\n\n"
                     except Exception as e:
-                        error_msg = f"Error during streaming: {str(e)}"
+                        error_msg = f"Error during generate_stream: {str(e)}"
                         logging.error(error_msg, exc_info=True)
-                        yield f"data: {json.dumps({'error': {'message': error_msg}})}\n\n"
+                        yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'server_error', 'code': 500}})}\n\n"
                         yield "data: [DONE]\n\n"
-
-                return StreamingResponse(
-                    generate_stream(),
-                    media_type="text/event-stream",
-                )
+                
+                # Return the streaming response
+                return StreamingResponse(generate_stream(), media_type="text/event-stream")
         else:
             # Handle non-streaming case
             kwargs = request.model_dump(exclude_none=True)

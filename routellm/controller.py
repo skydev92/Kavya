@@ -2,7 +2,7 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional, Callable, AsyncGenerator, List, Tuple
+from typing import Any, Optional, Callable, AsyncGenerator, List, Tuple, Set, Dict
 
 import pandas as pd
 import litellm
@@ -25,6 +25,9 @@ import re
 import inspect
 import enum
 from threading import Lock
+import time
+import asyncio
+import random
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
@@ -149,14 +152,24 @@ class Controller:
         if "basic_router_max_chars" not in config["general_settings"]:
             raise ValueError("general_settings must include basic_router_max_chars")
 
+        # Initialize model pair
         self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
         self.routers = {}
         self.api_base = api_base
         self.api_key = api_key
         self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
+        self.suppress_warnings = suppress_warnings
+        self.cost_tracker = RequestCostTracker()
+        self.memory = AgentMemory()
+        self.user = None  # Will be set during completion calls
+        
+        # Load model translations
         self.model_translations = config["model_translations"]
         self.basic_router_max_chars = config["general_settings"]["basic_router_max_chars"]
+        
+        # Load fallback configurations if available
+        self.fallback_configs = config.get("fallback_configs", {})
 
         router_pbar = None
         if progress_bar:
@@ -174,17 +187,20 @@ class Controller:
                 create=self.completion, acreate=self.acompletion
             )
         )
-        self.suppress_warnings = suppress_warnings
-
-        self.predefined_prompts = self.load_predefined_prompts()
+        
+        # Load predefined prompts
+        self.predefined_prompts = {}
+        self.load_predefined_prompts()
 
     def load_predefined_prompts(self):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(current_dir, 'predefined_prompts.json')
+        """Load predefined prompts from a JSON file."""
+        file_path = os.path.join(os.path.dirname(__file__), 'predefined_prompts.json')
         try:
             with open(file_path, 'r') as f:
-                return json.load(f)
+                self.predefined_prompts = json.load(f)
+                return self.predefined_prompts
         except:
+            self.predefined_prompts = {}
             return {}
 
     def check_predefined_prompt(self, message):
@@ -368,12 +384,104 @@ class Controller:
 
         return response
 
+    async def acompletion_with_fallbacks(
+        self,
+        messages,
+        model,
+        original_model=None,
+        max_retries=2,
+        cooldown_seconds=60,
+        **kwargs,
+    ):
+        """Complete with fallbacks, for the acompletion method."""
+        cooling_down_models = set()  # Track models we're cooling down from rate limits
+        tried_models = []
+        current_attempt = 0
+        total_attempts = 5  # Increase total attempts for more resilience
+        
+        # Get the fallback chain for the model, if it exists
+        model_to_use = original_model if original_model else model
+        fallback_chain = self.get_fallback_chain(model_to_use)
+        
+        # By this point, fallback_chain should already be filtered to start after the failed model
+        if not fallback_chain:
+            logging.warning(f"No fallback models available for {model_to_use} or all models have been tried")
+            raise Exception(f"No fallback models available for {model_to_use}")
+            
+        logging.info(f"Attempting fallbacks with chain: {fallback_chain}")
+        
+        # Add exponential backoff for retry attempts
+        base_delay = 0.5  # Start with a small delay
+        
+        while current_attempt < total_attempts and fallback_chain:
+            for fallback_model in fallback_chain:
+                # Skip models that are cooling down from rate limits
+                if fallback_model in cooling_down_models:
+                    logging.info(f"Skipping cooled-down model: {fallback_model}")
+                    continue
+                
+                tried_models.append(fallback_model)
+                logging.info(f"Attempting completion with fallback model: {fallback_model}")
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Apply jitter to avoid thundering herd problem
+                        jitter = random.uniform(0.8, 1.2)
+                        delay = base_delay * (2 ** current_attempt) * jitter
+                        
+                        if attempt > 0:
+                            # Add increasing delay between retry attempts
+                            logging.info(f"Retry attempt {attempt+1}/{max_retries} for {fallback_model} after {delay:.2f}s delay")
+                            await asyncio.sleep(delay)
+                        
+                        # Create a new kwargs dict with the current fallback model
+                        current_kwargs = kwargs.copy()
+                        current_kwargs["model"] = fallback_model
+                        current_kwargs["messages"] = messages
+                        
+                        # Use litellm's acompletion directly instead of going through provider
+                        result = await acompletion(api_base=self.api_base, api_key=self.api_key, **current_kwargs)
+                        
+                        # Convert Usage objects to dictionaries to ensure JSON serialization works
+                        if result and hasattr(result, 'usage') and not isinstance(result.usage, dict):
+                            # For Pydantic models (preferred approach)
+                            if hasattr(result.usage, 'model_dump'):
+                                result.usage = result.usage.model_dump()
+                            # Fallback for non-Pydantic objects
+                            elif hasattr(result.usage, '__dict__'):
+                                result.usage = vars(result.usage)
+                        
+                        logging.info(f"Successful completion with fallback model: {fallback_model}")
+                        return result
+                        
+                    except litellm.RateLimitError as e:
+                        logging.warning(f"Rate limit hit for fallback model {fallback_model}, cooling down for {cooldown_seconds}s: {e}")
+                        cooling_down_models.add(fallback_model)
+                        break  # Break and try next model in fallback chain
+                        
+                    except Exception as e:
+                        logging.warning(f"Error with fallback model {fallback_model} (attempt {attempt+1}/{max_retries}): {e}")
+                        
+                        if attempt == max_retries - 1:
+                            if attempt > 0:  # Only log error for final attempt if we've tried more than once
+                                logging.error(f"All attempts failed for fallback model {fallback_model}: {e}")
+            
+            # If we've tried all models in the fallback chain, wait before trying again
+            await asyncio.sleep(1.0)  # Add pause between cycles
+            current_attempt += 1
+            logging.info(f"Tried all fallback models and failed. Starting cycle {current_attempt+1}/{total_attempts}")
+        
+        # If we've exhausted all attempts with all models, raise an exception
+        raise Exception(f"All fallback models failed. Tried: {', '.join(tried_models)}")
+
     async def acompletion(
         self,
         router: Optional[str] = None,
         threshold: Optional[float] = None,
+        fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
+        """Async completion method with support for fallbacks."""
         # Ensure user ID is present and valid
         if "user" not in kwargs or not kwargs["user"]:
             error_msg = "CRITICAL: No user ID provided in acompletion request. Every request must be associated with a user."
@@ -389,7 +497,6 @@ class Controller:
 
         model = kwargs.get('model', 'unspecified')
         logging.info(f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
-        logging.debug("acontroller function started")
         
         # Store original_model if provided, before any model selection logic
         if 'original_model' in kwargs:
@@ -407,7 +514,7 @@ class Controller:
                     ],
                     "model": "predefined_prompt"
                 }
-        
+
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
             router = router or parsed_router
@@ -419,15 +526,7 @@ class Controller:
                 kwargs["messages"], router, threshold
             )
         elif "model" not in kwargs:
-            # Capture all arguments for get_model
-            frame = inspect.currentframe()
-            args, _, _, values = inspect.getargvalues(frame)
-            get_model_args = {arg: values[arg] for arg in args if arg != "self"}
-            get_model_args.update(kwargs)
-
-            # Call get_model with all arguments
-            model = self.get_model(**get_model_args)
-            kwargs["model"] = model
+            raise RoutingError("No model specified and router/threshold not provided.")
 
         # Handle structured output configuration
         if "config" in kwargs and kwargs["config"]:
@@ -473,39 +572,95 @@ class Controller:
             if key in kwargs:
                 del kwargs[key]
         
-        # Keep the existing warning suppression logic
-        if self.suppress_warnings:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=UserWarning)
-                logging.debug("last sprint")
-                response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
-        else:
-            logging.debug("last sprint 2")
-            response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
-
-        # Handle enum responses
-        if (
-            "config" in kwargs 
-            and kwargs["config"] 
-            and kwargs["config"].get("response_mime_type") == "text/x.enum"
-            and hasattr(response, "choices")
-            and response.choices
-            and hasattr(response.choices[0], "message")
-        ):
-            enum_value = response.choices[0].message.content.strip()
-            enum_class = kwargs["config"]["response_schema"]
-            if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
-                enum_response = EnumResponse.from_enum(enum_class, enum_value)
-                response.choices[0].message.content = enum_response.model_dump()
-
-        # If we have an original_model stored, use it in the response
-        if hasattr(self, 'original_model'):
-            if isinstance(response, dict):
-                response['model'] = self.original_model
+        # First try with the model selected by the router or provided directly
+        try:
+            # Keep the existing warning suppression logic
+            if self.suppress_warnings:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=UserWarning)
+                    response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
             else:
-                response.model = self.original_model
+                response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                
+            # Handle enum responses
+            if (
+                "config" in kwargs 
+                and kwargs["config"] 
+                and kwargs["config"].get("response_mime_type") == "text/x.enum"
+                and hasattr(response, "choices")
+                and response.choices
+                and hasattr(response.choices[0], "message")
+            ):
+                enum_value = response.choices[0].message.content.strip()
+                enum_class = kwargs["config"]["response_schema"]
+                if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
+                    enum_response = EnumResponse.from_enum(enum_class, enum_value)
+                    response.choices[0].message.content = enum_response.model_dump()
 
-        return response
+            # If we have an original_model stored, use it in the response
+            if hasattr(self, 'original_model'):
+                if isinstance(response, dict):
+                    response['model'] = self.original_model
+                else:
+                    response.model = self.original_model
+                    
+            return response
+            
+        except Exception as e:
+            # If the primary model fails and we have fallbacks available, try them
+            if fallbacks or (hasattr(self, 'original_model') and self.original_model in self.fallback_configs):
+                logging.warning(f"Primary model {kwargs['model']} failed: {str(e)}. Activating fallback chain.")
+                
+                # If explicit fallbacks were provided, use those
+                if fallbacks:
+                    logging.info(f"Using explicitly provided fallback chain: {fallbacks}")
+                    # Try the fallback chain, skipping the current model if it's in the chain
+                    if kwargs["model"] in fallbacks:
+                        idx = fallbacks.index(kwargs["model"]) + 1
+                        if idx < len(fallbacks):
+                            fallbacks = fallbacks[idx:]
+                        else:
+                            fallbacks = []
+                # Otherwise check for fallbacks in the config
+                elif hasattr(self, 'original_model') and self.original_model in self.fallback_configs:
+                    # Get fallback models from config
+                    fallback_config = self.fallback_configs[self.original_model]
+                    fallbacks = fallback_config.get('models', [])
+                    max_retries = fallback_config.get('max_retries', 3)
+                    retry_delay = fallback_config.get('retry_delay', 1.0)
+                    
+                    # Skip the failed model if it's in the fallback chain
+                    if kwargs["model"] in fallbacks:
+                        idx = fallbacks.index(kwargs["model"]) + 1
+                        if idx < len(fallbacks):
+                            fallbacks = fallbacks[idx:]
+                            logging.info(f"Starting fallback chain from next model after {kwargs['model']}")
+                        else:
+                            fallbacks = []
+                            logging.warning(f"No more fallbacks available after {kwargs['model']}")
+                
+                # Use fallbacks if available
+                if fallbacks:
+                    logging.info(f"Using fallback chain: {fallbacks}")
+                    try:
+                        return await self.acompletion_with_fallbacks(
+                            messages=kwargs["messages"],
+                            model=kwargs["model"],
+                            original_model=getattr(self, 'original_model', None),
+                            max_retries=max_retries if 'max_retries' in locals() else 2,
+                            cooldown_seconds=retry_delay if 'retry_delay' in locals() else 60,
+                            **kwargs
+                        )
+                    except Exception as fallback_error:
+                        logging.error(f"All fallbacks failed: {str(fallback_error)}")
+                        # Re-raise the original error to maintain the original failure context
+                        raise e
+                else:
+                    logging.warning("No fallback models left to try")
+                    
+            # If no fallbacks or all fallbacks failed, re-raise the exception
+            logging.error(f"No fallbacks configured or all fallbacks exhausted for {kwargs['model']}: {str(e)}")
+            raise
 
     def get_model(
         self,
@@ -534,6 +689,36 @@ class Controller:
             raise RoutingError("No model specified and router/threshold not provided.")
 
         return kwargs["model"]
+
+    def get_fallback_chain(self, model_name):
+        """
+        Get the fallback chain for a specific model.
+        
+        Args:
+            model_name: The name of the model to get fallbacks for
+            
+        Returns:
+            List of model names to try in sequence, or None if no fallback is configured
+        """
+        if not model_name:
+            logging.warning("Cannot get fallback chain for None model name")
+            return None
+            
+        # Check if we have a specific fallback config for this model
+        if model_name in self.fallback_configs:
+            fallback_models = self.fallback_configs[model_name].get('models', [])
+            
+            # Validate the fallback chain
+            if not fallback_models:
+                logging.warning(f"Empty fallback chain configured for model: {model_name}")
+            else:
+                logging.debug(f"Found fallback chain for model {model_name}: {fallback_models}")
+                
+            return fallback_models
+            
+        # No fallback chain defined
+        logging.debug(f"No fallback chain found for model: {model_name}")
+        return None
 
 class TokenAccumulator:
     def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE):
@@ -564,20 +749,26 @@ class TokenAccumulator:
         return None, 0
 
 class Longwriter(Controller):
-    def __init__(self, **kwargs):
+    def __init__(
+        self,
+        **kwargs
+    ):
+        # Constructor logic inherited from parent class
         super().__init__(**kwargs)
-        self.content_writer_messages = None  # Will be initialized during first content draft
-        self.cost_tracker = RequestCostTracker()  # Initialize cost tracker
-        self.user = None  # Will be set during API calls
-    
+        # Initialize content writer messages
+        self.content_writer_messages = None
+        self.cost_tracker = RequestCostTracker()
+        self.memory = AgentMemory()
+
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
         # Reset cost tracker for new request
         self.cost_tracker = RequestCostTracker()
         self.user = request.user
         # First check if model supports response schema
-        if not supports_function_calling(model=model):
-            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+        # Commented cos not reliable (e.g. mistral-medium)
+        # if not supports_function_calling(model=model):
+        #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         content_strategist_prompt = '''
         You are a professional content strategist. Create a comprehensive content strategy that ensures:
@@ -629,8 +820,9 @@ class Longwriter(Controller):
     async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
-        if not supports_function_calling(model=model):
-            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+        # Commented cos not reliable (e.g. mistral-medium)
+        # if not supports_function_calling(model=model):
+        #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         html_strategist_prompt = f'''
         You are an HTML strategist. Given a list of allowed HTML tags and a content strategy, 
@@ -668,8 +860,9 @@ class Longwriter(Controller):
     async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
         logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
-        if not supports_function_calling(model=model):
-            raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
+        # Commented cos not reliable (e.g. mistral-medium)
+        # if not supports_function_calling(model=model):
+        #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         content_outliner_prompt = '''
         You are a creative content outliner. Given a content strategy and HTML tag strategy, 
@@ -848,31 +1041,36 @@ class Longwriter(Controller):
         self.content_writer_messages = None
             
         content_strategy = await self.get_content_strategy(request, model)
-        # Disclose content strategy costs
-        disclosure = routellm.models.create_cost_disclosure_dict(
+        
+        # Instead of yielding formatted strings, yield tuples with special message type
+        # Create a JSON string for the disclosure
+        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='Content strategy generation'
-        )
-        yield f"data: {json.dumps(disclosure)}\n\n"
+        ))
+        # Yield as a tuple (content, token_count) to maintain consistent format
+        yield disclosure_json, 0
         
         html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
-        # Disclose HTML strategy costs
-        disclosure = routellm.models.create_cost_disclosure_dict(
+        
+        # Disclose HTML strategy costs - using tuple format
+        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='HTML strategy generation'
-        )
-        yield f"data: {json.dumps(disclosure)}\n\n"
+        ))
+        yield disclosure_json, 0
         
         content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
-        # Disclose content outline costs
-        disclosure = routellm.models.create_cost_disclosure_dict(
+        
+        # Disclose content outline costs - using tuple format
+        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='Content outline generation'
-        )
-        yield f"data: {json.dumps(disclosure)}\n\n"
+        ))
+        yield disclosure_json, 0
         
         for section in content_outline.sections:
             async for token, token_count in self.get_content_draft(
@@ -884,14 +1082,14 @@ class Longwriter(Controller):
             ):
                 yield token, token_count
 
-    async def acompletion(
+    async def acompletion_stream(
         self,
         *,
         router: Optional[str] = None,
         threshold: Optional[float] = None,
         **kwargs,
     ):
-        """Override of base acompletion to handle longwriter-specific streaming."""
+        """Handle streaming responses for Longwriter"""
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
             router = router or parsed_router
@@ -905,13 +1103,42 @@ class Longwriter(Controller):
         elif "model" not in kwargs:
             raise RoutingError("No model specified and router/threshold not provided.")
         
+        # Check for predefined prompts in streaming context
+        if "messages" in kwargs:
+            last_message = kwargs["messages"][-1]["content"]
+            predefined_answer = self.check_predefined_prompt(last_message)
+            if predefined_answer:
+                # For predefined prompts in async generators, we need to yield the content
+                # instead of returning a dictionary
+                logging.info("Using predefined prompt response in Longwriter")
+                # Yield the entire predefined answer as a single token
+                yield predefined_answer, len(predefined_answer.split())
+                return  # Exit the generator after yielding the predefined answer
+        
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags=kwargs.get("allowed_html_tags", "")
+            allowed_html_tags=kwargs.get("allowed_html_tags", ""),
+            messages=kwargs.get("messages"),
+            user=kwargs.get("user")
         )
 
         async for token, token_count in self.content_creation_agent(request, kwargs["model"]):
             yield token, token_count
+            
+    async def acompletion(
+        self,
+        router: Optional[str] = None,
+        threshold: Optional[float] = None,
+        fallbacks: Optional[List[str]] = None,
+        **kwargs,
+    ):
+        """Override of base acompletion to handle longwriter-specific behavior."""
+        # For streaming responses, delegate to acompletion_stream
+        if kwargs.get("stream", False):
+            return self.acompletion_stream(router=router, threshold=threshold, **kwargs)
+        
+        # For non-streaming, use the parent implementation
+        return await super().acompletion(router=router, threshold=threshold, fallbacks=fallbacks, **kwargs)
 
 class Controllers:
     def __init__(self, **kwargs):

@@ -43,6 +43,51 @@ def create_cost_disclosure_dict(prompt_tokens: int, completion_tokens: int, desc
             }
         }
 
+def create_chunk_response(token: str, response_id: str, created_time: int, model: str, controller=None) -> Dict[str, Any]:
+    """
+    Create a formatted chunk response for streaming API.
+    
+    Args:
+        token: The content token to stream
+        response_id: The unique ID for this response
+        created_time: Unix timestamp when the response was created
+        model: The model name
+        controller: Optional controller object with usage tracking
+        
+    Returns:
+        Dict containing properly formatted response chunk
+    """
+    # Get usage information if controller is available
+    usage = {}
+    if controller and hasattr(controller, 'cost_tracker'):
+        usage = {
+            "prompt_tokens": controller.cost_tracker.prompt_tokens,
+            "completion_tokens": 1,  # Each token is one completion token
+            "total_tokens": controller.cost_tracker.prompt_tokens + 1
+        }
+        # Update controller's completion token count
+        controller.cost_tracker.update_completion_tokens(1)
+    
+    # Use original model name if available
+    if controller and hasattr(controller, 'original_model'):
+        model = controller.original_model
+    
+    # Return formatted chunk
+    return {
+        'id': response_id,
+        'object': 'chat.completion.chunk',
+        'created': created_time,
+        'model': model,
+        'choices': [
+            {
+                'index': 0,
+                'delta': {'content': token},
+                'finish_reason': None
+            }
+        ],
+        'usage': usage
+    }
+
 async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator], controller=None, completion_tokens: int = 0) -> AsyncGenerator:
     """Create a streaming response in the OpenAI format."""
     logging.debug("Processing stream response")

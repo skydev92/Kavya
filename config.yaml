@@ -2,8 +2,8 @@ mf:
     checkpoint_path: routellm/mf_gpt4_augmented
 
 model_translations:
-    kavya-m1: router-mf-0.1
-    kavya-m1-eu: mistral/mistral-large-latest
+    kavya-m1: router-mf-0.25
+    kavya-m1-eu: router-mf-0.1
 
 # Model pairs for different model types
 model_pairs:
@@ -13,6 +13,24 @@ model_pairs:
     kavya-m1-eu:
         strong: mistral/mistral-large-latest
         weak: mistral/mistral-medium-latest
+
+# Fallback configurations for different models
+fallback_configs:
+    kavya-m1:
+        models:
+            - gpt-4o
+            - gpt-4o-mini
+            - gemini/gemini-2.0-flash
+            - anthropic.claude-3-7-sonnet-20250219-v1:0
+        max_retries: 6
+        retry_delay: 2.0
+    kavya-m1-eu:
+        models:
+            - mistral/mistral-large-latest   # Primary model
+            - mistral/mistral-medium-latest  # First fallback
+            - mistral/mistral-small-latest   # Second fallback
+        max_retries: 6
+        retry_delay: 3
 
 general_settings:
     basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions
