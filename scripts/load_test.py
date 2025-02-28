@@ -90,6 +90,7 @@ class LoadTestResults:
         logging.info(f"Failed Requests: {self.failed_requests}")
         logging.info(f"Success Rate: {success_rate:.2f}%")
         logging.info(f"Average Response Time: {avg_response_time:.2f}s")
+        logging.info(f"Total Time Taken: {self.total_time:.2f}s")
         
         if self.db_errors:
             logging.info("\nDatabase Errors:")
@@ -130,6 +131,9 @@ async def make_request(session: aiohttp.ClientSession, url: str, results: LoadTe
 async def run_load_test(url: str, num_requests: int, concurrency: int) -> LoadTestResults:
     results = LoadTestResults()
     
+    # Start timing the entire load test
+    overall_start_time = time.time()
+    
     # Create a connection pool with keep-alive
     conn = aiohttp.TCPConnector(
         limit=concurrency,
@@ -162,6 +166,9 @@ async def run_load_test(url: str, num_requests: int, concurrency: int) -> LoadTe
             # Small delay between batches to avoid overwhelming the server
             if i + concurrency < num_requests:
                 await asyncio.sleep(0.1)
+    
+    # Calculate and store the total time taken
+    results.total_time = time.time() - overall_start_time
     
     return results
 
