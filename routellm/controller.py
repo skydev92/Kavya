@@ -1219,8 +1219,14 @@ class Controllers:
     async def basic_routing(self, request: ChatCompletionRequest, cost_tracker: Optional[RequestCostTracker] = None):
         logging.info("Making completion call for routing analysis using weak model")
         
+        # Check if original_model is kavya-m1-hyper and skip routing if so
+        request_data = request.model_dump()
+        if request_data.get("original_model") == "kavya-m1-hyper":
+            logging.info("Detected kavya-m1-hyper model, skipping routing and using simple completion")
+            return "completion"
+            
         # Ensure user ID is present in the request
-        user_id = request.model_dump().get("user")
+        user_id = request_data.get("user")
         if not user_id:
             error_msg = "CRITICAL: No user ID provided in request. Every request must be associated with a user."
             logging.error(error_msg)
@@ -1231,18 +1237,18 @@ class Controllers:
         
         # First determine which model to use based on router if specified
         routed_model = None
-        if "model" in request.model_dump():
-            parsed_router, parsed_threshold = default_controller._parse_model_name(request.model)
+        if "model" in request_data:
+            parsed_router, parsed_threshold = default_controller._parse_model_name(request_data["model"])
             if parsed_router and parsed_threshold:
                 default_controller._validate_router_threshold(parsed_router, parsed_threshold)
                 routed_model = default_controller._get_routed_model_for_completion(
-                    request.messages, parsed_router, parsed_threshold
+                    request_data["messages"], parsed_router, parsed_threshold
                 )
                 # Store the routed model in the request for later use
                 request.model = routed_model
 
         # Trim long prompts for basic router analysis
-        prompt = request.messages[-1]["content"]
+        prompt = request_data["messages"][-1]["content"]
         if len(prompt) > self.basic_router_max_chars:
             start = prompt[:self.basic_router_max_chars//3]  # Keep first third
             end = prompt[-self.basic_router_max_chars//3:]   # Keep last third
@@ -1306,7 +1312,7 @@ For the needs_structure field specifically:
             ],
             stream=False,  # Force non-streaming for routing
             response_format=RoutingAnalysis,
-            user=request.model_dump().get("user")  # Pass through the user ID
+            user=request_data.get("user")  # Pass through the user ID
         )
 
         # Use regular completion for routing decision

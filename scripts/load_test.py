@@ -16,7 +16,7 @@ logging.basicConfig(
 
 # Test request payload
 TEST_PAYLOAD = {
-    "model": "kavya-m1",
+    "model": "kavya-m1-hyper",
     "messages": [
         {
             "role": "system",
@@ -28,7 +28,7 @@ TEST_PAYLOAD = {
         }
     ],
     "stream": True,
-    "max_tokens": 16384,
+    "max_tokens": 8000,
     "stop": [],
     "allowed_html_tags": "blockquote, em, h1, h2, h3, li, ol, p, strong, ul"
 }

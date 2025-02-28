@@ -724,6 +724,11 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Remove router_usage from kwargs if present
                 kwargs.pop('router_usage', None)
                 
+                # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
+                if original_model == "kavya-m1-hyper" and kwargs.get("max_tokens", 0) > 8000:
+                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
+                    kwargs["max_tokens"] = 8000
+                
                 # Make the API call asynchronously
                 async def generate_stream():
                     try:
@@ -975,6 +980,11 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             # Remove original_model and router_usage from kwargs before API call
             original_model = kwargs.pop('original_model', None)
             kwargs.pop('router_usage', None)
+            
+            # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
+            if original_model == "kavya-m1-hyper" and kwargs.get("max_tokens", 0) > 8000:
+                logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
+                kwargs["max_tokens"] = 8000
             
             res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
             

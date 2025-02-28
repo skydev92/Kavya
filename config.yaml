@@ -15,8 +15,8 @@ model_pairs:
         strong: mistral/mistral-large-latest
         weak: mistral/mistral-medium-latest
     kavya-m1-hyper:
-        strong: openrouter/google/gemini-flash-1.5-8b
-        weak: openrouter/google/gemini-flash-1.5-8b
+        strong: groq/llama3-70b-8192
+        weak: groq/llama3-70b-8192
 
 # Fallback configurations for different models
 fallback_configs:
@@ -37,7 +37,7 @@ fallback_configs:
         retry_delay: 3
     kavya-m1-hyper:
         models:
-            - openrouter/google/gemini-flash-1.5-8b
+            - groq/llama3-70b-8192
         max_retries: 3
         retry_delay: 1.0
 
