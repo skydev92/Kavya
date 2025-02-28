@@ -1349,6 +1349,12 @@ For the needs_structure field specifically:
         try:
             # Get the content directly from the response
             content = response.choices[0].message.content
+            
+            # Check if content is None or empty before trying to parse
+            if not content:
+                logging.error("Error: Empty or None content received from routing analysis")
+                return "completion"
+                
             analysis = RoutingAnalysis.model_validate_json(content)
             
             # Add debug output for routing decision
