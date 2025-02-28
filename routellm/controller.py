@@ -113,8 +113,9 @@ class RequestCostTracker:
         self.lock = Lock()
     
     def add_cost(self, cost: float):
-        with self.lock:
-            self.cost += cost
+        if cost is not None:  # Only add cost if it's not None
+            with self.lock:
+                self.cost += cost
     
     def update_prompt_tokens(self, tokens: int):
         with self.lock:
@@ -1326,6 +1327,7 @@ For the needs_structure field specifically:
             f"Total Tokens: {response.usage.total_tokens}"
         )
         cost = response._hidden_params.get("response_cost", 0)
+        
         if cost_tracker:
             cost_tracker.add_cost(cost)
         logging.info(format_usage_log(
