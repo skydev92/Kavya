@@ -778,6 +778,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 yield f"data: {json.dumps(role_chunk)}\n\n"
                                 
                                 # For streaming response, iterate through the async generator
+                                accumulated_word_count = 0
                                 async for chunk in res:
                                     # Handle different types of yielded values
                                     token = None
@@ -816,6 +817,13 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                         # Not JSON or not a cost disclosure, treat as normal token
                                         pass
                                         
+                                    # Track word count for non-JSON tokens
+                                    if isinstance(token, str) and not token.startswith('{"jsonrpc"'):
+                                        # Simple word count approximation by splitting on whitespace
+                                        words = token.split()
+                                        if words:
+                                            accumulated_word_count += len(words)
+                                    
                                     # Process regular token as before
                                     # Convert to stream response format
                                     chunk_response = {
@@ -852,7 +860,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                     ],
                                     'usage': {
                                         'completion_tokens': app.controllers.completion.cost_tracker.completion_tokens,
-                                        'word_count': 1  # Approximate word count
+                                        'word_count': accumulated_word_count  # Use accumulated word count
                                     }
                                 }
                                 yield f"data: {json.dumps(final_chunk)}\n\n"
@@ -930,7 +938,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 app.db.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
-                                    completion_tokens=app.controllers.completion.cost_tracker.completion_tokens
+                                    completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
+                                    word_count=accumulated_word_count
                                 )
                             except Exception as e:
                                 logging.error(f"Error updating token balance: {str(e)}", exc_info=True)
