@@ -880,7 +880,7 @@ class TokenUsageResponse(BaseModel):
 
 class KavyaRequest(BaseModel):
     """Request model for Kavya API validation."""
-    model: Literal["kavya-m1", "kavya-m1-eu"] = Field(
+    model: Literal["kavya-m1", "kavya-m1-eu", "kavya-m1-hyper"] = Field(
         ...,
         description="The Kavya model to use"
     )

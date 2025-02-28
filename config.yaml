@@ -4,6 +4,7 @@ mf:
 model_translations:
     kavya-m1: router-mf-0.25
     kavya-m1-eu: router-mf-0.1
+    kavya-m1-hyper: router-mf-0.05
 
 # Model pairs for different model types
 model_pairs:
@@ -13,6 +14,9 @@ model_pairs:
     kavya-m1-eu:
         strong: mistral/mistral-large-latest
         weak: mistral/mistral-medium-latest
+    kavya-m1-hyper:
+        strong: openrouter/google/gemini-flash-1.5-8b
+        weak: openrouter/google/gemini-flash-1.5-8b
 
 # Fallback configurations for different models
 fallback_configs:
@@ -31,6 +35,11 @@ fallback_configs:
             - mistral/mistral-small-latest   # Second fallback
         max_retries: 6
         retry_delay: 3
+    kavya-m1-hyper:
+        models:
+            - openrouter/google/gemini-flash-1.5-8b
+        max_retries: 3
+        retry_delay: 1.0
 
 general_settings:
     basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions

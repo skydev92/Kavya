@@ -16,7 +16,7 @@ logging.basicConfig(
 
 # Test request payload
 TEST_PAYLOAD = {
-    "model": "kavya-m1-eu",
+    "model": "kavya-m1",
     "messages": [
         {
             "role": "system",
@@ -24,7 +24,7 @@ TEST_PAYLOAD = {
         },
         {
             "role": "user",
-            "content": "<TASK>\nwrite 1 word\n</TASK>\n\n<CONTEXT>\n<p>@@@cursor@@@</p>\n<h3>Feature One</h3>\n<h3>Feature Two</h3>\n<h3>Feature Three</h3>\n</CONTEXT>\n\n<CONTEXT_REQUIREMENTS>\nReplace @@@cursor@@@ with content for <TASK>.\nReturn ONLY text replacing @@@cursor@@@ - surrounding text is READ-ONLY.\nNever copy context text.\nVerify zero duplication.\nAnalyze CONTEXT thoroughly.\nEnsure response flows naturally.\nNever include the string `@@@cursor@@@` in your response.\n</CONTEXT_REQUIREMENTS>\n\n<INSTRUCTIONS>\nThe response must follow the language code - en.\n</INSTRUCTIONS>"
+            "content": "<TASK>\nwrite 100 words\n</TASK>\n\n<CONTEXT>\n<p>@@@cursor@@@</p>\n<h3>Feature One</h3>\n<h3>Feature Two</h3>\n<h3>Feature Three</h3>\n</CONTEXT>\n\n<CONTEXT_REQUIREMENTS>\nReplace @@@cursor@@@ with content for <TASK>.\nReturn ONLY text replacing @@@cursor@@@ - surrounding text is READ-ONLY.\nNever copy context text.\nVerify zero duplication.\nAnalyze CONTEXT thoroughly.\nEnsure response flows naturally.\nNever include the string `@@@cursor@@@` in your response.\n</CONTEXT_REQUIREMENTS>\n\n<INSTRUCTIONS>\nThe response must follow the language code - en.\n</INSTRUCTIONS>"
         }
     ],
     "stream": True,
@@ -40,8 +40,8 @@ HEADERS = {
     'Authorization': 'Bearer eyJhbGciOiJQUzI1NiIsImtpZCI6IjR6RGRXS1pGNGRfbXprcVVMc2tYb3ItcE96bGRITFN0WGI1Q1pUX3d4UnMifQ.eyJpc3MiOiJodHRwczpcL1wvZHhwci5jb20iLCJzdWIiOiIxIiwiYXVkIjoiaHR0cHM6XC9cL3BhY2thZ2VzLmR4cHIuY29tIiwic2NvcGUiOiJkeHByXC9keHByX2J1aWxkZXIiLCJkeHByX3RpZXIiOiJncm93dGgiLCJqdGkiOiIxNWIzZTUyNWY5NzA3NDZlYzcwZTM3YWEyMGZhMjg5YzJkZGM1ZGUzYzlkYWJmODcxYmFkNGNhMDA4MDcyMjM3In0.uJP1E05QbTyZXFwzOyQESL1-X3eZpl4BadN8xecOHVf4Cm9WoCGRN5EGQzWHD1zk4NTgXt5GkFAKYEOjWHogCWUCEE51ihm_sjlPs4mdk1w7HYo7UIkchq7b4X3ZLyqM3nii0srLpCHJ2fj5ZYU3BKoKHMZNp4iqouV2DA3jnPQd58Jg0r8TqlVzvfghYfSaFG8FFPTaK_3XRK0maV5ZAXcO_m8C26shV-l3rN29wvc07KZAj-zItNcS7pGdJLqn5DJ9-Qrb5EZPmiWPJNecrePguLNVtpcGdas3L5uCUTizLdi8i-C9icNH-WmlTCeTU1JKL4wm_0mEIzCNmU7u5VdX4t2pud4fkYOiI2qXQSg83pAYSdACCWLBJSPStaIBiUJHZFBAbpl6CWYtkM3uSJQoqQFaYb_1t2j1dCDUHQhsVySUXrhX3Nf3AFMCNFjGqWE_5XSWt-GBYwmBsj-jOQqXceOmE4RslE_JXwrX2lcqGxX-SJYOdf4FwVb9f7Ne7QDfbPPtUxZmhGuQQNZ2d0ejhYimVzHrCH6NR07YrViQ7aYdx_N_D3nYiG19Bmbu5dq-Nj_q4qMA1LljwkFRRd_wPT5NLrqb1m1SH8BgGoUdrv35HdxA7tLlxQ5IXuvHu-cAExCQII42nMskSdLcOGzSWg92tkSt9J31lI2XSFw',
     'Connection': 'keep-alive',
     'Content-Type': 'application/json',
-    'Origin': 'http://localhost:8080',
-    'Referer': 'http://localhost:8080/',
+    'Origin': 'http://0.0.0.0:8080',
+    'Referer': 'http://0.0.0.0:8080/',
     'Sec-Fetch-Dest': 'empty',
     'Sec-Fetch-Mode': 'cors',
     'Sec-Fetch-Site': 'same-site',
@@ -167,8 +167,8 @@ async def run_load_test(url: str, num_requests: int, concurrency: int) -> LoadTe
 
 def main():
     parser = argparse.ArgumentParser(description='Load test for Kavya API')
-    parser.add_argument('--url', default='http://localhost:8089/v1/chat/completions',
-                      help='URL to test (default: http://localhost:8089/v1/chat/completions)')
+    parser.add_argument('--url', default='http://0.0.0.0:8089/v1/chat/completions',
+                      help='URL to test (default: http://0.0.0.0:8089/v1/chat/completions)')
     parser.add_argument('--requests', type=int, default=15,
                       help='Number of requests to make (default: 30)')
     parser.add_argument('--concurrency', type=int, default=5,
