@@ -917,3 +917,7 @@ class KavyaRequest(BaseModel):
         None,
         description="Comma-separated list of allowed HTML classes"
     )
+    providers: Optional[str] = Field(
+        None,
+        description="Comma-separated list of provider names to use as fallbacks (only valid with kavya-m1 model)"
+    )

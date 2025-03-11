@@ -25,7 +25,8 @@ fallback_configs:
             - gpt-4o
             - gpt-4o-mini
             - gemini/gemini-2.0-flash
-            - anthropic.claude-3-7-sonnet-20250219-v1:0
+            - anthropic/claude-3-7-sonnet-latest
+            - xai/grok-2-latest
         max_retries: 6
         retry_delay: 2.0
     kavya-m1-eu:
@@ -43,3 +44,34 @@ fallback_configs:
 
 general_settings:
     basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions
+
+# Provider definitions for fallback handling
+provider_configs:
+    openai:
+        models:
+            - gpt-4o
+            - gpt-4o-mini
+    anthropic:
+        models:
+            - anthropic/claude-3-7-sonnet-latest
+            - anthropic/claude-3-sonnet-latest
+    mistralai:
+        models:
+            - mistral/mistral-large-latest
+            - mistral/mistral-medium-latest
+    mistral:
+        models:
+            - mistral/mistral-large-latest
+            - mistral/mistral-medium-latest
+    google:
+        models:
+            - gemini/gemini-2.0-flash
+    gemini:
+        models:
+            - gemini/gemini-2.0-flash
+    groq:
+        models:
+            - groq/llama3-70b-8192
+    xai:
+        models:
+            - xai/grok-2-latest

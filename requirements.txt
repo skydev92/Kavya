@@ -25,3 +25,4 @@ transformers
 datasets
 litellm
 json5>=0.9.14
+boto3>=1.37.0

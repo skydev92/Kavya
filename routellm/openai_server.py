@@ -99,6 +99,22 @@ async def lifespan(app: fastapi.FastAPI):
         # Store model pairs from config for later use
         app.model_pairs = config.get("model_pairs", {}) if config else {}
         
+        # Store provider configurations from config for later use
+        app.provider_configs = config.get("provider_configs", {}) if config else {}
+        
+        # Default provider configs if not in config file
+        if not app.provider_configs:
+            app.provider_configs = {
+                "openai": {"models": ["gpt-4o", "gpt-4o-mini"]},
+                "anthropic": {"models": ["anthropic.claude-3-7-sonnet-20250219-v1:0"]},
+                "mistralai": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
+                "mistral": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
+                "google": {"models": ["gemini/gemini-2.0-flash"]},
+                "gemini": {"models": ["gemini/gemini-2.0-flash"]},
+                "groq": {"models": ["groq/llama3-70b-8192"]}
+            }
+            logging.warning("No provider_configs found in config file, using defaults")
+        
         # Initialize database
         app.db = Database()
         
@@ -411,13 +427,104 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         kavya_request = routellm.models.KavyaRequest(**request_data)
         # Store original model name before translation
         original_model = kavya_request.model
-        # If validation passes, translate the model and store original
+        
+        # Validate providers is only allowed with kavya-m1
+        if kavya_request.providers is not None and original_model != "kavya-m1":
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": "The providers parameter is only allowed with the kavya-m1 model",
+                        "type": "invalid_request_error",
+                        "param": "providers",
+                        "code": "invalid_parameter_combination"
+                    }
+                },
+                status_code=400
+            )
+            
+        # Store original model in the request data and controllers
         request_data["original_model"] = original_model
-        request_data["model"] = app.controllers.default.model_translations[original_model]
-        # Store original model in the controller for later use
         app.controllers.default.original_model = original_model
         app.controllers.completion.original_model = original_model
         app.controllers.longwriter.original_model = original_model
+        logging.info(f"DEBUG: Original model set to {original_model}")
+            
+        # Process providers parameter if it's valid (only for kavya-m1)
+        if kavya_request.providers is not None and original_model == "kavya-m1":
+            # Check for empty providers string
+            if not kavya_request.providers.strip():
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": {
+                            "message": "The providers parameter cannot be empty. Please provide a comma-separated list of providers.",
+                            "type": "invalid_request_error",
+                            "param": "providers",
+                            "code": "invalid_providers_format"
+                        }
+                    }
+                )
+                
+            # Parse the comma-separated list into an array
+            raw_providers = [provider.strip() for provider in kavya_request.providers.split(',') if provider.strip()]
+            
+            # Check if any providers remain after stripping
+            if not raw_providers:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": {
+                            "message": "The providers parameter contains only empty values. Please provide valid provider names.",
+                            "type": "invalid_request_error",
+                            "param": "providers",
+                            "code": "invalid_providers_format"
+                        }
+                    }
+                )
+                
+            logging.info(f"DEBUG: Raw providers list: {raw_providers}")
+            
+            # Get provider configurations from app
+            provider_configs = app.provider_configs
+            
+            # Validate providers list
+            supported_providers = set(provider_configs.keys())
+            unsupported_providers = [p for p in raw_providers if p.lower() not in supported_providers]
+            
+            if unsupported_providers:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": {
+                            "message": f"Unsupported providers in list: {', '.join(unsupported_providers)}. "
+                                      f"Supported providers are: {', '.join(sorted(supported_providers))}. "
+                                      f"Example valid format: 'openai,anthropic,mistral'",
+                            "type": "invalid_request_error",
+                            "param": "providers",
+                            "code": "invalid_providers",
+                            "supported_providers": sorted(list(supported_providers))
+                        }
+                    }
+                )
+            
+            # Translate provider names to model names with fallbacks
+            providers_list = []
+            for provider in raw_providers:
+                # All providers are now guaranteed to be supported
+                providers_list.extend(provider_configs[provider.lower()]["models"])
+            
+            # Store the translated providers list in the request data
+            logging.info(f"DEBUG: Using custom providers list (translated): {providers_list}")
+            request_data["providers_list"] = providers_list
+            
+            # Use the first model from the providers list as the primary model
+            if providers_list:
+                request_data["model"] = providers_list[0]
+                logging.info(f"DEBUG: Setting primary model to: {providers_list[0]}")
+        else:
+            # If providers parameter is not used, translate the model
+            request_data["model"] = app.controllers.default.model_translations[original_model]
+            logging.info(f"DEBUG: Translated model to: {request_data['model']}")
         
         # Check if we have a specific model pair for this Kavya model
         if hasattr(app, 'model_pairs') and original_model in app.model_pairs:
@@ -447,17 +554,19 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 status_code=400
             )
 
-    # Now create the ChatCompletionRequest with the translated model
+    # Create the ChatCompletionRequest from the validated data
     try:
+        logging.info(f"DEBUG: Final request_data before creating ChatCompletionRequest: {request_data}")
         request = routellm.models.ChatCompletionRequest(**request_data)
+        logging.info(f"DEBUG: Created ChatCompletionRequest with model: {request.model}")
     except Exception as e:
+        logging.error(f"Error creating ChatCompletionRequest: {str(e)}")
         return JSONResponse(
             content={
                 "error": {
-                    "message": str(e),
+                    "message": f"Invalid request parameters: {str(e)}",
                     "type": "invalid_request_error",
-                    "param": None,
-                    "code": "validation_error"
+                    "code": "invalid_parameters"
                 }
             },
             status_code=400
@@ -737,6 +846,38 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
                     kwargs["max_tokens"] = 8000
                 
+                # Limit max_tokens for Anthropic models based on model version
+                if kwargs.get("model", "").startswith("anthropic/"):
+                    model_name = kwargs.get("model", "")
+                    max_tokens_limit = 4096  # Default limit for Claude models
+                    
+                    # Set specific limits based on model version
+                    if "claude-3-7-sonnet" in model_name:
+                        max_tokens_limit = 4096  # Claude 3.7 Sonnet limit
+                    elif "claude-3-5" in model_name:
+                        max_tokens_limit = 4096  # Claude 3.5 limit
+                    elif "claude-3-opus" in model_name:
+                        max_tokens_limit = 4096  # Claude 3 Opus limit
+                    elif "claude-3-sonnet" in model_name:
+                        max_tokens_limit = 4096  # Claude 3 Sonnet limit
+                    elif "claude-3-haiku" in model_name:
+                        max_tokens_limit = 4096  # Claude 3 Haiku limit
+                    
+                    if kwargs.get("max_tokens", 0) > max_tokens_limit:
+                        logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}")
+                        kwargs["max_tokens"] = max_tokens_limit
+                
+                # Handle max_tokens for xAI models (required parameter)
+                if kwargs.get("model", "").startswith("xai/"):
+                    # Ensure max_tokens is set for xAI models
+                    if "max_tokens" not in kwargs or kwargs.get("max_tokens", 0) == 0:
+                        max_tokens_limit = 4096  # Default value if not provided
+                        logging.info(f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}")
+                        kwargs["max_tokens"] = max_tokens_limit
+                    elif kwargs.get("max_tokens", 0) > 4096:
+                        logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
+                        kwargs["max_tokens"] = 4096
+                
                 # Make the API call asynchronously
                 async def generate_stream():
                     try:
@@ -993,6 +1134,38 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             if original_model == "kavya-m1-hyper" and kwargs.get("max_tokens", 0) > 8000:
                 logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
                 kwargs["max_tokens"] = 8000
+            
+            # Limit max_tokens for Anthropic models based on model version
+            if kwargs.get("model", "").startswith("anthropic/"):
+                model_name = kwargs.get("model", "")
+                max_tokens_limit = 4096  # Default limit for Claude models
+                
+                # Set specific limits based on model version
+                if "claude-3-7-sonnet" in model_name:
+                    max_tokens_limit = 4096  # Claude 3.7 Sonnet limit
+                elif "claude-3-5" in model_name:
+                    max_tokens_limit = 4096  # Claude 3.5 limit
+                elif "claude-3-opus" in model_name:
+                    max_tokens_limit = 4096  # Claude 3 Opus limit
+                elif "claude-3-sonnet" in model_name:
+                    max_tokens_limit = 4096  # Claude 3 Sonnet limit
+                elif "claude-3-haiku" in model_name:
+                    max_tokens_limit = 4096  # Claude 3 Haiku limit
+                
+                if kwargs.get("max_tokens", 0) > max_tokens_limit:
+                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}")
+                    kwargs["max_tokens"] = max_tokens_limit
+            
+            # Handle max_tokens for xAI models (required parameter)
+            if kwargs.get("model", "").startswith("xai/"):
+                # Ensure max_tokens is set for xAI models
+                if "max_tokens" not in kwargs or kwargs.get("max_tokens", 0) == 0:
+                    max_tokens_limit = 4096  # Default value if not provided
+                    logging.info(f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}")
+                    kwargs["max_tokens"] = max_tokens_limit
+                elif kwargs.get("max_tokens", 0) > 4096:
+                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
+                    kwargs["max_tokens"] = 4096
             
             res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
             

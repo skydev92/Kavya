@@ -324,7 +324,8 @@ Authorization: Bearer YOUR_API_KEY
     "stream": true,
     "chunking": {
       "chunk_size": 3
-    }
+    },
+    "providers": "openai,anthropic,mistral"
   }
   ```
 
@@ -334,8 +335,36 @@ Authorization: Bearer YOUR_API_KEY
   - `stream`: Boolean to enable streaming responses
   - `chunking`: (Optional) Configuration for token chunking
     - `chunk_size`: Number of tokens to accumulate before sending (default: 3)
+  - `providers`: (Optional, only valid with `kavya-m1` model) Comma-separated list of provider names to use as fallbacks
 
   The chunking configuration helps reduce text editor refresh rate by accumulating tokens before sending them to the client. A larger chunk size means fewer but larger updates, while a smaller size provides more granular updates.
+
+  #### Using the Providers Parameter
+
+  The `providers` parameter allows you to specify which LLM providers to use when making requests with the `kavya-m1` model:
+
+  ```json
+  {
+    "model": "kavya-m1",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Write an article about AI"
+      }
+    ],
+    "providers": "openai,anthropic,mistral"
+  }
+  ```
+
+  Supported providers:
+  - `openai`: Uses gpt-4o, gpt-4o-mini
+  - `anthropic`: Uses Claude 3.7 Sonnet, Claude 3 Sonnet
+  - `mistral` or `mistralai`: Uses Mistral Large, Mistral Medium
+  - `google` or `gemini`: Uses Gemini 2.0 Flash
+  - `groq`: Uses Llama3 70B
+  - `xai`: Uses Grok-2-latest
+
+  The system will use the first model from the first provider as the primary model, with subsequent models as fallbacks. This gives you control over which models are used and in what order.
 
 ## Database Setup
 

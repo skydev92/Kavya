@@ -497,6 +497,8 @@ class Controller:
             raise ValueError(error_msg)
 
         model = kwargs.get('model', 'unspecified')
+        logging.info(f"DEBUG: acompletion called with model: {model}")
+        logging.info(f"DEBUG: providers_list in kwargs: {kwargs.get('providers_list', 'None')}")
         logging.info(f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
         
         # Store original_model if provided, before any model selection logic
@@ -622,6 +624,32 @@ class Controller:
                             fallbacks = fallbacks[idx:]
                         else:
                             fallbacks = []
+                # Check for providers_list in the request data (from providers parameter)
+                elif "providers_list" in kwargs:
+                    providers_list = kwargs.pop("providers_list")
+                    logging.info(f"Using custom providers list: {providers_list}")
+                    
+                    # If the current model is the first in the providers list, use the rest as fallbacks
+                    if providers_list and kwargs["model"] == providers_list[0]:
+                        if len(providers_list) > 1:
+                            fallbacks = providers_list[1:]  # Skip the first model (current one)
+                            logging.info(f"Using remaining models from providers list as fallbacks: {fallbacks}")
+                        else:
+                            fallbacks = []
+                            logging.warning(f"No fallbacks available in providers list after {kwargs['model']}")
+                    # If the current model is elsewhere in the providers list, use the rest as fallbacks
+                    elif kwargs["model"] in providers_list:
+                        idx = providers_list.index(kwargs["model"]) + 1
+                        if idx < len(providers_list):
+                            fallbacks = providers_list[idx:]
+                            logging.info(f"Starting fallback chain from next model after {kwargs['model']}")
+                        else:
+                            fallbacks = []
+                            logging.warning(f"No more fallbacks available after {kwargs['model']}")
+                    else:
+                        # If the current model isn't in the providers list, use the entire list as fallbacks
+                        fallbacks = providers_list
+                        logging.info(f"Using entire providers list as fallbacks: {fallbacks}")
                 # Otherwise check for fallbacks in the config
                 elif hasattr(self, 'original_model') and self.original_model in self.fallback_configs:
                     # Get fallback models from config
@@ -1212,6 +1240,14 @@ class Controllers:
     The response from the async method.
     """
     async def response(self, request: ChatCompletionRequest, id, amethod_name, **kwargs):
+        logging.info(f"DEBUG: response method called with id: {id}, method: {amethod_name}")
+        logging.info(f"DEBUG: request model: {request.model}")
+        logging.info(f"DEBUG: kwargs: {kwargs}")
+        
+        # Dump request to see all parameters
+        request_dump = request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True)
+        logging.info(f"DEBUG: request dump: {request_dump}")
+        
         return await self.controllers[id].__getattribute__(amethod_name)(
             **request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True),
             **kwargs
