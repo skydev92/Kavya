@@ -444,6 +444,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description="Comma-separated list of allowed HTML tags"
     )
+    allowed_html_classes: Optional[str] = Field(
+        None,
+        description="Comma-separated list of allowed HTML classes"
+    )
     router_usage: Optional[Dict[str, int]] = Field(
         None,
         description="Token usage information from the router analysis"
@@ -484,6 +488,10 @@ class ContentRequest(BaseModel):
     allowed_html_tags: str = Field(
         ...,
         description="Comma-separated list of allowed HTML tags"
+    )
+    allowed_html_classes: Optional[str] = Field(
+        None,
+        description="Comma-separated list of allowed HTML classes"
     )
     messages: Optional[List[Dict[str, str]]] = Field(
         None,
@@ -526,6 +534,10 @@ class HTMLTagStrategy(BaseModel):
     tags: List[str] = Field(
         ...,
         description="List of HTML tags to use in content formatting"
+    )
+    classes: Optional[List[str]] = Field(
+        default_factory=list,
+        description="List of HTML classes to use in content formatting"
     )
 
 class OutlineSection(BaseModel):
@@ -900,4 +912,8 @@ class KavyaRequest(BaseModel):
     allowed_html_tags: Optional[str] = Field(
         None,
         description="Comma-separated list of allowed HTML tags"
+    )
+    allowed_html_classes: Optional[str] = Field(
+        None,
+        description="Comma-separated list of allowed HTML classes"
     )

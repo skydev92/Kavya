@@ -63,7 +63,7 @@ GPT_4_AUGMENTED_CONFIG = {
 }
 
 DEFAULT_CHUNK_SIZE = 10
-LONGWRITER_ONLY_ARGS = ["allowed_html_tags"]
+LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -818,7 +818,7 @@ class Longwriter(Controller):
             logging.error(f"\033[91mError creating content strategy: {str(e)}\033[0m")
             raise
 
-    async def get_html_strategy(self, allowed_html_tags: str, content_strategy: ContentStrategy, model: str) -> HTMLTagStrategy:
+    async def get_html_strategy(self, allowed_html_tags: str, allowed_html_classes: str = "", content_strategy: ContentStrategy = None, model: str = None) -> HTMLTagStrategy:
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
@@ -826,8 +826,8 @@ class Longwriter(Controller):
         #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         html_strategist_prompt = f'''
-        You are an HTML strategist. Given a list of allowed HTML tags and a content strategy, 
-        provide a list of HTML tags that would be most effective for structuring the content.
+        You are an HTML strategist. Given a list of allowed HTML tags, allowed HTML classes, and a content strategy, 
+        provide a list of HTML tags and classes that would be most effective for structuring the content.
         '''
         
         try:
@@ -837,7 +837,7 @@ class Longwriter(Controller):
                 api_key=self.api_key,
                 messages=[
                     {"role": "system", "content": dedent(html_strategist_prompt)},
-                    {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nContent strategy: {content_strategy.model_dump_json()}"}
+                    {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nAllowed HTML classes: {allowed_html_classes}\nContent strategy: {content_strategy.model_dump_json()}"}
                 ],
                 response_format=HTMLTagStrategy,
                 user=content_strategy.user  # Get user ID directly from content_strategy
@@ -1053,7 +1053,7 @@ class Longwriter(Controller):
         # Yield as a tuple (content, token_count) to maintain consistent format
         yield disclosure_json, 0
         
-        html_strategy = await self.get_html_strategy(request.allowed_html_tags, content_strategy, model)
+        html_strategy = await self.get_html_strategy(request.allowed_html_tags, request.allowed_html_classes, content_strategy, model)
         
         # Disclose HTML strategy costs - using tuple format
         disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
@@ -1119,6 +1119,7 @@ class Longwriter(Controller):
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],
             allowed_html_tags=kwargs.get("allowed_html_tags", ""),
+            allowed_html_classes=kwargs.get("allowed_html_classes", ""),
             messages=kwargs.get("messages"),
             user=kwargs.get("user")
         )

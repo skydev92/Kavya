@@ -30,7 +30,8 @@ TEST_PAYLOAD = {
     "stream": True,
     "max_tokens": 8000,
     "stop": [],
-    "allowed_html_tags": "blockquote, em, h1, h2, h3, li, ol, p, strong, ul"
+    "allowed_html_tags": "blockquote, em, h1, h2, h3, li, ol, p, strong, ul",
+    "allowed_html_classes": ""
 }
 
 # Headers for the request

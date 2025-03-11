@@ -605,9 +605,17 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             allowed_html_tags = request.allowed_html_tags
                             logging.debug(f"Using custom HTML tags: {allowed_html_tags}")
                         
+                        # Default HTML classes (empty)
+                        allowed_html_classes = ""
+                        # Check if custom classes are provided in request
+                        if request.allowed_html_classes is not None:
+                            allowed_html_classes = request.allowed_html_classes
+                            logging.debug(f"Using custom HTML classes: {allowed_html_classes}")
+                        
                         content_request = ContentRequest(
                             prompt=request.messages[-1]["content"],
                             allowed_html_tags=allowed_html_tags,
+                            allowed_html_classes=allowed_html_classes,
                             messages=request.messages,
                             user=str(user_id)  # Add user ID to content request
                         ) 
@@ -624,7 +632,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         
                         logging.debug("Creating HTML strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
-                        html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_strategy, model)
+                        html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_request.allowed_html_classes, content_strategy, model)
                         # Disclose HTML strategy costs
                         yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
                             prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
