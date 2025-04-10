@@ -2,17 +2,15 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional, Callable, AsyncGenerator, List, Tuple, Set, Dict
+from typing import Any, Optional, AsyncGenerator, List, Tuple
 
 import pandas as pd
 import litellm
 from litellm import (
     acompletion, 
     completion, 
-    batch_completion, 
     get_supported_openai_params,
     supports_response_schema,
-    supports_function_calling
 )
 from textwrap import dedent
 from tqdm import tqdm
@@ -21,46 +19,19 @@ import os
 import json
 import logging
 import sys
-import re
 import inspect
 import enum
 from threading import Lock
-import time
 import asyncio
 import random
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
     HTMLTagStrategy, OutlineSection, ContentOutline, 
-    ContentDraft, FullContent, RoutingAnalysis
+    RoutingAnalysis
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
-
-# Model translation mapping
-def get_model_translations(config):
-    """Get model translations from config."""
-    if not config or "model_translations" not in config:
-        raise ValueError("Config must include model_translations")
-    return config["model_translations"]
-
-# Default config for routers augmented using golden label data from GPT-4.
-# This is exactly the same as config.example.yaml.
-GPT_4_AUGMENTED_CONFIG = {
-    "sw_ranking": {
-        "arena_battle_datasets": [
-            "lmsys/lmsys-arena-human-preference-55k",
-            "routellm/gpt4_judge_battles",
-        ],
-        "arena_embedding_datasets": [
-            "routellm/arena_battles_embeddings",
-            "routellm/gpt4_judge_battles_embeddings",
-        ],
-    },
-    "causal_llm": {"checkpoint_path": "routellm/causal_llm_gpt4_augmented"},
-    "bert": {"checkpoint_path": "routellm/bert_gpt4_augmented"},
-    "mf": {"checkpoint_path": "routellm/mf_gpt4_augmented"},
-}
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
@@ -74,36 +45,10 @@ logging.basicConfig(
 class RoutingError(Exception):
     pass
 
-class AgentMemory:
-    """
-    Stores data that can be used to augment the context of a chat completion request.
-
-    This can be used to store data that is relevant to the entire conversation, and
-    can be used by the router to make routing decisions.
-
-    Attributes:
-        data (Dict[str, Any]): a dictionary of key-value pairs, where the key is a
-            string and the value is any type of object.
-    """
-
-    def __init__(self):
-        self.data: Dict[str, Any] = {}
-
-    def set(self, key: str, value: Any):
-        self.data[key] = value
-
-    def get(self, key: str) -> Any:
-        return self.data.get(key)
-
-    def clear(self):
-        self.data.clear()
-
-
 @dataclass
 class ModelPair:
     strong: str
     weak: str
-
 
 class RequestCostTracker:
     def __init__(self):
@@ -158,11 +103,9 @@ class Controller:
         self.routers = {}
         self.api_base = api_base
         self.api_key = api_key
-        self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
         self.suppress_warnings = suppress_warnings
         self.cost_tracker = RequestCostTracker()
-        self.memory = AgentMemory()
         self.user = None  # Will be set during completion calls
         
         # Load model translations
@@ -240,9 +183,6 @@ class Controller:
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
-        # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
-        # self.model_counts[routed_model] += 1
-
         return routed_model
 
     def batch_calculate_win_rate(
@@ -255,6 +195,7 @@ class Controller:
             prompts, threshold, self.model_pair
         )
 
+    # Unused
     def route(self, prompt: str, router: str, threshold: float):
         self._validate_router_threshold(router, threshold)
 
@@ -787,7 +728,6 @@ class Longwriter(Controller):
         # Initialize content writer messages
         self.content_writer_messages = None
         self.cost_tracker = RequestCostTracker()
-        self.memory = AgentMemory()
 
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
