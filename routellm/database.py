@@ -668,12 +668,7 @@ class Database:
                 
                 # Try to insert a test record with a more resilient approach
                 try:
-                    # Try to insert with a non-blocking approach
-                    cursor.execute("""
-                        INSERT INTO account_totals (account_id)
-                        VALUES (-999)
-                        ON CONFLICT (account_id) DO NOTHING
-                    """)
+                    self._ensure_account_exists(cursor, "-999")
                     
                     # Verify the account exists with a simple read
                     cursor.execute("""
@@ -842,18 +837,23 @@ class Database:
         
         if self.env == "dev":
             connection.commit()
+    
+    def _ensure_account_exists(self, cursor, account_id):
+        cursor.execute("""
+            INSERT INTO account_totals 
+                (account_id, token_balance_in, token_balance_out, word_balance,
+                    total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
+            VALUES 
+                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
+            ON CONFLICT (account_id) DO NOTHING
+        """, (account_id,))
+        return True
+
 
     def _update_balance(self, cursor, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int, transaction_id: str) -> None:
         # First ensure the account exists in a separate transaction to avoid lock contention
         try:
-            cursor.execute("""
-                INSERT INTO account_totals 
-                    (account_id, token_balance_in, token_balance_out, word_balance,
-                        total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                VALUES 
-                    (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                ON CONFLICT (account_id) DO NOTHING
-            """, (account_id,))
+            self._ensure_account_exists(cursor, account_id)
         except Exception as e:
             logging.warning(f"[ID: {transaction_id}] Account creation attempt failed: {str(e)}")
         
@@ -1260,19 +1260,11 @@ class Database:
                 
                 # Skip setting timeouts as they're already configured as needed
                 
-                # First ensure the account exists with a non-blocking insert
                 try:
+                    # First ensure the account exists with a non-blocking insert
                     # Use a separate connection for the insert to avoid transaction conflicts
                     with self.get_transaction() as db:
-                        insert_cursor = db.get_cursor()
-                        insert_cursor.execute("""
-                            INSERT INTO account_totals 
-                                (account_id, token_balance_in, token_balance_out, word_balance,
-                                 total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                            VALUES 
-                                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                            ON CONFLICT (account_id) DO NOTHING
-                        """, (account_id,))
+                        self._ensure_account_exists(db.get_cursor(), account_id)
                 except Exception as e:
                     # Log but continue - if account exists this will fail harmlessly
                     logging.debug(f"[ID: {transaction_id}] Account creation attempt (non-critical): {str(e)}")
