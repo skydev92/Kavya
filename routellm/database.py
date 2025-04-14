@@ -843,6 +843,116 @@ class Database:
         if self.env == "dev":
             connection.commit()
 
+    def _update_balance(self, cursor, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int, transaction_id: str) -> None:
+        # First ensure the account exists in a separate transaction to avoid lock contention
+        try:
+            cursor.execute("""
+                INSERT INTO account_totals 
+                    (account_id, token_balance_in, token_balance_out, word_balance,
+                        total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
+                VALUES 
+                    (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
+                ON CONFLICT (account_id) DO NOTHING
+            """, (account_id,))
+        except Exception as e:
+            logging.warning(f"[ID: {transaction_id}] Account creation attempt failed: {str(e)}")
+        
+        # Now update the account balance
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
+        # This will either update immediately or skip if locked
+        cursor.execute("""
+            WITH locked_account AS (
+                SELECT account_id 
+                FROM account_totals 
+                WHERE account_id = %s
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE account_totals
+            SET token_balance_in = GREATEST(0, token_balance_in - %s),
+                token_balance_out = GREATEST(0, token_balance_out - %s), 
+                word_balance = GREATEST(0, word_balance - %s),
+                transactions = transactions + 1,
+                total_token_usage_in = total_token_usage_in + %s,
+                total_token_usage_out = total_token_usage_out + %s,
+                total_word_usage = total_word_usage + %s,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE account_id = %s
+                AND account_id IN (SELECT account_id FROM locked_account)
+                AND token_balance_in >= %s
+                AND token_balance_out >= %s
+                AND word_balance >= %s
+            RETURNING token_balance_in, token_balance_out, word_balance, 
+                    transactions, total_token_usage_in, total_token_usage_out, 
+                    total_word_usage
+        """, (
+            account_id,
+            prompt_tokens, completion_tokens, word_count,
+            prompt_tokens, completion_tokens, word_count,
+            account_id, 
+            prompt_tokens, completion_tokens, word_count
+        ))
+        
+        updated_result = cursor.fetchone()
+        if not updated_result:
+            # Check if it's a lock issue or insufficient balance
+            cursor.execute("""
+                SELECT token_balance_in, token_balance_out, word_balance,
+                        pg_try_advisory_lock(account_id) as has_lock
+                FROM account_totals 
+                WHERE account_id = %s
+            """, (account_id,))
+            
+            balance = cursor.fetchone()
+            
+            if balance:
+                if not balance[3]:  # Could not get advisory lock
+                    # This is likely a lock contention issue, retry
+                    raise RuntimeError("Could not acquire lock on account, will retry")
+                
+                # Check if it's an insufficient balance issue
+                if (balance[0] < prompt_tokens or 
+                    balance[1] < completion_tokens or 
+                    balance[2] < word_count):
+                    logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
+                    raise RuntimeError(f"Insufficient token balance for account {account_id}")
+                else:
+                    # Some other issue, retry
+                    raise RuntimeError("Update failed but account exists and has sufficient balance, will retry")
+            else:
+                # This should never happen with our upsert, but just in case
+                raise RuntimeError(f"Failed to create or update account {account_id}")
+    
+        # Now update the daily summary in a new transaction to avoid failures affecting the balance update
+        try:
+            cursor.execute("""
+                INSERT INTO account_daily_summary 
+                (account_id, date, transaction_count, daily_token_usage_in, 
+                    daily_token_usage_out, daily_word_usage)
+                VALUES (%s, %s, 1, %s, %s, %s)
+                ON CONFLICT (account_id, date) DO UPDATE SET
+                    transaction_count = account_daily_summary.transaction_count + 1,
+                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
+                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
+                    daily_word_usage = account_daily_summary.daily_word_usage + EXCLUDED.daily_word_usage
+            """, (account_id, today, prompt_tokens, completion_tokens, word_count))
+        except Exception as daily_error:
+            # If daily summary update fails but balance update succeeded, log warning but continue
+            logging.warning(f"[ID: {transaction_id}] Daily summary update failed but balance updated: {str(daily_error)}")
+        
+        # Success! Get the updated balance
+        final_balance = {
+            'token_balance_in': float(updated_result[0]),
+            'token_balance_out': float(updated_result[1]),
+            'word_balance': int(updated_result[2]),
+            'transactions': int(updated_result[3]),
+            'total_token_usage_in': float(updated_result[4]),
+            'total_token_usage_out': float(updated_result[5]),
+            'total_word_usage': int(updated_result[6])
+        }
+        return final_balance
+
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
         """Update account usage with response data.
         
@@ -874,115 +984,7 @@ class Database:
                 
                 # Use a simpler, more direct transaction
                 with self.get_transaction() as db:
-                    cursor = db.get_cursor()
-                    
-                    # First ensure the account exists in a separate transaction to avoid lock contention
-                    try:
-                        cursor.execute("""
-                            INSERT INTO account_totals 
-                                (account_id, token_balance_in, token_balance_out, word_balance,
-                                 total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                            VALUES 
-                                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                            ON CONFLICT (account_id) DO NOTHING
-                        """, (account_id,))
-                    except Exception as e:
-                        logging.warning(f"[ID: {transaction_id}] Account creation attempt failed: {str(e)}")
-                    
-                    # Now update the account balance
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    
-                    # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
-                    # This will either update immediately or skip if locked
-                    cursor.execute("""
-                        WITH locked_account AS (
-                            SELECT account_id 
-                            FROM account_totals 
-                            WHERE account_id = %s
-                            FOR UPDATE SKIP LOCKED
-                        )
-                        UPDATE account_totals
-                        SET token_balance_in = GREATEST(0, token_balance_in - %s),
-                            token_balance_out = GREATEST(0, token_balance_out - %s), 
-                            word_balance = GREATEST(0, word_balance - %s),
-                            transactions = transactions + 1,
-                            total_token_usage_in = total_token_usage_in + %s,
-                            total_token_usage_out = total_token_usage_out + %s,
-                            total_word_usage = total_word_usage + %s,
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE account_id = %s
-                          AND account_id IN (SELECT account_id FROM locked_account)
-                          AND token_balance_in >= %s
-                          AND token_balance_out >= %s
-                          AND word_balance >= %s
-                        RETURNING token_balance_in, token_balance_out, word_balance, 
-                                transactions, total_token_usage_in, total_token_usage_out, 
-                                total_word_usage
-                    """, (
-                        account_id,
-                        prompt_tokens, completion_tokens, word_count,
-                        prompt_tokens, completion_tokens, word_count,
-                        account_id, 
-                        prompt_tokens, completion_tokens, word_count
-                    ))
-                    
-                    updated_result = cursor.fetchone()
-                    if not updated_result:
-                        # Check if it's a lock issue or insufficient balance
-                        cursor.execute("""
-                            SELECT token_balance_in, token_balance_out, word_balance,
-                                   pg_try_advisory_lock(account_id) as has_lock
-                            FROM account_totals 
-                            WHERE account_id = %s
-                        """, (account_id,))
-                        
-                        balance = cursor.fetchone()
-                        
-                        if balance:
-                            if not balance[3]:  # Could not get advisory lock
-                                # This is likely a lock contention issue, retry
-                                raise RuntimeError("Could not acquire lock on account, will retry")
-                            
-                            # Check if it's an insufficient balance issue
-                            if (balance[0] < prompt_tokens or 
-                                balance[1] < completion_tokens or 
-                                balance[2] < word_count):
-                                logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
-                                raise RuntimeError(f"Insufficient token balance for account {account_id}")
-                            else:
-                                # Some other issue, retry
-                                raise RuntimeError("Update failed but account exists and has sufficient balance, will retry")
-                        else:
-                            # This should never happen with our upsert, but just in case
-                            raise RuntimeError(f"Failed to create or update account {account_id}")
-                
-                    # Now update the daily summary in a new transaction to avoid failures affecting the balance update
-                    try:
-                        cursor.execute("""
-                            INSERT INTO account_daily_summary 
-                            (account_id, date, transaction_count, daily_token_usage_in, 
-                             daily_token_usage_out, daily_word_usage)
-                            VALUES (%s, %s, 1, %s, %s, %s)
-                            ON CONFLICT (account_id, date) DO UPDATE SET
-                                transaction_count = account_daily_summary.transaction_count + 1,
-                                daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                                daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
-                                daily_word_usage = account_daily_summary.daily_word_usage + EXCLUDED.daily_word_usage
-                        """, (account_id, today, prompt_tokens, completion_tokens, word_count))
-                    except Exception as daily_error:
-                        # If daily summary update fails but balance update succeeded, log warning but continue
-                        logging.warning(f"[ID: {transaction_id}] Daily summary update failed but balance updated: {str(daily_error)}")
-                    
-                    # Success! Get the updated balance
-                    final_balance = {
-                        'token_balance_in': float(updated_result[0]),
-                        'token_balance_out': float(updated_result[1]),
-                        'word_balance': int(updated_result[2]),
-                        'transactions': int(updated_result[3]),
-                        'total_token_usage_in': float(updated_result[4]),
-                        'total_token_usage_out': float(updated_result[5]),
-                        'total_word_usage': int(updated_result[6])
-                    }
+                    final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
                     
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
