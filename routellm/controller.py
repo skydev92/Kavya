@@ -459,18 +459,15 @@ class Controller:
                     "model": "predefined_prompt"
                 }
 
-        if "model" in kwargs:
-            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
-            router = router or parsed_router
-            threshold = threshold or parsed_threshold
-        
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
+        # Capture all arguments for get_model
+        frame = inspect.currentframe()
+        args, _, _, values = inspect.getargvalues(frame)
+        get_model_args = {arg: values[arg] for arg in args if arg != "self"}
+        get_model_args.update(kwargs)
+
+        # Call get_model with all arguments
+        model = self.get_model(**get_model_args)
+        kwargs["model"] = model
 
         # Handle structured output configuration
         if "config" in kwargs and kwargs["config"]:
