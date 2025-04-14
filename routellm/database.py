@@ -8,11 +8,8 @@ from urllib.parse import urlparse
 import random
 import socket
 import subprocess
-from typing import Optional, Tuple, Dict, Any, List
 from sqlalchemy import event, exc, create_engine
 from sqlalchemy.sql import text
-from sqlalchemy.pool import QueuePool
-from sqlalchemy.engine import Engine
 
 # Check for required PostgreSQL dependencies
 required_deps = ['google.cloud.sql.connector', 'pg8000', 'sqlalchemy']
@@ -26,8 +23,6 @@ if os.getenv("INSTANCE_CONNECTION_NAME"):  # If using Cloud SQL
             raise RuntimeError(error_msg)
 
 from google.cloud.sql.connector import Connector, IPTypes
-import pg8000
-import sqlalchemy
 
 # Configure basic logging
 logging.basicConfig(
@@ -636,52 +631,6 @@ class Database:
     DEFAULT_TOKEN_BALANCE_IN = 3000000
     DEFAULT_TOKEN_BALANCE_OUT = 1000000
     DEFAULT_WORD_BALANCE = 10000
-    
-    # SQL Templates standardized for PostgreSQL
-    SQL_TEMPLATES = {
-        'upsert_account': """
-            INSERT INTO account_totals (account_id)
-            VALUES (%s)
-            ON CONFLICT (account_id) DO UPDATE SET
-                account_id = account_totals.account_id
-            RETURNING token_balance_in, token_balance_out, transactions
-        """,
-        'update_balance': """
-            WITH updated_totals AS (
-                UPDATE account_totals SET
-                    token_balance_in = token_balance_in - %s,
-                    token_balance_out = token_balance_out - %s,
-                    transactions = transactions + 1
-                WHERE account_id = %s
-                    AND token_balance_in >= %s 
-                    AND token_balance_out >= %s
-                RETURNING token_balance_in, token_balance_out, transactions
-            ),
-            daily_update AS (
-                INSERT INTO account_daily_summary (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
-                VALUES (%s, %s::date, %s, %s, 1)
-                ON CONFLICT(account_id, date) DO UPDATE SET
-                    transaction_count = account_daily_summary.transaction_count + 1,
-                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-            )
-            SELECT * FROM updated_totals
-        """,
-        'update_daily': """
-            INSERT INTO account_daily_summary 
-                (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
-            VALUES (%s, %s::date, %s, %s, 1)
-            ON CONFLICT(account_id, date) DO UPDATE SET
-                transaction_count = COALESCE(account_daily_summary.transaction_count, 0) + 1,
-                daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-        """,
-        'check_balance': """
-            SELECT token_balance_in, token_balance_out, transactions
-            FROM account_totals
-            WHERE account_id = %s;
-        """
-    }
 
     def __init__(self):
         self.env = os.getenv("ENVIRONMENT", "dev")
@@ -1096,12 +1045,6 @@ class Database:
         except Exception as e:
             logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
             return False
-
-    def _get_sql(self, template_name: str) -> str:
-        """Get SQL query with correct parameter style for current environment."""
-        return self.SQL_TEMPLATES[template_name].format(
-            placeholder=self.param_style
-        ).strip()
 
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
         """Update account usage with response data.
@@ -1767,145 +1710,3 @@ class Database:
                 daily_word_usage=int(row[4])
             ))
         return results
-
-    def update_multiple_accounts(self, account_updates: list[tuple[int, int, int]]) -> dict:
-        """Update multiple account balances using SKIP LOCKED for concurrent processing.
-        
-        This method is optimized for batch processing multiple accounts efficiently,
-        leveraging PostgreSQL's SKIP LOCKED feature to avoid contention.
-        
-        Args:
-            account_updates: List of tuples (account_id, prompt_tokens, completion_tokens)
-            
-        Returns:
-            dict: Dictionary mapping account_ids to update results (success/failure)
-        """
-        transaction_id = f"batch-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
-        logging.info(f"=== BATCH UPDATE START [ID: {transaction_id}] ===")
-        logging.info(f"Updating {len(account_updates)} accounts")
-        
-        results = {}
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        try:
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                # Skip setting timeouts as they're already configured as needed
-                
-                # Process each account update with SKIP LOCKED to prevent blocking
-                for account_id, prompt_tokens, completion_tokens in account_updates:
-                    word_count = 0  # Default to 0 for batch processing
-                    
-                    try:
-                        # Try to process this account with SKIP LOCKED to avoid contention
-                        cursor.execute("""
-                            WITH account_init AS (
-                                INSERT INTO account_totals 
-                                    (account_id, token_balance_in, token_balance_out, word_balance,
-                                    total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                                VALUES 
-                                    (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                                ON CONFLICT (account_id) DO NOTHING
-                            ),
-                            account_row AS (
-                                SELECT * FROM account_totals 
-                                WHERE account_id = %s
-                                FOR UPDATE SKIP LOCKED
-                            ),
-                            balance_update AS (
-                                UPDATE account_totals a
-                                SET token_balance_in = a.token_balance_in - %s,
-                                    token_balance_out = a.token_balance_out - %s,
-                                    transactions = a.transactions + 1,
-                                    total_token_usage_in = a.total_token_usage_in + %s,
-                                    total_token_usage_out = a.total_token_usage_out + %s,
-                                    last_updated = CURRENT_TIMESTAMP
-                                FROM account_row
-                                WHERE a.account_id = account_row.account_id
-                                  AND account_row.token_balance_in >= %s
-                                  AND account_row.token_balance_out >= %s
-                                RETURNING a.token_balance_in, a.token_balance_out, a.transactions
-                            ),
-                            daily_update AS (
-                                INSERT INTO account_daily_summary 
-                                (account_id, date, transaction_count, daily_token_usage_in, daily_token_usage_out)
-                                SELECT %s, %s, 1, %s, %s
-                                WHERE EXISTS (SELECT 1 FROM balance_update)
-                                ON CONFLICT (account_id, date) 
-                                DO UPDATE SET
-                                    transaction_count = account_daily_summary.transaction_count + 1,
-                                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-                            )
-                            SELECT * FROM balance_update
-                        """, (
-                            account_id, 
-                            account_id,
-                            prompt_tokens, completion_tokens, 
-                            prompt_tokens, completion_tokens,
-                            account_id, today, prompt_tokens, completion_tokens
-                        ))
-                        
-                        result = cursor.fetchone()
-                        if result:
-                            results[account_id] = {
-                                "success": True,
-                                "token_balance_in": float(result[0]),
-                                "token_balance_out": float(result[1]),
-                                "transactions": int(result[2])
-                            }
-                        else:
-                            # Account was either locked or had insufficient balance
-                            cursor.execute("""
-                                SELECT token_balance_in, token_balance_out, transactions 
-                                FROM account_totals 
-                                WHERE account_id = %s
-                            """, (account_id,))
-                            
-                            balance = cursor.fetchone()
-                            if balance:
-                                reason = ("locked" if balance[0] >= prompt_tokens and balance[1] >= completion_tokens 
-                                          else "insufficient_balance")
-                                results[account_id] = {
-                                    "success": False,
-                                    "reason": reason,
-                                    "token_balance_in": float(balance[0]),
-                                    "token_balance_out": float(balance[1]),
-                                    "transactions": int(balance[2])
-                                }
-                            else:
-                                results[account_id] = {
-                                    "success": False,
-                                    "reason": "account_not_found"
-                                }
-                    except Exception as e:
-                        # Log per-account errors but continue with other accounts
-                        error_type = type(e).__name__
-                        error_msg = str(e)
-                        logging.error(f"Error updating account {account_id}: {error_type}: {error_msg}")
-                        results[account_id] = {
-                            "success": False,
-                            "reason": f"error: {error_type}",
-                            "message": error_msg
-                        }
-                
-                # Success for the overall batch operation
-                logging.info(f"=== BATCH UPDATE COMPLETED [ID: {transaction_id}] ===")
-                logging.info(f"Successfully processed {sum(1 for r in results.values() if r.get('success', False))} of {len(account_updates)} accounts")
-                
-                return results
-                
-        except Exception as e:
-            # Overall batch operation failure
-            error_type = type(e).__name__
-            error_msg = str(e)
-            logging.error(f"=== BATCH UPDATE FAILED [ID: {transaction_id}] ===")
-            logging.error(f"Error: {error_type}: {error_msg}")
-            
-            # Return partial results if available
-            if not results:
-                results = {account_id: {"success": False, "reason": f"batch_error: {error_type}"} 
-                           for account_id, _, _ in account_updates}
-            
-            return results
