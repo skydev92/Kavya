@@ -55,7 +55,6 @@ DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0
 # https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
 # Add constants for initialization
-DEFAULT_INIT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
 DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 300000  # milliseconds (5 minutes)
 
 class DatabaseConnection:
@@ -539,48 +538,6 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception as e:
             logging.warning(f"Error applying VACUUM optimizations: {str(e)}")
     
-    def check_database_health(self):
-        """Check database health metrics related to VACUUM"""
-        try:
-            with self.engine.connect() as conn:
-                # Check for tables with high dead tuple percentages
-                result = conn.execute(text("""
-                    SELECT relname as table_name,
-                           n_dead_tup as dead_tuples,
-                           n_live_tup as live_tuples,
-                           CASE WHEN n_live_tup > 0 
-                                THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
-                                ELSE 0 
-                           END as dead_tuple_pct
-                    FROM pg_stat_user_tables
-                    WHERE n_live_tup + n_dead_tup > 0
-                    ORDER BY dead_tuple_pct DESC
-                """))
-                
-                for row in result:
-                    table_name = row[0]
-                    dead_tuple_pct = row[3]
-                    
-                    # Log warning for tables with high dead tuple percentage
-                    if dead_tuple_pct > 20:  # 20% threshold
-                        logging.warning(f"Table {table_name} has {dead_tuple_pct}% dead tuples - consider VACUUM")
-                
-                # Check transaction ID age
-                result = conn.execute(text("""
-                    SELECT datname, age(datfrozenxid) as xid_age
-                    FROM pg_database
-                    WHERE datname = current_database()
-                """))
-                
-                row = result.fetchone()
-                if row and row[1] > 1000000000:  # 1 billion threshold
-                    logging.warning(f"Database {row[0]} has transaction ID age of {row[1]} - approaching wraparound")
-                
-                return True
-        except Exception as e:
-            logging.error(f"Error checking database health: {str(e)}")
-            return False
-    
     def run_maintenance(self, full=False):
         """Run VACUUM ANALYZE on tables"""
         try:
@@ -926,125 +883,13 @@ class Database:
 
     def _ensure_tables_exist(self, connection):
         """Ensure necessary tables exist without dropping existing ones"""
-        cursor = connection.get_cursor()
-        
-        # Create account_totals table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_totals (
-            account_id INTEGER PRIMARY KEY,
-            token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
-            token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
-            word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
-            total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
-            total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
-            total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
-            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # Create account_daily_summary table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_daily_summary (
-            account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
-            date DATE NOT NULL,
-            transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-            daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
-            daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
-            daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
-            PRIMARY KEY (account_id, date)
-        )
-        """)
-        
-        # Create or update indices for better performance
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
-        ON account_totals(token_balance_in, token_balance_out, word_balance)
-        """)
-        
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
-        ON account_daily_summary(date)
-        """)
-        
-        # Update the account_totals table to include the last_updated column if it doesn't exist
         try:
-            cursor.execute("""
-            SELECT column_name FROM information_schema.columns 
-            WHERE table_name='account_totals' AND column_name='last_updated'
-            """)
-            has_last_updated = cursor.fetchone() is not None
-            
-            if not has_last_updated:
-                cursor.execute("""
-                ALTER TABLE account_totals 
-                ADD COLUMN last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                """)
-                logging.info("Added last_updated column to account_totals table")
-                
+            connection._ensure_tables_exist()
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
         
         if self.env == "dev":
             connection.commit()
-            
-    def check_database_health(self) -> bool:
-        """Perform a comprehensive check of database connectivity and functionality
-        
-        Returns:
-            bool: True if database is healthy, False otherwise
-        """
-        try:
-            # Get a validated connection first
-            connection = self.get_validated_connection()
-            
-            # Perform basic health checks
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                # Test 1: Simple query execution
-                cursor.execute("SELECT 1 as test")
-                if cursor.fetchone()[0] != 1:
-                    logging.error("Database health check failed: Basic query test failed")
-                    return False
-                
-                # Test 2: Transaction isolation
-                # First create test data if it doesn't exist
-                cursor.execute("""
-                INSERT INTO account_totals (account_id, token_balance_in, token_balance_out)
-                VALUES (-9999, 1000, 1000)
-                ON CONFLICT (account_id) DO UPDATE SET
-                    token_balance_in = 1000,
-                    token_balance_out = 1000
-                """)
-                
-                # Update the balance and verify it works
-                cursor.execute("""
-                UPDATE account_totals 
-                SET token_balance_in = token_balance_in - 1,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE account_id = -9999
-                RETURNING token_balance_in
-                """)
-                
-                result = cursor.fetchone()
-                if not result or float(result[0]) != 999:
-                    logging.error("Database health check failed: Transaction test failed")
-                    return False
-                
-                # Test 3: Advisory lock functionality
-                cursor.execute(f"SELECT pg_try_advisory_xact_lock({PG_LOCK_NAMESPACE}, -9999)")
-                if not cursor.fetchone()[0]:
-                    logging.error("Database health check failed: Advisory lock test failed")
-                    return False
-                
-            # Successfully passed all tests
-            logging.info("Database health check completed successfully")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
-            return False
 
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
         """Update account usage with response data.
