@@ -673,10 +673,7 @@ class Database:
             try:
                 conn = self._get_connection()
                 # Quick validation
-                cursor = conn.get_cursor()
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
-                if result and result[0] == 1:
+                if conn.validate():
                     return conn
                 else:
                     logging.warning("Connection validation failed: unexpected result")
