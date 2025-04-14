@@ -849,6 +849,48 @@ class Database:
         """, (account_id,))
         return True
 
+    def _check_error_message(error_type, error_msg, backoff_base, retry_count):
+        # Check for specific errors that might be retryable
+        is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
+        is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
+        is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
+        is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
+        is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
+        is_failed_transaction = "in failed transaction" in error_msg.lower()
+        is_lock_contention = "could not acquire lock" in error_msg.lower()
+        
+        # For recoverable errors, retry with backoff
+        is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
+                        is_serialize_failure or is_transaction_aborted or 
+                        is_failed_transaction or is_lock_contention)
+        wait_time = None
+        error_category = "unknown"
+
+        if is_retryable :
+            # Shorter exponential backoff with small random jitter
+            backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
+            jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
+            wait_time = backoff + jitter
+            
+            # Log specific error type for better debugging
+            if is_lock_timeout:
+                error_category = "lock timeout"
+            elif is_statement_timeout:
+                error_category = "statement timeout"
+            elif is_deadlock:
+                error_category = "deadlock"
+            elif is_serialize_failure:
+                error_category = "serialization failure"
+            elif is_transaction_aborted or is_failed_transaction:
+                error_category = "transaction aborted"
+            elif is_lock_contention:
+                error_category = "lock contention"
+        return {
+            "is_retryable" : is_retryable,
+            "error_category" : error_category,
+            "wait_time" : wait_time,
+            "wait_time_seconds" : wait_time / 1000.0
+        }
 
     def _update_balance(self, cursor, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int, transaction_id: str) -> None:
         # First ensure the account exists in a separate transaction to avoid lock contention
@@ -999,44 +1041,12 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                # Check for specific errors that might be retryable
-                is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
-                is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
-                is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
-                is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
-                is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
-                is_failed_transaction = "in failed transaction" in error_msg.lower()
-                is_lock_contention = "could not acquire lock" in error_msg.lower()
-                
-                # For recoverable errors, retry with backoff
-                is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
-                               is_serialize_failure or is_transaction_aborted or 
-                               is_failed_transaction or is_lock_contention)
+                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                is_retryable = error_data["is_retryable"]
+                wait_time_seconds = error_data["wait_time_seconds"]
+                error_category = error_data["error_category"]
                 
                 if is_retryable and retry_count < max_retries:
-                    # Shorter exponential backoff with small random jitter
-                    backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
-                    jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
-                    wait_time = backoff + jitter
-                    
-                    # Log specific error type for better debugging
-                    error_category = "unknown"
-                    if is_lock_timeout:
-                        error_category = "lock timeout"
-                    elif is_statement_timeout:
-                        error_category = "statement timeout"
-                    elif is_deadlock:
-                        error_category = "deadlock"
-                    elif is_serialize_failure:
-                        error_category = "serialization failure"
-                    elif is_transaction_aborted or is_failed_transaction:
-                        error_category = "transaction aborted"
-                    elif is_lock_contention:
-                        error_category = "lock contention"
-                    
-                    # Convert milliseconds to seconds for sleep
-                    wait_time_seconds = wait_time / 1000.0
-                    
                     logging.warning(
                         f"[ID: {transaction_id}] Database {error_category} detected "
                         f"(attempt {retry_count}/{max_retries}): {error_type}: {error_msg}. "
@@ -1319,36 +1329,12 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                # Detect specific error types for better handling
-                is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
-                is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
-                is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
-                is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
-                is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
-                is_failed_transaction = "in failed transaction" in error_msg.lower()
-                
-                # For recoverable errors, retry with backoff
-                is_retryable = is_lock_timeout or is_statement_timeout or is_deadlock or is_serialize_failure or is_transaction_aborted or is_failed_transaction
-                
+                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                is_retryable = error_data["is_retryable"]
+                wait_time = error_data["wait_time"]
+                error_category = error_data["error_category"]
+
                 if is_retryable and retry_count < max_retries:
-                    # Shorter exponential backoff with small random jitter
-                    backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
-                    jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
-                    wait_time = backoff + jitter
-                    
-                    # Identify error category for logging
-                    error_category = "unknown"
-                    if is_lock_timeout:
-                        error_category = "lock timeout"
-                    elif is_statement_timeout:
-                        error_category = "statement timeout"
-                    elif is_deadlock:
-                        error_category = "deadlock"
-                    elif is_serialize_failure:
-                        error_category = "serialization failure"
-                    elif is_transaction_aborted or is_failed_transaction:
-                        error_category = "transaction aborted"
-                    
                     logging.warning(f"[ID: {transaction_id}] Balance check {error_category} error (attempt {retry_count}/{max_retries}): {error_type}: {error_msg}")
                     time.sleep(wait_time)
                 else:
