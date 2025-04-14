@@ -537,51 +537,6 @@ class PostgreSQLConnection(DatabaseConnection):
             logging.info("Table storage optimized with VACUUM settings")
         except Exception as e:
             logging.warning(f"Error applying VACUUM optimizations: {str(e)}")
-    
-    def run_maintenance(self, full=False):
-        """Run VACUUM ANALYZE on tables"""
-        try:
-            with self.engine.begin() as conn:
-                vacuum_type = "VACUUM FULL" if full else "VACUUM"
-                conn.execute(text(f"{vacuum_type} ANALYZE"))
-                logging.info(f"{vacuum_type} ANALYZE completed on all tables")
-                return True
-        except Exception as e:
-            logging.error(f"Error running database maintenance: {str(e)}")
-            return False
-
-    def run_vacuum(self, full=False, table_name=None):
-        """
-        Run VACUUM on the database to reclaim space and update statistics.
-        
-        Args:
-            full: Whether to run VACUUM FULL (locks tables, use during low traffic)
-            table_name: Specific table to vacuum (None for all tables)
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            connection = self._get_connection()
-            if hasattr(connection, 'run_maintenance'):
-                return connection.run_maintenance(full=full)
-            
-            # Fallback if connection doesn't have run_maintenance method
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                vacuum_type = "VACUUM FULL" if full else "VACUUM"
-                if table_name:
-                    cursor.execute(f"{vacuum_type} ANALYZE {table_name}")
-                    logging.info(f"{vacuum_type} ANALYZE completed on {table_name}")
-                else:
-                    cursor.execute(f"{vacuum_type} ANALYZE")
-                    logging.info(f"{vacuum_type} ANALYZE completed on all tables")
-                
-                return True
-        except Exception as e:
-            logging.error(f"Error running VACUUM: {str(e)}")
-            return False
 
 class Database:
     # Default balance values
@@ -881,7 +836,7 @@ class Database:
     def _ensure_tables_exist(self, connection):
         """Ensure necessary tables exist without dropping existing ones"""
         try:
-            connection._ensure_tables_exist()
+            connection._ensure_tables_exist(connection)
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
         
