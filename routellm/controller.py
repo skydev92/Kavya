@@ -171,7 +171,7 @@ class Controller:
         
         # Load fallback configurations if available
         self.fallback_configs = config.get("fallback_configs", {})
-
+        
         router_pbar = None
         if progress_bar:
             router_pbar = tqdm(routers)
@@ -205,10 +205,50 @@ class Controller:
             return {}
 
     def check_predefined_prompt(self, message):
-        for key, value in self.predefined_prompts.items():
-            if key in message:
-                return value
+        """Check if a message matches a predefined prompt and return the answer if it does."""
+        if not message or not isinstance(message, str):
+            return None
+            
+        # Simple exact match
+        if message in self.predefined_prompts:
+            return self.predefined_prompts[message]
+            
         return None
+
+    async def enhance_with_web_search(self, messages):
+        """Add web search results to messages if confidence is below threshold."""
+        # Hardcoded API key from environment
+        api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+        if not api_key:
+            return messages
+            
+        from routellm.web_search import evaluate_confidence, search_web
+        
+        eval_result = await evaluate_confidence(self, messages)
+        if not eval_result.search_required:
+            return messages
+        
+        # Extract user query
+        user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        
+        # Search web with hardcoded query count 3
+        results = []
+        for i in range(3):
+            query = f"{user_msg} {i+1}" if i > 0 else user_msg
+            results.extend(await search_web(query, api_key))
+        
+        if not results:
+            return messages
+        
+        # Format results as context
+        context = "Recent web search results:\n\n"
+        for i, r in enumerate(results):
+            context += f"{i+1}. {r.title} - {r.url}\n{r.summary}\n\n"
+        
+        # Add as system message
+        new_msgs = messages.copy()
+        new_msgs.insert(0, {"role": "system", "content": context})
+        return new_msgs
 
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
@@ -517,6 +557,9 @@ class Controller:
                     ],
                     "model": "predefined_prompt"
                 }
+            
+            # Add web search results
+            kwargs["messages"] = await self.enhance_with_web_search(kwargs["messages"])
 
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
