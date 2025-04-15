@@ -36,6 +36,7 @@ from routellm.models import (
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
+from routellm.web_search import evaluate_confidence, search_web, generate_search_queries
 
 # Model translation mapping
 def get_model_translations(config):
@@ -223,32 +224,42 @@ class Controller:
         if not api_key:
             return messages
             
-        from routellm.web_search import evaluate_confidence, search_web
-        
         try:
             # Evaluate confidence in answering without search
             eval_result = await evaluate_confidence(self, messages)
             if not eval_result.search_required:
                 return messages
             
-            # Extract user query
+            # Extract user query for the generator
             user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
             
-            # Search web with hardcoded query count 3
+            # Generate 3 creative queries using the LLM
+            search_queries = await generate_search_queries(self, user_msg)
+
+            # Search web using the generated queries
             results = []
-            for i in range(3):
-                query = f"{user_msg} {i+1}" if i > 0 else user_msg
-                search_results = await search_web(query, api_key)
+            for i, query in enumerate(search_queries):
+                logging.info(f"WEB_SEARCH: Performing search #{i+1} with generated query: '{query}'")
+                search_results = await search_web(query, api_key) # Pass generated query
                 results.extend(search_results)
             
             if not results:
                 return messages
             
-            # Format results as context
-            context = "Recent web search results:\n\n"
+            # Format results as context with XML tags
+            context = "<web_search_results>\n"
+            context += "  <header>Recent web search results:</header>\n"
             for i, r in enumerate(results):
-                context += f"{i+1}. {r.title} - {r.url}\n{r.summary}\n\n"
+                context += f"  <search_result index=\"{i+1}\">\n"
+                context += f"    <title>{r.title}</title>\n"
+                context += f"    <url>{r.url}</url>\n"
+                context += f"    <full_content>{r.summary}</full_content>\n"
+                context += f"  </search_result>\n"
+            context += "</web_search_results>"
             
+            # Log the beginning of the context
+            logging.info(f"WEB_SEARCH: Adding search context (first 2000 chars):\n{context[:2000]}")
+
             # Add as system message
             new_msgs = messages.copy()
             new_msgs.insert(0, {"role": "system", "content": context})
