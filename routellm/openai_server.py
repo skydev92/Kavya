@@ -33,6 +33,7 @@ from routellm.auth import JWTBearer
 from routellm.models import InsufficientTokensError
 import routellm.models 
 from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
+from routellm.database_cache import DatabaseCache
 
 from dotenv import load_dotenv
 
@@ -151,7 +152,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.cache = DatabaseCache(app)
 
 # ------------------------------------------------------------------------------
 # UTILITY ENDPOINTS
@@ -587,7 +588,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     
     # Check balance without updating
     try:
-        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
+        logging.info("CHECKING BALANCE")
+        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
@@ -650,7 +652,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         routing_cost = cost_tracker.get_total()
         remaining_prompt_tokens = estimated_prompt_tokens - routing_cost
         
-        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
+        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(remaining_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
@@ -800,8 +802,9 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         
                         # Update database with final word count
                         try:
+                            logging.debug("Updating word count in database")
                             final_word_count = count_words(word_buffer)
-                            app.db.update_usage_with_response(
+                            app.cache.update_usage_with_response(
                                 account_id=int(user_id),
                                 prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                                 completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
@@ -1089,7 +1092,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             
                             # Update token usage in database
                             try:
-                                app.db.update_usage_with_response(
+                                app.cache.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
                                     completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
