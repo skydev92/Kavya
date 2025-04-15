@@ -236,12 +236,19 @@ class Controller:
             # Generate 3 creative queries using the LLM
             search_queries = await generate_search_queries(self, user_msg)
 
-            # Search web using the generated queries
-            results = []
+            # Search web using the generated queries in parallel
+            tasks = []
             for i, query in enumerate(search_queries):
-                logging.info(f"WEB_SEARCH: Performing search #{i+1} with generated query: '{query}'")
-                search_results = await search_web(query, api_key) # Pass generated query
-                results.extend(search_results)
+                logging.info(f"WEB_SEARCH: Preparing parallel search #{i+1} with generated query: '{query}'")
+                tasks.append(search_web(query, api_key)) # Create tasks
+            
+            # Run tasks concurrently and gather results
+            logging.info(f"WEB_SEARCH: Running {len(tasks)} searches in parallel.")
+            list_of_results = await asyncio.gather(*tasks) 
+            logging.info(f"WEB_SEARCH: Parallel searches completed.")
+
+            # Flatten the list of lists into a single list
+            results = [item for sublist in list_of_results for item in sublist]
             
             if not results:
                 return messages
