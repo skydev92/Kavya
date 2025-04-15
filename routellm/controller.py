@@ -219,36 +219,44 @@ class Controller:
         """Add web search results to messages if confidence is below threshold."""
         # Hardcoded API key from environment
         api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+        logging.info(f"WEB_SEARCH: API key present: {api_key is not None}")
         if not api_key:
             return messages
             
         from routellm.web_search import evaluate_confidence, search_web
         
-        eval_result = await evaluate_confidence(self, messages)
-        if not eval_result.search_required:
+        try:
+            # Evaluate confidence in answering without search
+            eval_result = await evaluate_confidence(self, messages)
+            if not eval_result.search_required:
+                return messages
+            
+            # Extract user query
+            user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+            
+            # Search web with hardcoded query count 3
+            results = []
+            for i in range(3):
+                query = f"{user_msg} {i+1}" if i > 0 else user_msg
+                search_results = await search_web(query, api_key)
+                results.extend(search_results)
+            
+            if not results:
+                return messages
+            
+            # Format results as context
+            context = "Recent web search results:\n\n"
+            for i, r in enumerate(results):
+                context += f"{i+1}. {r.title} - {r.url}\n{r.summary}\n\n"
+            
+            # Add as system message
+            new_msgs = messages.copy()
+            new_msgs.insert(0, {"role": "system", "content": context})
+            return new_msgs
+            
+        except Exception as e:
+            logging.error(f"WEB_SEARCH: Error: {str(e)}")
             return messages
-        
-        # Extract user query
-        user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        
-        # Search web with hardcoded query count 3
-        results = []
-        for i in range(3):
-            query = f"{user_msg} {i+1}" if i > 0 else user_msg
-            results.extend(await search_web(query, api_key))
-        
-        if not results:
-            return messages
-        
-        # Format results as context
-        context = "Recent web search results:\n\n"
-        for i, r in enumerate(results):
-            context += f"{i+1}. {r.title} - {r.url}\n{r.summary}\n\n"
-        
-        # Add as system message
-        new_msgs = messages.copy()
-        new_msgs.insert(0, {"role": "system", "content": context})
-        return new_msgs
 
     def _validate_router_threshold(
         self, router: Optional[str], threshold: Optional[float]
@@ -559,6 +567,7 @@ class Controller:
                 }
             
             # Add web search results
+            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
             kwargs["messages"] = await self.enhance_with_web_search(kwargs["messages"])
 
         if "model" in kwargs:
