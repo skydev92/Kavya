@@ -1266,7 +1266,7 @@ class Controllers:
         logging.info(f"DEBUG: request dump: {request_dump}")
         
         return await self.controllers[id].__getattribute__(amethod_name)(
-            **request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True),
+            **{k: v for k, v in request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True).items() if k not in kwargs and k not in ["router_usage"]},
             **kwargs
         )
 

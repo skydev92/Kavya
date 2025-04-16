@@ -1178,7 +1178,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
                     kwargs["max_tokens"] = 4096
             
-            res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
+            res = await app.controllers.response(request, controller_name, "acompletion", **kwargs)
             
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
             chosen_model = res['model'] if is_predefined else res.model_dump()['model']
