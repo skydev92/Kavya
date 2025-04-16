@@ -62,12 +62,27 @@ async def enhance_with_web_search(controller, messages):
         context += "</web_search_results>"
         
         # Log the beginning of the context
-        logging.info(f"WEB_SEARCH: Adding search context (first 2000 chars):\n{context[:2000]}")
+        logging.info(f"WEB_SEARCH: Adding search context (first 10000 chars):\n{context[:10000]}")
 
-        # Add as system message
+        # Instead of adding a system message, find the last user message and append the context.
         new_msgs = messages.copy()
-        new_msgs.insert(0, {"role": "system", "content": context})
-        return new_msgs
+        last_user_msg_index = -1
+        for i in range(len(new_msgs) - 1, -1, -1):
+            if new_msgs[i]["role"] == "user":
+                last_user_msg_index = i
+                break
+        
+        if last_user_msg_index != -1:
+            # Prepend the context to the last user message content, separated by newlines
+            original_content = new_msgs[last_user_msg_index]["content"]
+            new_msgs[last_user_msg_index]["content"] = f"{context}\n\n{original_content}"
+            logging.info(f"WEB_SEARCH: Appended search context to last user message at index {last_user_msg_index}")
+            return new_msgs
+        else:
+            # Fallback: If no user message found (unlikely), add as system message anyway or log error
+            logging.warning("WEB_SEARCH: No user message found to append search context to. Adding as system message as fallback.")
+            new_msgs.insert(0, {"role": "system", "content": context})
+            return new_msgs
         
     except Exception as e:
         logging.error(f"WEB_SEARCH: Error: {str(e)}")

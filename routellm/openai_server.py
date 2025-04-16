@@ -33,6 +33,7 @@ from routellm.auth import JWTBearer
 from routellm.models import InsufficientTokensError
 import routellm.models 
 from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
+from routellm.web_search import enhance_with_web_search
 
 from dotenv import load_dotenv
 
@@ -728,6 +729,18 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             messages=request.messages,
                             user=str(user_id)  # Add user ID to content request
                         ) 
+
+                        # --- WEB SEARCH INSERTION ---
+                        try:
+                            logging.info("WEB_SEARCH: Checking if web search enhancement is needed (openai_server.py fix)")
+                            # Enhance messages directly on the content_request object
+                            content_request.messages = await enhance_with_web_search(app.controllers.longwriter, content_request.messages)
+                            logging.info("WEB_SEARCH: Enhancement check complete (openai_server.py fix)")
+                        except Exception as web_search_error:
+                            logging.error(f"WEB_SEARCH: Error during enhancement in openai_server.py: {web_search_error}", exc_info=True)
+                            # Decide if you want to proceed without enhancement or raise an error
+                            # For now, proceeding without enhancement
+                        # --- END WEB SEARCH INSERTION ---
 
                         logging.debug("Creating content strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
