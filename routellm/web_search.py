@@ -30,11 +30,14 @@ async def enhance_with_web_search(controller, messages):
         # Generate 3 creative queries using the LLM
         search_queries = await generate_search_queries(controller, user_msg)
 
+        # Track URLs to avoid duplicates
+        processed_urls = set()
+
         # Search web using the generated queries in parallel
         tasks = []
         for i, query in enumerate(search_queries):
             logging.info(f"WEB_SEARCH: Preparing parallel search #{i+1} with generated query: '{query}'")
-            tasks.append(search_web(query, api_key)) # Create tasks
+            tasks.append(search_web(query, api_key, processed_urls))  # Pass the URL tracking set
         
         # Run tasks concurrently and gather results
         logging.info(f"WEB_SEARCH: Running {len(tasks)} searches in parallel.")
@@ -240,11 +243,12 @@ def clean_search_query(query: str) -> str:
         
     return query
 
-async def search_web(query: str, api_key: str) -> List[WebSearchResult]:
+async def search_web(query: str, api_key: str, processed_urls: set = None) -> List[WebSearchResult]:
     """Get top URL from Brave, fetch full content via Jina Reader."""
-    # Clean the query for Brave Search - REMOVED, cleaning is done in controller
-    # clean_query = clean_search_query(query)
-    # logging.info(f"WEB_SEARCH: Cleaned query for Brave: '{clean_query}'")
+    # Initialize processed_urls if not provided
+    if processed_urls is None:
+        processed_urls = set()
+        
     logging.info(f"WEB_SEARCH: Received query for Brave: '{query}'") # Log received query
     
     brave_url = "https://api.search.brave.com/res/v1/web/search"
@@ -281,7 +285,14 @@ async def search_web(query: str, api_key: str) -> List[WebSearchResult]:
                 original_url = top_result.get("url")
                 title = top_result.get("title", "")
                 if original_url:
+                    # Skip if URL was already processed
+                    if original_url in processed_urls:
+                        logging.info(f"BRAVE_SEARCH: Skipping already processed URL: {original_url}")
+                        return []
+                    
                     logging.info(f"BRAVE_SEARCH: Found URL: {original_url}")
+                    # Add to processed URLs set
+                    processed_urls.add(original_url)
                     break # Exit retry loop on success
                 else:
                     logging.warning("BRAVE_SEARCH: Top result missing URL.")
@@ -323,6 +334,12 @@ async def search_web(query: str, api_key: str) -> List[WebSearchResult]:
             
             jina_response.raise_for_status()
             full_content = jina_response.text
+            
+            # Limit content to 10000 characters
+            if len(full_content) > 10000:
+                logging.info(f"JINA_READER: Trimming content from {len(full_content)} to 10000 chars")
+                full_content = full_content[:10000]
+            
             logging.info(f"JINA_READER: Successfully fetched full content ({len(full_content)} chars)")
             
             # Use the 'summary' field to hold the full content
