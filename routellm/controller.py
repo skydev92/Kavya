@@ -207,13 +207,10 @@ class Controller:
 
     def check_predefined_prompt(self, message):
         """Check if a message matches a predefined prompt and return the answer if it does."""
-        if not message or not isinstance(message, str):
-            return None
-            
-        # Simple exact match
-        if message in self.predefined_prompts:
-            return self.predefined_prompts[message]
-            
+        for key, value in self.predefined_prompts.items():
+            if key in message:
+                return value
+        
         return None
 
     def _validate_router_threshold(
