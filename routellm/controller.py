@@ -36,7 +36,7 @@ from routellm.models import (
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
-from routellm.web_search import evaluate_confidence, search_web, generate_search_queries, enhance_with_web_search
+from routellm.web_search import evaluate_confidence, search_web, enhance_with_web_search
 
 # Model translation mapping
 def get_model_translations(config):

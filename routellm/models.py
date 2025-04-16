@@ -476,12 +476,6 @@ class RoutingAnalysis(BaseModel):
         description="If it's primarily a list/data without narrative"
     )
 
-class WebSearchResult(BaseModel):
-    """Search result from web."""
-    title: str
-    url: str
-    summary: str
-
 class ConfidenceEvaluation(BaseModel):
     """Model confidence evaluation."""
     score: int = Field(..., ge=0, le=100)
