@@ -10,6 +10,66 @@ import random
 
 from routellm.models import WebSearchResult, ConfidenceEvaluation
 
+async def enhance_with_web_search(controller, messages):
+    """Add web search results to messages if confidence is below threshold."""
+    # Hardcoded API key from environment
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
+    logging.info(f"WEB_SEARCH: API key present: {api_key is not None}")
+    if not api_key:
+        return messages
+        
+    try:
+        # Evaluate confidence in answering without search
+        eval_result = await evaluate_confidence(controller, messages)
+        if not eval_result.search_required:
+            return messages
+        
+        # Extract user query for the generator
+        user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        
+        # Generate 3 creative queries using the LLM
+        search_queries = await generate_search_queries(controller, user_msg)
+
+        # Search web using the generated queries in parallel
+        tasks = []
+        for i, query in enumerate(search_queries):
+            logging.info(f"WEB_SEARCH: Preparing parallel search #{i+1} with generated query: '{query}'")
+            tasks.append(search_web(query, api_key)) # Create tasks
+        
+        # Run tasks concurrently and gather results
+        logging.info(f"WEB_SEARCH: Running {len(tasks)} searches in parallel.")
+        list_of_results = await asyncio.gather(*tasks) 
+        logging.info(f"WEB_SEARCH: Parallel searches completed.")
+
+        # Flatten the list of lists into a single list
+        results = [item for sublist in list_of_results for item in sublist]
+        
+        if not results:
+            return messages
+        
+        # Format results as context with XML tags
+        context = "<web_search_results>\n"
+        context += "  <header>Recent web search results:</header>\n"
+        for i, r in enumerate(results):
+            context += f"  <search_result index=\"{i+1}\">\n"
+            context += f"    <title>{r.title}</title>\n"
+            context += f"    <url>{r.url}</url>\n"
+            context += f"    <full_content>{r.summary}</full_content>\n"
+            context += f"  </search_result>\n"
+        context += "</web_search_results>"
+        
+        # Log the beginning of the context
+        logging.info(f"WEB_SEARCH: Adding search context (first 2000 chars):\n{context[:2000]}")
+
+        # Add as system message
+        new_msgs = messages.copy()
+        new_msgs.insert(0, {"role": "system", "content": context})
+        return new_msgs
+        
+    except Exception as e:
+        logging.error(f"WEB_SEARCH: Error: {str(e)}")
+        return messages
+
 async def evaluate_confidence(controller, messages) -> ConfidenceEvaluation:
     """Evaluate model confidence using the weak model."""
     last_user_message = next((m["content"] for m in reversed(messages) 
