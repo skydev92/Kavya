@@ -135,17 +135,44 @@ async def generate_search_queries(controller, user_msg: str) -> List[str]:
     # Clean the base message for the prompt to the generator LLM
     base_query_for_prompt = clean_search_query(user_msg)
     
-    prompt = f"""Based on the following user task, generate exactly 3 distinct and creative search engine queries. The queries should explore different facets of the topic. Make one query explore a surprising or less obvious angle.
+    # Get the current year
+    current_year = datetime.now().year
+
+    prompt = f"""Based on the following user task, generate exactly 3 distinct search queries.
+**Crucial Instruction:** Analyze the user task for references to entities, roles, products, software, or concepts.
+1.  **If the user uses relative terms** (e.g., "current president", "latest version", "most recent findings"): Preserve these exact terms in your search queries. Do NOT replace them with specific names, dates, or versions you think are correct.
+2.  **If the user refers to something without a specific version or qualifier, but the context implies the most recent or current one** (e.g., "Drupal", "iPhone features", "President of the USA"): Assume the user wants the latest/current and use year qualifier instead of replacing with a specific entity based on your potentially outdated knowledge.
+
+For EACH generated query, independently assess if it focuses on a contemporary topic requiring current information.
+- If it IS contemporary (and doesn't already have a specific historical context), include the current year "{current_year}".
+- If it relates to a specific historical event or non-contemporary topic, use relevant historical time periods or omit the year.
 
 User Task: {base_query_for_prompt}
 
 Return the queries as a JSON object with a single key "queries" containing a list of 3 strings.
-Example:
+
+Example for a task "latest Drupal security update":
 {{
   "queries": [
-    "query exploring main topic",
-    "query exploring a related aspect",
-    "query exploring a surprising angle"
+    "latest Drupal security update {current_year}",
+    "recent Drupal core vulnerabilities {current_year}",
+    "Drupal security best practices {current_year}" 
+  ]
+}}
+Example for a task "biography of the president of USA":
+{{
+  "queries": [
+    "biography of the current president of USA {current_year}",
+    "current US president accomplishments {current_year}",
+    "who is the current president of the USA {current_year}" 
+  ]
+}}
+Example for a historical task "features of Drupal 7":
+{{
+  "queries": [
+    "Drupal 7 features list",
+    "Drupal 7 end of life",
+    "migrating from Drupal 7"
   ]
 }}
 """
@@ -154,8 +181,10 @@ Example:
     # For simplicity here, let's assume we get it from the controller or default
     user_id = getattr(controller, 'user', 'system_query_generator')
     
+    # Fallback queries - update to potentially include year based on a simple heuristic
+    # Note: These fallbacks don't fully implement the sophisticated logic above, but aim for recency.
     fallback_queries = [
-        base_query_for_prompt,
+        f"latest {base_query_for_prompt} {current_year}", # Try adding 'latest' and year
         f"{base_query_for_prompt} current details",
         f"{base_query_for_prompt} overview"
     ]
@@ -165,8 +194,8 @@ Example:
         response = await litellm.acompletion(
             model=controller.model_pair.weak,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=150, # More tokens needed for 3 queries
-            temperature=0.5, # Allow some creativity
+            max_tokens=900, # More tokens needed for 3 queries
+            temperature=0.7, # Allow some creativity
             response_format={"type": "json_object"},
             user=user_id
         )
