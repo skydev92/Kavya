@@ -812,6 +812,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         # Update database with final word count
                         try:
                             final_word_count = count_words(word_buffer)
+                            logging.info("DEBUG : Updating cost in database")
                             app.db.update_usage_with_response(
                                 account_id=int(user_id),
                                 prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
@@ -834,6 +835,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Use the routed model if available, otherwise use completion's default model
                 if request.model:
                     kwargs = request.model_dump(exclude_none=True)
+                    logging.info(f"DEBUG : Model in request is {request.model}")
                 else:
                     kwargs = request.model_dump(exclude_none=True)
                     kwargs["model"] = app.controllers.completion.model_pair.weak
@@ -1100,6 +1102,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             
                             # Update token usage in database
                             try:
+                                logging.info("DEBUG : Updating cost in database #2")
                                 app.db.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
@@ -1181,7 +1184,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             res = await app.controllers.response(request, controller_name, "acompletion", **kwargs)
             
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-            chosen_model = res['model'] if is_predefined else res.model_dump()['model']
+            chosen_model = res['original_model'] if is_predefined else res.model_dump()['original_model']
 
             # Get current token balance
             try:

@@ -186,6 +186,7 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
         try:
             from routellm.database import Database
             db = Database()
+            logging.info("DEBUG : Updating cost in database from models.create_stream_response")
             db.update_usage_with_response(
                 account_id=int(controller.user),
                 prompt_tokens=initial_usage['prompt_tokens'],
@@ -325,6 +326,10 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(
         ...,
         description="Model used for the completion"
+    )
+    original_model: str = Field(
+        ...,
+        description="Model asked for by the request"
     )
     choices: List[ChatCompletionResponseChoice] = Field(
         ...,

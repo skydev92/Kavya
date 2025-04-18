@@ -245,6 +245,7 @@ class Controller:
 
         # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
         # self.model_counts[routed_model] += 1
+        logging.info(f"DEBUG : current model for _get_routed_model_for_completion is: {routed_model}")
 
         return routed_model
 
@@ -310,6 +311,7 @@ class Controller:
         get_model_args.update(kwargs)
 
         # Call get_model with all arguments
+        logging.info("DEBUG : Getting model")
         model = self.get_model(**get_model_args)
         kwargs["model"] = model
 
@@ -318,6 +320,7 @@ class Controller:
             config = kwargs["config"]
             if isinstance(config, dict):
                 # Check if model supports response_format and json_schema
+                logging.info(f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {model}")
                 supported_params = get_supported_openai_params(model=model)
                 has_schema_support = supports_response_schema(model=model)
                 
@@ -444,6 +447,7 @@ class Controller:
                         current_kwargs["messages"] = messages
                         
                         # Use litellm's acompletion directly instead of going through provider
+                        logging.info(f"DEBUG : current model for acompletion_with_fallbacks is: {current_kwargs['model']}")
                         result = await acompletion(api_base=self.api_base, api_key=self.api_key, **current_kwargs)
                         
                         # Convert Usage objects to dictionaries to ensure JSON serialization works
@@ -525,24 +529,15 @@ class Controller:
             logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
             kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
 
-        if "model" in kwargs:
-            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
-            router = router or parsed_router
-            threshold = threshold or parsed_threshold
-        
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
+        model = self.get_model(router=router, threshold=threshold, **kwargs)
+        kwargs["model"] = model
 
         # Handle structured output configuration
         if "config" in kwargs and kwargs["config"]:
             config = kwargs["config"]
             if isinstance(config, dict):
                 # Check if model supports response_format and json_schema
+                logging.info(f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {kwargs['model']}")
                 supported_params = get_supported_openai_params(model=kwargs["model"])
                 has_schema_support = supports_response_schema(model=kwargs["model"])
                 
@@ -585,6 +580,7 @@ class Controller:
         # First try with the model selected by the router or provided directly
         try:
             # Keep the existing warning suppression logic
+            logging.info(f"DEBUG : current model for Controller.acompletion is: {kwargs['model']}")
             if self.suppress_warnings:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=UserWarning)
@@ -608,11 +604,12 @@ class Controller:
                     response.choices[0].message.content = enum_response.model_dump()
 
             # If we have an original_model stored, use it in the response
+            # Problematic ?
             if hasattr(self, 'original_model'):
                 if isinstance(response, dict):
-                    response['model'] = self.original_model
+                    response['original_model'] = self.original_model
                 else:
-                    response.model = self.original_model
+                    response.original_model = self.original_model
                     
             return response
             
@@ -1317,7 +1314,7 @@ analyze only "write a one-line bio" - ignore both context length and complexity.
 Focus on whether the requested task itself needs structure and organization,
 not the structure of the provided context or reference materials.
 """
-
+        logging.info(f"DEBUG : Weak model used by default controller {default_controller.model_pair.weak}")
         routing_request = ChatCompletionRequest(
             model=default_controller.model_pair.weak,  # Always use weak model for checks
             messages=[
@@ -1488,7 +1485,8 @@ def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], com
                 error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
-                
+            
+            logging.info("DEBUG : Updating cost in database from controllers.update_token_usage")
             app.db.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=prompt_tokens,
