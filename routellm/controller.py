@@ -32,6 +32,7 @@ from routellm.models import (
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
+from routellm.web_search import evaluate_confidence, search_web, generate_search_queries, enhance_with_web_search
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
@@ -114,7 +115,7 @@ class Controller:
         
         # Load fallback configurations if available
         self.fallback_configs = config.get("fallback_configs", {})
-
+        
         router_pbar = None
         if progress_bar:
             router_pbar = tqdm(routers)
@@ -148,9 +149,11 @@ class Controller:
             return {}
 
     def check_predefined_prompt(self, message):
+        """Check if a message matches a predefined prompt and return the answer if it does."""
         for key, value in self.predefined_prompts.items():
             if key in message:
                 return value
+        
         return None
 
     def _validate_router_threshold(
@@ -458,6 +461,10 @@ class Controller:
                     ],
                     "model": "predefined_prompt"
                 }
+            
+            # Add web search results
+            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
+            kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
 
         # Capture all arguments for get_model
         frame = inspect.currentframe()
@@ -746,20 +753,22 @@ class Longwriter(Controller):
         Provide a content strategy that incorporates these principles without explicitly referencing them.
         '''
         
-        # Store the original messages for later use
-        original_messages = None
-        if hasattr(request, 'messages'):
-            original_messages = request.messages
-        
+        # Prepare messages for the LLM call
+        # Prepend the strategist system prompt to the messages from the request
+        strategist_system_prompt = {"role": "system", "content": str(dedent(content_strategist_prompt))}
+        # Ensure request.messages is not None and is a list
+        llm_messages = [strategist_system_prompt] + (request.messages if request.messages else [])
+
+        # If request.messages was empty or didn't exist, add the prompt as a user message
+        if not request.messages:
+            llm_messages.append({"role": "user", "content": str(request.prompt)})
+
         try:
             response = await acompletion(
                 api_base=self.api_base,
                 api_key=self.api_key,
                 model=model,  # Direct model use after routing decision
-                messages=[
-                    {"role": "system", "content": str(dedent(content_strategist_prompt))},
-                    {"role": "user", "content": str(request.prompt)}
-                ],
+                messages=llm_messages, # Use the combined messages list
                 response_format=ContentStrategy,
                 user=request.user  # Propagate user ID
             )
@@ -775,7 +784,7 @@ class Longwriter(Controller):
             
             strategy = ContentStrategy.model_validate_json(content)
             # Add the original messages and user ID to the strategy object
-            strategy.original_messages = original_messages
+            strategy.original_messages = request.messages
             strategy.user = request.user  # Set the user ID
             return strategy
             
@@ -991,6 +1000,7 @@ class Longwriter(Controller):
     async def content_creation_agent(self, request: ContentRequest, model: str):
         """Main content generation method that coordinates the content creation process."""
         # Ensure user ID is present in the request
+        logging.info("CONTENT_CREATION_AGENT: Starting content creation agent")
         if not hasattr(request, 'user') or not request.user:
             error_msg = "CRITICAL: No user ID provided in content creation request. Every request must be associated with a user."
             logging.error(error_msg)
@@ -1056,6 +1066,7 @@ class Longwriter(Controller):
         **kwargs,
     ):
         """Handle streaming responses for Longwriter"""
+        logging.info("WEB_SEARCH: Starting acompletion_stream")
         if "model" in kwargs:
             parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
             router = router or parsed_router
@@ -1080,6 +1091,12 @@ class Longwriter(Controller):
                 # Yield the entire predefined answer as a single token
                 yield predefined_answer, len(predefined_answer.split())
                 return  # Exit the generator after yielding the predefined answer
+        
+            # Add web search results
+            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
+            kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
+        else:
+            logging.info("WEB_SEARCH: No messages provided, skipping web search enhancement")
         
         request = ContentRequest(
             prompt=kwargs["messages"][-1]["content"],

@@ -36,6 +36,7 @@ from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
 from routellm.web_search import enhance_with_web_search
 from routellm.database_cache import DatabaseCache
 
+
 from dotenv import load_dotenv
 
 # ------------------------------------------------------------------------------
@@ -649,6 +650,16 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             messages=request.messages,
                             user=str(user_id)  # Add user ID to content request
                         ) 
+
+                        try:
+                            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
+                            # Enhance messages directly on the content_request object
+                            content_request.messages = await enhance_with_web_search(app.controllers.longwriter, content_request.messages)
+                            logging.info("WEB_SEARCH: Enhancement check complete")
+                        except Exception as web_search_error:
+                            logging.error(f"WEB_SEARCH: Error during enhancement: {web_search_error}", exc_info=True)
+                            # Proceeding without enhancement
+                        
 
                         logging.debug("Creating content strategy")
                         yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
