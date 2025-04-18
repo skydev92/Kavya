@@ -32,7 +32,7 @@ from routellm.models import (
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
-from routellm.web_search import evaluate_confidence, search_web, generate_search_queries, enhance_with_web_search
+from routellm.web_search import enhance_with_web_search
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
@@ -1065,49 +1065,7 @@ class Longwriter(Controller):
         threshold: Optional[float] = None,
         **kwargs,
     ):
-        """Handle streaming responses for Longwriter"""
-        logging.info("WEB_SEARCH: Starting acompletion_stream")
-        if "model" in kwargs:
-            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
-            router = router or parsed_router
-            threshold = threshold or parsed_threshold
-        
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
-        
-        # Check for predefined prompts in streaming context
-        if "messages" in kwargs:
-            last_message = kwargs["messages"][-1]["content"]
-            predefined_answer = self.check_predefined_prompt(last_message)
-            if predefined_answer:
-                # For predefined prompts in async generators, we need to yield the content
-                # instead of returning a dictionary
-                logging.info("Using predefined prompt response in Longwriter")
-                # Yield the entire predefined answer as a single token
-                yield predefined_answer, len(predefined_answer.split())
-                return  # Exit the generator after yielding the predefined answer
-        
-            # Add web search results
-            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
-            kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
-        else:
-            logging.info("WEB_SEARCH: No messages provided, skipping web search enhancement")
-        
-        request = ContentRequest(
-            prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags=kwargs.get("allowed_html_tags", ""),
-            allowed_html_classes=kwargs.get("allowed_html_classes", ""),
-            messages=kwargs.get("messages"),
-            user=kwargs.get("user")
-        )
-
-        async for token, token_count in self.content_creation_agent(request, kwargs["model"]):
-            yield token, token_count
+        raise NotImplementedError
             
     async def acompletion(
         self,
@@ -1116,13 +1074,8 @@ class Longwriter(Controller):
         fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
-        """Override of base acompletion to handle longwriter-specific behavior."""
-        # For streaming responses, delegate to acompletion_stream
-        if kwargs.get("stream", False):
-            return self.acompletion_stream(router=router, threshold=threshold, **kwargs)
-        
-        # For non-streaming, use the parent implementation
-        return await super().acompletion(router=router, threshold=threshold, fallbacks=fallbacks, **kwargs)
+        raise NotImplementedError
+
 
 class Controllers:
     def __init__(self, **kwargs):

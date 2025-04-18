@@ -14,8 +14,6 @@ import signal
 import time
 import shortuuid
 import re
-import subprocess
-import socket
 
 import logging
 import fastapi
