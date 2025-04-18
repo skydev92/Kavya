@@ -33,6 +33,7 @@ from routellm.auth import JWTBearer
 from routellm.models import InsufficientTokensError
 import routellm.models 
 from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
+from routellm.web_search import enhance_with_web_search
 from routellm.database_cache import DatabaseCache
 
 from dotenv import load_dotenv
