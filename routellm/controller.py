@@ -1328,7 +1328,7 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
 
 When analyzing the prompt, set these fields accurately:
 
-1. length_score: Estimate the probability (0.0-1.0) that the response will exceed 700 words based on the prompt's requirements.
+1. length_score: Estimate the probability (0.0-1.0) that the response will exceed 1000 words based on the prompt's requirements.
 
 2. needs_structure: Set to true if the content would benefit from organization into sections with headings.
 
@@ -1421,7 +1421,7 @@ For the needs_structure field specifically:
             logging.debug(f"\033[94mIs Data Dump: {analysis.is_data_dump}\033[0m")
             
             # Route to longwriter if:
-            # 1. Content will be long (> 700 words)
+            # 1. Content will be long (> 1000 words)
             # 2. Content benefits from structure
             # 3. Not just a data dump
             use_longwriter = (

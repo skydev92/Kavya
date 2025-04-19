@@ -468,7 +468,7 @@ class RoutingAnalysis(BaseModel):
     """
     length_score: float = Field(
         ...,
-        description="Probability (0.0-1.0) that response will be >700 words",
+        description="Probability (0.0-1.0) that response will be >1000 words",
         # ge=0.0,
         # le=1.0
     )
