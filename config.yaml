@@ -44,6 +44,7 @@ fallback_configs:
 
 general_settings:
     basic_router_max_chars: 5000  # Maximum characters to analyze in prompt for basic router decisions
+    routellm_force_model: "strong"  # Options: null, "strong", "weak". If set, bypasses router and uses specified model type.
 
 # Provider definitions for fallback handling
 provider_configs:

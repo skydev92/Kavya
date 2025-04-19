@@ -145,13 +145,14 @@ class Controller:
         # Require config with all necessary settings
         if not config:
             raise ValueError("Config is required")
+        self.config = config # Store the config dictionary
             
         # Validate all required config sections
-        if "model_translations" not in config:
+        if "model_translations" not in self.config:
             raise ValueError("Config must include model_translations")
-        if "general_settings" not in config:
+        if "general_settings" not in self.config:
             raise ValueError("Config must include general_settings")
-        if "basic_router_max_chars" not in config["general_settings"]:
+        if "basic_router_max_chars" not in self.config["general_settings"]:
             raise ValueError("general_settings must include basic_router_max_chars")
 
         # Initialize model pair
@@ -167,11 +168,11 @@ class Controller:
         self.user = None  # Will be set during completion calls
         
         # Load model translations
-        self.model_translations = config["model_translations"]
-        self.basic_router_max_chars = config["general_settings"]["basic_router_max_chars"]
+        self.model_translations = self.config["model_translations"]
+        self.basic_router_max_chars = self.config["general_settings"]["basic_router_max_chars"]
         
         # Load fallback configurations if available
-        self.fallback_configs = config.get("fallback_configs", {})
+        self.fallback_configs = self.config.get("fallback_configs", {})
         
         router_pbar = None
         if progress_bar:
@@ -181,7 +182,7 @@ class Controller:
         for router in routers:
             if router_pbar is not None:
                 router_pbar.set_description(f"Loading {router}")
-            self.routers[router] = ROUTER_CLS[router](**config.get(router, {}))
+            self.routers[router] = ROUTER_CLS[router](**self.config.get(router, {}))
 
         # Some Python magic to match the OpenAI Python SDK
         self.chat = SimpleNamespace(
@@ -240,6 +241,22 @@ class Controller:
     def _get_routed_model_for_completion(
         self, messages: list, router: str, threshold: float
     ):
+        # Check for forced model routing
+        routellm_force_model_setting = self.config.get("general_settings", {}).get("routellm_force_model")
+        
+        if routellm_force_model_setting == "strong":
+            logging.info(f"DEBUG: Forced routing to strong model: {self.model_pair.strong}")
+            return self.model_pair.strong
+        elif routellm_force_model_setting == "weak":
+            logging.info(f"DEBUG: Forced routing to weak model: {self.model_pair.weak}")
+            return self.model_pair.weak
+        elif routellm_force_model_setting is not None:
+            # Invalid setting: Hard fail
+            error_msg = f"Invalid value for 'routellm_force_model' in config: '{routellm_force_model_setting}'. Must be 'strong', 'weak', or null."
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+
+        # If not forced, proceed with normal routing
         prompt = messages[-1]["content"]
         routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
 
