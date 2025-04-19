@@ -103,18 +103,9 @@ async def lifespan(app: fastapi.FastAPI):
         # Store provider configurations from config for later use
         app.provider_configs = config.get("provider_configs", {}) if config else {}
         
-        # Default provider configs if not in config file
+        # Check if provider_configs are defined
         if not app.provider_configs:
-            app.provider_configs = {
-                "openai": {"models": ["gpt-4o", "gpt-4o-mini"]},
-                "anthropic": {"models": ["anthropic.claude-3-7-sonnet-20250219-v1:0"]},
-                "mistralai": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
-                "mistral": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
-                "google": {"models": ["gemini/gemini-2.0-flash"]},
-                "gemini": {"models": ["gemini/gemini-2.0-flash"]},
-                "groq": {"models": ["groq/llama3-70b-8192"]}
-            }
-            logging.warning("No provider_configs found in config file, using defaults")
+            raise ValueError("Missing required configuration: 'provider_configs' not found in config file.")
         
         # Initialize database
         app.db = Database()
