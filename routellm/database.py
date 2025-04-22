@@ -8,11 +8,8 @@ from urllib.parse import urlparse
 import random
 import socket
 import subprocess
-from typing import Optional, Tuple, Dict, Any, List
 from sqlalchemy import event, exc, create_engine
 from sqlalchemy.sql import text
-from sqlalchemy.pool import QueuePool
-from sqlalchemy.engine import Engine
 
 # Check for required PostgreSQL dependencies
 required_deps = ['google.cloud.sql.connector', 'pg8000', 'sqlalchemy']
@@ -26,8 +23,6 @@ if os.getenv("INSTANCE_CONNECTION_NAME"):  # If using Cloud SQL
             raise RuntimeError(error_msg)
 
 from google.cloud.sql.connector import Connector, IPTypes
-import pg8000
-import sqlalchemy
 
 # Configure basic logging
 logging.basicConfig(
@@ -60,7 +55,6 @@ DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0
 # https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
 # Add constants for initialization
-DEFAULT_INIT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
 DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 300000  # milliseconds (5 minutes)
 
 class DatabaseConnection:
@@ -543,145 +537,12 @@ class PostgreSQLConnection(DatabaseConnection):
             logging.info("Table storage optimized with VACUUM settings")
         except Exception as e:
             logging.warning(f"Error applying VACUUM optimizations: {str(e)}")
-    
-    def check_database_health(self):
-        """Check database health metrics related to VACUUM"""
-        try:
-            with self.engine.connect() as conn:
-                # Check for tables with high dead tuple percentages
-                result = conn.execute(text("""
-                    SELECT relname as table_name,
-                           n_dead_tup as dead_tuples,
-                           n_live_tup as live_tuples,
-                           CASE WHEN n_live_tup > 0 
-                                THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
-                                ELSE 0 
-                           END as dead_tuple_pct
-                    FROM pg_stat_user_tables
-                    WHERE n_live_tup + n_dead_tup > 0
-                    ORDER BY dead_tuple_pct DESC
-                """))
-                
-                for row in result:
-                    table_name = row[0]
-                    dead_tuple_pct = row[3]
-                    
-                    # Log warning for tables with high dead tuple percentage
-                    if dead_tuple_pct > 20:  # 20% threshold
-                        logging.warning(f"Table {table_name} has {dead_tuple_pct}% dead tuples - consider VACUUM")
-                
-                # Check transaction ID age
-                result = conn.execute(text("""
-                    SELECT datname, age(datfrozenxid) as xid_age
-                    FROM pg_database
-                    WHERE datname = current_database()
-                """))
-                
-                row = result.fetchone()
-                if row and row[1] > 1000000000:  # 1 billion threshold
-                    logging.warning(f"Database {row[0]} has transaction ID age of {row[1]} - approaching wraparound")
-                
-                return True
-        except Exception as e:
-            logging.error(f"Error checking database health: {str(e)}")
-            return False
-    
-    def run_maintenance(self, full=False):
-        """Run VACUUM ANALYZE on tables"""
-        try:
-            with self.engine.begin() as conn:
-                vacuum_type = "VACUUM FULL" if full else "VACUUM"
-                conn.execute(text(f"{vacuum_type} ANALYZE"))
-                logging.info(f"{vacuum_type} ANALYZE completed on all tables")
-                return True
-        except Exception as e:
-            logging.error(f"Error running database maintenance: {str(e)}")
-            return False
-
-    def run_vacuum(self, full=False, table_name=None):
-        """
-        Run VACUUM on the database to reclaim space and update statistics.
-        
-        Args:
-            full: Whether to run VACUUM FULL (locks tables, use during low traffic)
-            table_name: Specific table to vacuum (None for all tables)
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            connection = self._get_connection()
-            if hasattr(connection, 'run_maintenance'):
-                return connection.run_maintenance(full=full)
-            
-            # Fallback if connection doesn't have run_maintenance method
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                vacuum_type = "VACUUM FULL" if full else "VACUUM"
-                if table_name:
-                    cursor.execute(f"{vacuum_type} ANALYZE {table_name}")
-                    logging.info(f"{vacuum_type} ANALYZE completed on {table_name}")
-                else:
-                    cursor.execute(f"{vacuum_type} ANALYZE")
-                    logging.info(f"{vacuum_type} ANALYZE completed on all tables")
-                
-                return True
-        except Exception as e:
-            logging.error(f"Error running VACUUM: {str(e)}")
-            return False
 
 class Database:
     # Default balance values
     DEFAULT_TOKEN_BALANCE_IN = 3000000
     DEFAULT_TOKEN_BALANCE_OUT = 1000000
     DEFAULT_WORD_BALANCE = 10000
-    
-    # SQL Templates standardized for PostgreSQL
-    SQL_TEMPLATES = {
-        'upsert_account': """
-            INSERT INTO account_totals (account_id)
-            VALUES (%s)
-            ON CONFLICT (account_id) DO UPDATE SET
-                account_id = account_totals.account_id
-            RETURNING token_balance_in, token_balance_out, transactions
-        """,
-        'update_balance': """
-            WITH updated_totals AS (
-                UPDATE account_totals SET
-                    token_balance_in = token_balance_in - %s,
-                    token_balance_out = token_balance_out - %s,
-                    transactions = transactions + 1
-                WHERE account_id = %s
-                    AND token_balance_in >= %s 
-                    AND token_balance_out >= %s
-                RETURNING token_balance_in, token_balance_out, transactions
-            ),
-            daily_update AS (
-                INSERT INTO account_daily_summary (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
-                VALUES (%s, %s::date, %s, %s, 1)
-                ON CONFLICT(account_id, date) DO UPDATE SET
-                    transaction_count = account_daily_summary.transaction_count + 1,
-                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-            )
-            SELECT * FROM updated_totals
-        """,
-        'update_daily': """
-            INSERT INTO account_daily_summary 
-                (account_id, date, daily_token_usage_in, daily_token_usage_out, transaction_count)
-            VALUES (%s, %s::date, %s, %s, 1)
-            ON CONFLICT(account_id, date) DO UPDATE SET
-                transaction_count = COALESCE(account_daily_summary.transaction_count, 0) + 1,
-                daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-        """,
-        'check_balance': """
-            SELECT token_balance_in, token_balance_out, transactions
-            FROM account_totals
-            WHERE account_id = %s;
-        """
-    }
 
     def __init__(self):
         self.env = os.getenv("ENVIRONMENT", "dev")
@@ -767,10 +628,7 @@ class Database:
             try:
                 conn = self._get_connection()
                 # Quick validation
-                cursor = conn.get_cursor()
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
-                if result and result[0] == 1:
+                if conn.validate():
                     return conn
                 else:
                     logging.warning("Connection validation failed: unexpected result")
@@ -810,12 +668,7 @@ class Database:
                 
                 # Try to insert a test record with a more resilient approach
                 try:
-                    # Try to insert with a non-blocking approach
-                    cursor.execute("""
-                        INSERT INTO account_totals (account_id)
-                        VALUES (-999)
-                        ON CONFLICT (account_id) DO NOTHING
-                    """)
+                    self._ensure_account_exists(cursor, "-999")
                     
                     # Verify the account exists with a simple read
                     cursor.execute("""
@@ -977,131 +830,170 @@ class Database:
 
     def _ensure_tables_exist(self, connection):
         """Ensure necessary tables exist without dropping existing ones"""
-        cursor = connection.get_cursor()
-        
-        # Create account_totals table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_totals (
-            account_id INTEGER PRIMARY KEY,
-            token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
-            token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
-            word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
-            total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
-            total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
-            total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
-            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # Create account_daily_summary table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_daily_summary (
-            account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
-            date DATE NOT NULL,
-            transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-            daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
-            daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
-            daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
-            PRIMARY KEY (account_id, date)
-        )
-        """)
-        
-        # Create or update indices for better performance
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
-        ON account_totals(token_balance_in, token_balance_out, word_balance)
-        """)
-        
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
-        ON account_daily_summary(date)
-        """)
-        
-        # Update the account_totals table to include the last_updated column if it doesn't exist
         try:
-            cursor.execute("""
-            SELECT column_name FROM information_schema.columns 
-            WHERE table_name='account_totals' AND column_name='last_updated'
-            """)
-            has_last_updated = cursor.fetchone() is not None
-            
-            if not has_last_updated:
-                cursor.execute("""
-                ALTER TABLE account_totals 
-                ADD COLUMN last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                """)
-                logging.info("Added last_updated column to account_totals table")
-                
+            connection._ensure_tables_exist(connection)
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
         
         if self.env == "dev":
             connection.commit()
-            
-    def check_database_health(self) -> bool:
-        """Perform a comprehensive check of database connectivity and functionality
-        
-        Returns:
-            bool: True if database is healthy, False otherwise
-        """
-        try:
-            # Get a validated connection first
-            connection = self.get_validated_connection()
-            
-            # Perform basic health checks
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                # Test 1: Simple query execution
-                cursor.execute("SELECT 1 as test")
-                if cursor.fetchone()[0] != 1:
-                    logging.error("Database health check failed: Basic query test failed")
-                    return False
-                
-                # Test 2: Transaction isolation
-                # First create test data if it doesn't exist
-                cursor.execute("""
-                INSERT INTO account_totals (account_id, token_balance_in, token_balance_out)
-                VALUES (-9999, 1000, 1000)
-                ON CONFLICT (account_id) DO UPDATE SET
-                    token_balance_in = 1000,
-                    token_balance_out = 1000
-                """)
-                
-                # Update the balance and verify it works
-                cursor.execute("""
-                UPDATE account_totals 
-                SET token_balance_in = token_balance_in - 1,
-                    last_updated = CURRENT_TIMESTAMP
-                WHERE account_id = -9999
-                RETURNING token_balance_in
-                """)
-                
-                result = cursor.fetchone()
-                if not result or float(result[0]) != 999:
-                    logging.error("Database health check failed: Transaction test failed")
-                    return False
-                
-                # Test 3: Advisory lock functionality
-                cursor.execute(f"SELECT pg_try_advisory_xact_lock({PG_LOCK_NAMESPACE}, -9999)")
-                if not cursor.fetchone()[0]:
-                    logging.error("Database health check failed: Advisory lock test failed")
-                    return False
-                
-            # Successfully passed all tests
-            logging.info("Database health check completed successfully")
-            return True
-            
-        except Exception as e:
-            logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
-            return False
+    
+    def _ensure_account_exists(self, cursor, account_id):
+        cursor.execute("""
+            INSERT INTO account_totals 
+                (account_id, token_balance_in, token_balance_out, word_balance,
+                    total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
+            VALUES 
+                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
+            ON CONFLICT (account_id) DO NOTHING
+        """, (account_id,))
+        return True
 
-    def _get_sql(self, template_name: str) -> str:
-        """Get SQL query with correct parameter style for current environment."""
-        return self.SQL_TEMPLATES[template_name].format(
-            placeholder=self.param_style
-        ).strip()
+    def _check_error_message(error_type, error_msg, backoff_base, retry_count):
+        # Check for specific errors that might be retryable
+        is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
+        is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
+        is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
+        is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
+        is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
+        is_failed_transaction = "in failed transaction" in error_msg.lower()
+        is_lock_contention = "could not acquire lock" in error_msg.lower()
+        
+        # For recoverable errors, retry with backoff
+        is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
+                        is_serialize_failure or is_transaction_aborted or 
+                        is_failed_transaction or is_lock_contention)
+        wait_time = None
+        error_category = "unknown"
+
+        if is_retryable :
+            # Shorter exponential backoff with small random jitter
+            backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
+            jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
+            wait_time = backoff + jitter
+            
+            # Log specific error type for better debugging
+            if is_lock_timeout:
+                error_category = "lock timeout"
+            elif is_statement_timeout:
+                error_category = "statement timeout"
+            elif is_deadlock:
+                error_category = "deadlock"
+            elif is_serialize_failure:
+                error_category = "serialization failure"
+            elif is_transaction_aborted or is_failed_transaction:
+                error_category = "transaction aborted"
+            elif is_lock_contention:
+                error_category = "lock contention"
+        return {
+            "is_retryable" : is_retryable,
+            "error_category" : error_category,
+            "wait_time" : wait_time,
+            "wait_time_seconds" : wait_time / 1000.0
+        }
+
+    def _update_balance(self, cursor, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int, transaction_id: str) -> None:
+        # First ensure the account exists in a separate transaction to avoid lock contention
+        try:
+            self._ensure_account_exists(cursor, account_id)
+        except Exception as e:
+            logging.warning(f"[ID: {transaction_id}] Account creation attempt failed: {str(e)}")
+        
+        # Now update the account balance
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
+        # This will either update immediately or skip if locked
+        cursor.execute("""
+            WITH locked_account AS (
+                SELECT account_id 
+                FROM account_totals 
+                WHERE account_id = %s
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE account_totals
+            SET token_balance_in = GREATEST(0, token_balance_in - %s),
+                token_balance_out = GREATEST(0, token_balance_out - %s), 
+                word_balance = GREATEST(0, word_balance - %s),
+                transactions = transactions + 1,
+                total_token_usage_in = total_token_usage_in + %s,
+                total_token_usage_out = total_token_usage_out + %s,
+                total_word_usage = total_word_usage + %s,
+                last_updated = CURRENT_TIMESTAMP
+            WHERE account_id = %s
+                AND account_id IN (SELECT account_id FROM locked_account)
+                AND token_balance_in >= %s
+                AND token_balance_out >= %s
+                AND word_balance >= %s
+            RETURNING token_balance_in, token_balance_out, word_balance, 
+                    transactions, total_token_usage_in, total_token_usage_out, 
+                    total_word_usage
+        """, (
+            account_id,
+            prompt_tokens, completion_tokens, word_count,
+            prompt_tokens, completion_tokens, word_count,
+            account_id, 
+            prompt_tokens, completion_tokens, word_count
+        ))
+        
+        updated_result = cursor.fetchone()
+        if not updated_result:
+            # Check if it's a lock issue or insufficient balance
+            cursor.execute("""
+                SELECT token_balance_in, token_balance_out, word_balance,
+                        pg_try_advisory_lock(account_id) as has_lock
+                FROM account_totals 
+                WHERE account_id = %s
+            """, (account_id,))
+            
+            balance = cursor.fetchone()
+            
+            if balance:
+                if not balance[3]:  # Could not get advisory lock
+                    # This is likely a lock contention issue, retry
+                    raise RuntimeError("Could not acquire lock on account, will retry")
+                
+                # Check if it's an insufficient balance issue
+                if (balance[0] < prompt_tokens or 
+                    balance[1] < completion_tokens or 
+                    balance[2] < word_count):
+                    logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
+                    raise RuntimeError(f"Insufficient token balance for account {account_id}")
+                else:
+                    # Some other issue, retry
+                    raise RuntimeError("Update failed but account exists and has sufficient balance, will retry")
+            else:
+                # This should never happen with our upsert, but just in case
+                raise RuntimeError(f"Failed to create or update account {account_id}")
+    
+        # Now update the daily summary in a new transaction to avoid failures affecting the balance update
+        try:
+            cursor.execute("""
+                INSERT INTO account_daily_summary 
+                (account_id, date, transaction_count, daily_token_usage_in, 
+                    daily_token_usage_out, daily_word_usage)
+                VALUES (%s, %s, 1, %s, %s, %s)
+                ON CONFLICT (account_id, date) DO UPDATE SET
+                    transaction_count = account_daily_summary.transaction_count + 1,
+                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
+                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
+                    daily_word_usage = account_daily_summary.daily_word_usage + EXCLUDED.daily_word_usage
+            """, (account_id, today, prompt_tokens, completion_tokens, word_count))
+        except Exception as daily_error:
+            # If daily summary update fails but balance update succeeded, log warning but continue
+            logging.warning(f"[ID: {transaction_id}] Daily summary update failed but balance updated: {str(daily_error)}")
+        
+        # Success! Get the updated balance
+        final_balance = {
+            'token_balance_in': float(updated_result[0]),
+            'token_balance_out': float(updated_result[1]),
+            'word_balance': int(updated_result[2]),
+            'transactions': int(updated_result[3]),
+            'total_token_usage_in': float(updated_result[4]),
+            'total_token_usage_out': float(updated_result[5]),
+            'total_word_usage': int(updated_result[6])
+        }
+        return final_balance
 
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0) -> None:
         """Update account usage with response data.
@@ -1134,115 +1026,7 @@ class Database:
                 
                 # Use a simpler, more direct transaction
                 with self.get_transaction() as db:
-                    cursor = db.get_cursor()
-                    
-                    # First ensure the account exists in a separate transaction to avoid lock contention
-                    try:
-                        cursor.execute("""
-                            INSERT INTO account_totals 
-                                (account_id, token_balance_in, token_balance_out, word_balance,
-                                 total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                            VALUES 
-                                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                            ON CONFLICT (account_id) DO NOTHING
-                        """, (account_id,))
-                    except Exception as e:
-                        logging.warning(f"[ID: {transaction_id}] Account creation attempt failed: {str(e)}")
-                    
-                    # Now update the account balance
-                    today = datetime.now().strftime("%Y-%m-%d")
-                    
-                    # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
-                    # This will either update immediately or skip if locked
-                    cursor.execute("""
-                        WITH locked_account AS (
-                            SELECT account_id 
-                            FROM account_totals 
-                            WHERE account_id = %s
-                            FOR UPDATE SKIP LOCKED
-                        )
-                        UPDATE account_totals
-                        SET token_balance_in = GREATEST(0, token_balance_in - %s),
-                            token_balance_out = GREATEST(0, token_balance_out - %s), 
-                            word_balance = GREATEST(0, word_balance - %s),
-                            transactions = transactions + 1,
-                            total_token_usage_in = total_token_usage_in + %s,
-                            total_token_usage_out = total_token_usage_out + %s,
-                            total_word_usage = total_word_usage + %s,
-                            last_updated = CURRENT_TIMESTAMP
-                        WHERE account_id = %s
-                          AND account_id IN (SELECT account_id FROM locked_account)
-                          AND token_balance_in >= %s
-                          AND token_balance_out >= %s
-                          AND word_balance >= %s
-                        RETURNING token_balance_in, token_balance_out, word_balance, 
-                                transactions, total_token_usage_in, total_token_usage_out, 
-                                total_word_usage
-                    """, (
-                        account_id,
-                        prompt_tokens, completion_tokens, word_count,
-                        prompt_tokens, completion_tokens, word_count,
-                        account_id, 
-                        prompt_tokens, completion_tokens, word_count
-                    ))
-                    
-                    updated_result = cursor.fetchone()
-                    if not updated_result:
-                        # Check if it's a lock issue or insufficient balance
-                        cursor.execute("""
-                            SELECT token_balance_in, token_balance_out, word_balance,
-                                   pg_try_advisory_lock(account_id) as has_lock
-                            FROM account_totals 
-                            WHERE account_id = %s
-                        """, (account_id,))
-                        
-                        balance = cursor.fetchone()
-                        
-                        if balance:
-                            if not balance[3]:  # Could not get advisory lock
-                                # This is likely a lock contention issue, retry
-                                raise RuntimeError("Could not acquire lock on account, will retry")
-                            
-                            # Check if it's an insufficient balance issue
-                            if (balance[0] < prompt_tokens or 
-                                balance[1] < completion_tokens or 
-                                balance[2] < word_count):
-                                logging.error(f"Insufficient balance for account {account_id}: has ({balance[0]}, {balance[1]}, {balance[2]}), needs ({prompt_tokens}, {completion_tokens}, {word_count})")
-                                raise RuntimeError(f"Insufficient token balance for account {account_id}")
-                            else:
-                                # Some other issue, retry
-                                raise RuntimeError("Update failed but account exists and has sufficient balance, will retry")
-                        else:
-                            # This should never happen with our upsert, but just in case
-                            raise RuntimeError(f"Failed to create or update account {account_id}")
-                
-                    # Now update the daily summary in a new transaction to avoid failures affecting the balance update
-                    try:
-                        cursor.execute("""
-                            INSERT INTO account_daily_summary 
-                            (account_id, date, transaction_count, daily_token_usage_in, 
-                             daily_token_usage_out, daily_word_usage)
-                            VALUES (%s, %s, 1, %s, %s, %s)
-                            ON CONFLICT (account_id, date) DO UPDATE SET
-                                transaction_count = account_daily_summary.transaction_count + 1,
-                                daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                                daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out,
-                                daily_word_usage = account_daily_summary.daily_word_usage + EXCLUDED.daily_word_usage
-                        """, (account_id, today, prompt_tokens, completion_tokens, word_count))
-                    except Exception as daily_error:
-                        # If daily summary update fails but balance update succeeded, log warning but continue
-                        logging.warning(f"[ID: {transaction_id}] Daily summary update failed but balance updated: {str(daily_error)}")
-                    
-                    # Success! Get the updated balance
-                    final_balance = {
-                        'token_balance_in': float(updated_result[0]),
-                        'token_balance_out': float(updated_result[1]),
-                        'word_balance': int(updated_result[2]),
-                        'transactions': int(updated_result[3]),
-                        'total_token_usage_in': float(updated_result[4]),
-                        'total_token_usage_out': float(updated_result[5]),
-                        'total_word_usage': int(updated_result[6])
-                    }
+                    final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
                     
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
@@ -1257,44 +1041,12 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                # Check for specific errors that might be retryable
-                is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
-                is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
-                is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
-                is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
-                is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
-                is_failed_transaction = "in failed transaction" in error_msg.lower()
-                is_lock_contention = "could not acquire lock" in error_msg.lower()
-                
-                # For recoverable errors, retry with backoff
-                is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
-                               is_serialize_failure or is_transaction_aborted or 
-                               is_failed_transaction or is_lock_contention)
+                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                is_retryable = error_data["is_retryable"]
+                wait_time_seconds = error_data["wait_time_seconds"]
+                error_category = error_data["error_category"]
                 
                 if is_retryable and retry_count < max_retries:
-                    # Shorter exponential backoff with small random jitter
-                    backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
-                    jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
-                    wait_time = backoff + jitter
-                    
-                    # Log specific error type for better debugging
-                    error_category = "unknown"
-                    if is_lock_timeout:
-                        error_category = "lock timeout"
-                    elif is_statement_timeout:
-                        error_category = "statement timeout"
-                    elif is_deadlock:
-                        error_category = "deadlock"
-                    elif is_serialize_failure:
-                        error_category = "serialization failure"
-                    elif is_transaction_aborted or is_failed_transaction:
-                        error_category = "transaction aborted"
-                    elif is_lock_contention:
-                        error_category = "lock contention"
-                    
-                    # Convert milliseconds to seconds for sleep
-                    wait_time_seconds = wait_time / 1000.0
-                    
                     logging.warning(
                         f"[ID: {transaction_id}] Database {error_category} detected "
                         f"(attempt {retry_count}/{max_retries}): {error_type}: {error_msg}. "
@@ -1518,19 +1270,11 @@ class Database:
                 
                 # Skip setting timeouts as they're already configured as needed
                 
-                # First ensure the account exists with a non-blocking insert
                 try:
+                    # First ensure the account exists with a non-blocking insert
                     # Use a separate connection for the insert to avoid transaction conflicts
                     with self.get_transaction() as db:
-                        insert_cursor = db.get_cursor()
-                        insert_cursor.execute("""
-                            INSERT INTO account_totals 
-                                (account_id, token_balance_in, token_balance_out, word_balance,
-                                 total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                            VALUES 
-                                (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                            ON CONFLICT (account_id) DO NOTHING
-                        """, (account_id,))
+                        self._ensure_account_exists(db.get_cursor(), account_id)
                 except Exception as e:
                     # Log but continue - if account exists this will fail harmlessly
                     logging.debug(f"[ID: {transaction_id}] Account creation attempt (non-critical): {str(e)}")
@@ -1585,36 +1329,12 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                # Detect specific error types for better handling
-                is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
-                is_statement_timeout = "statement timeout" in error_msg.lower() or "57014" in error_msg
-                is_deadlock = "deadlock detected" in error_msg.lower() or "40P01" in error_msg
-                is_serialize_failure = "could not serialize access" in error_msg.lower() or "40001" in error_msg
-                is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
-                is_failed_transaction = "in failed transaction" in error_msg.lower()
-                
-                # For recoverable errors, retry with backoff
-                is_retryable = is_lock_timeout or is_statement_timeout or is_deadlock or is_serialize_failure or is_transaction_aborted or is_failed_transaction
-                
+                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                is_retryable = error_data["is_retryable"]
+                wait_time = error_data["wait_time"]
+                error_category = error_data["error_category"]
+
                 if is_retryable and retry_count < max_retries:
-                    # Shorter exponential backoff with small random jitter
-                    backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
-                    jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
-                    wait_time = backoff + jitter
-                    
-                    # Identify error category for logging
-                    error_category = "unknown"
-                    if is_lock_timeout:
-                        error_category = "lock timeout"
-                    elif is_statement_timeout:
-                        error_category = "statement timeout"
-                    elif is_deadlock:
-                        error_category = "deadlock"
-                    elif is_serialize_failure:
-                        error_category = "serialization failure"
-                    elif is_transaction_aborted or is_failed_transaction:
-                        error_category = "transaction aborted"
-                    
                     logging.warning(f"[ID: {transaction_id}] Balance check {error_category} error (attempt {retry_count}/{max_retries}): {error_type}: {error_msg}")
                     time.sleep(wait_time)
                 else:
@@ -1767,145 +1487,3 @@ class Database:
                 daily_word_usage=int(row[4])
             ))
         return results
-
-    def update_multiple_accounts(self, account_updates: list[tuple[int, int, int]]) -> dict:
-        """Update multiple account balances using SKIP LOCKED for concurrent processing.
-        
-        This method is optimized for batch processing multiple accounts efficiently,
-        leveraging PostgreSQL's SKIP LOCKED feature to avoid contention.
-        
-        Args:
-            account_updates: List of tuples (account_id, prompt_tokens, completion_tokens)
-            
-        Returns:
-            dict: Dictionary mapping account_ids to update results (success/failure)
-        """
-        transaction_id = f"batch-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
-        logging.info(f"=== BATCH UPDATE START [ID: {transaction_id}] ===")
-        logging.info(f"Updating {len(account_updates)} accounts")
-        
-        results = {}
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        try:
-            with self.get_transaction() as db:
-                cursor = db.get_cursor()
-                
-                # Skip setting timeouts as they're already configured as needed
-                
-                # Process each account update with SKIP LOCKED to prevent blocking
-                for account_id, prompt_tokens, completion_tokens in account_updates:
-                    word_count = 0  # Default to 0 for batch processing
-                    
-                    try:
-                        # Try to process this account with SKIP LOCKED to avoid contention
-                        cursor.execute("""
-                            WITH account_init AS (
-                                INSERT INTO account_totals 
-                                    (account_id, token_balance_in, token_balance_out, word_balance,
-                                    total_token_usage_in, total_token_usage_out, total_word_usage, transactions)
-                                VALUES 
-                                    (%s, 3000000, 1000000, 10000, 0, 0, 0, 0)
-                                ON CONFLICT (account_id) DO NOTHING
-                            ),
-                            account_row AS (
-                                SELECT * FROM account_totals 
-                                WHERE account_id = %s
-                                FOR UPDATE SKIP LOCKED
-                            ),
-                            balance_update AS (
-                                UPDATE account_totals a
-                                SET token_balance_in = a.token_balance_in - %s,
-                                    token_balance_out = a.token_balance_out - %s,
-                                    transactions = a.transactions + 1,
-                                    total_token_usage_in = a.total_token_usage_in + %s,
-                                    total_token_usage_out = a.total_token_usage_out + %s,
-                                    last_updated = CURRENT_TIMESTAMP
-                                FROM account_row
-                                WHERE a.account_id = account_row.account_id
-                                  AND account_row.token_balance_in >= %s
-                                  AND account_row.token_balance_out >= %s
-                                RETURNING a.token_balance_in, a.token_balance_out, a.transactions
-                            ),
-                            daily_update AS (
-                                INSERT INTO account_daily_summary 
-                                (account_id, date, transaction_count, daily_token_usage_in, daily_token_usage_out)
-                                SELECT %s, %s, 1, %s, %s
-                                WHERE EXISTS (SELECT 1 FROM balance_update)
-                                ON CONFLICT (account_id, date) 
-                                DO UPDATE SET
-                                    transaction_count = account_daily_summary.transaction_count + 1,
-                                    daily_token_usage_in = account_daily_summary.daily_token_usage_in + EXCLUDED.daily_token_usage_in,
-                                    daily_token_usage_out = account_daily_summary.daily_token_usage_out + EXCLUDED.daily_token_usage_out
-                            )
-                            SELECT * FROM balance_update
-                        """, (
-                            account_id, 
-                            account_id,
-                            prompt_tokens, completion_tokens, 
-                            prompt_tokens, completion_tokens,
-                            account_id, today, prompt_tokens, completion_tokens
-                        ))
-                        
-                        result = cursor.fetchone()
-                        if result:
-                            results[account_id] = {
-                                "success": True,
-                                "token_balance_in": float(result[0]),
-                                "token_balance_out": float(result[1]),
-                                "transactions": int(result[2])
-                            }
-                        else:
-                            # Account was either locked or had insufficient balance
-                            cursor.execute("""
-                                SELECT token_balance_in, token_balance_out, transactions 
-                                FROM account_totals 
-                                WHERE account_id = %s
-                            """, (account_id,))
-                            
-                            balance = cursor.fetchone()
-                            if balance:
-                                reason = ("locked" if balance[0] >= prompt_tokens and balance[1] >= completion_tokens 
-                                          else "insufficient_balance")
-                                results[account_id] = {
-                                    "success": False,
-                                    "reason": reason,
-                                    "token_balance_in": float(balance[0]),
-                                    "token_balance_out": float(balance[1]),
-                                    "transactions": int(balance[2])
-                                }
-                            else:
-                                results[account_id] = {
-                                    "success": False,
-                                    "reason": "account_not_found"
-                                }
-                    except Exception as e:
-                        # Log per-account errors but continue with other accounts
-                        error_type = type(e).__name__
-                        error_msg = str(e)
-                        logging.error(f"Error updating account {account_id}: {error_type}: {error_msg}")
-                        results[account_id] = {
-                            "success": False,
-                            "reason": f"error: {error_type}",
-                            "message": error_msg
-                        }
-                
-                # Success for the overall batch operation
-                logging.info(f"=== BATCH UPDATE COMPLETED [ID: {transaction_id}] ===")
-                logging.info(f"Successfully processed {sum(1 for r in results.values() if r.get('success', False))} of {len(account_updates)} accounts")
-                
-                return results
-                
-        except Exception as e:
-            # Overall batch operation failure
-            error_type = type(e).__name__
-            error_msg = str(e)
-            logging.error(f"=== BATCH UPDATE FAILED [ID: {transaction_id}] ===")
-            logging.error(f"Error: {error_type}: {error_msg}")
-            
-            # Return partial results if available
-            if not results:
-                results = {account_id: {"success": False, "reason": f"batch_error: {error_type}"} 
-                           for account_id, _, _ in account_updates}
-            
-            return results

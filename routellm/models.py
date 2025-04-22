@@ -88,7 +88,7 @@ def create_chunk_response(token: str, response_id: str, created_time: int, model
         'usage': usage
     }
 
-async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator], controller=None, completion_tokens: int = 0) -> AsyncGenerator:
+async def create_stream_response(app, response: Union[Dict[str, Any], AsyncGenerator], controller=None, completion_tokens: int = 0) -> AsyncGenerator:
     """Create a streaming response in the OpenAI format."""
     logging.debug("Processing stream response")
     
@@ -184,10 +184,7 @@ async def create_stream_response(response: Union[Dict[str, Any], AsyncGenerator]
     # Update database with word count if we have a controller with user info
     if hasattr(controller, 'user') and word_count > 0:
         try:
-            from routellm.database import Database
-            db = Database()
-            logging.info("DEBUG : Updating cost in database from models.create_stream_response")
-            db.update_usage_with_response(
+            app.cache.update_usage_with_response(
                 account_id=int(controller.user),
                 prompt_tokens=initial_usage['prompt_tokens'],
                 completion_tokens=controller.cost_tracker.completion_tokens if hasattr(controller, 'cost_tracker') else 0,
@@ -480,6 +477,12 @@ class RoutingAnalysis(BaseModel):
         ...,
         description="If it's primarily a list/data without narrative"
     )
+
+class WebSearchResult(BaseModel):
+    """Search result from web."""
+    title: str
+    url: str
+    summary: str
 
 class ConfidenceEvaluation(BaseModel):
     """Model confidence evaluation."""

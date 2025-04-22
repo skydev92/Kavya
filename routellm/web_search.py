@@ -1,4 +1,5 @@
 import os
+
 import logging
 import re
 import httpx
@@ -185,6 +186,7 @@ If you're less than 70% confident, set search_required to true."""
     
     content = response["choices"][0]["message"]["content"].strip()
     
+    import json
     try:
         json_data = json.loads(content)
         

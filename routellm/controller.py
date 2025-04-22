@@ -2,17 +2,15 @@ import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Optional, Callable, AsyncGenerator, List, Tuple, Set, Dict
+from typing import Any, Optional, AsyncGenerator, List, Tuple
 
 import pandas as pd
 import litellm
 from litellm import (
     acompletion, 
     completion, 
-    batch_completion, 
     get_supported_openai_params,
     supports_response_schema,
-    supports_function_calling
 )
 from textwrap import dedent
 from tqdm import tqdm
@@ -21,47 +19,21 @@ import os
 import json
 import logging
 import sys
-import re
 import inspect
 import enum
 from threading import Lock
-import time
 import asyncio
 import random
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
     HTMLTagStrategy, OutlineSection, ContentOutline, 
-    ContentDraft, FullContent, RoutingAnalysis
+    RoutingAnalysis
 )
 from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
-from routellm.web_search import evaluate_confidence, search_web, enhance_with_web_search
+from routellm.web_search import enhance_with_web_search
 
-# Model translation mapping
-def get_model_translations(config):
-    """Get model translations from config."""
-    if not config or "model_translations" not in config:
-        raise ValueError("Config must include model_translations")
-    return config["model_translations"]
-
-# Default config for routers augmented using golden label data from GPT-4.
-# This is exactly the same as config.example.yaml.
-GPT_4_AUGMENTED_CONFIG = {
-    "sw_ranking": {
-        "arena_battle_datasets": [
-            "lmsys/lmsys-arena-human-preference-55k",
-            "routellm/gpt4_judge_battles",
-        ],
-        "arena_embedding_datasets": [
-            "routellm/arena_battles_embeddings",
-            "routellm/gpt4_judge_battles_embeddings",
-        ],
-    },
-    "causal_llm": {"checkpoint_path": "routellm/causal_llm_gpt4_augmented"},
-    "bert": {"checkpoint_path": "routellm/bert_gpt4_augmented"},
-    "mf": {"checkpoint_path": "routellm/mf_gpt4_augmented"},
-}
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
@@ -75,36 +47,10 @@ logging.basicConfig(
 class RoutingError(Exception):
     pass
 
-class AgentMemory:
-    """
-    Stores data that can be used to augment the context of a chat completion request.
-
-    This can be used to store data that is relevant to the entire conversation, and
-    can be used by the router to make routing decisions.
-
-    Attributes:
-        data (Dict[str, Any]): a dictionary of key-value pairs, where the key is a
-            string and the value is any type of object.
-    """
-
-    def __init__(self):
-        self.data: Dict[str, Any] = {}
-
-    def set(self, key: str, value: Any):
-        self.data[key] = value
-
-    def get(self, key: str) -> Any:
-        return self.data.get(key)
-
-    def clear(self):
-        self.data.clear()
-
-
 @dataclass
 class ModelPair:
     strong: str
     weak: str
-
 
 class RequestCostTracker:
     def __init__(self):
@@ -160,11 +106,9 @@ class Controller:
         self.routers = {}
         self.api_base = api_base
         self.api_key = api_key
-        self.model_counts = defaultdict(lambda: defaultdict(int))
         self.progress_bar = progress_bar
         self.suppress_warnings = suppress_warnings
         self.cost_tracker = RequestCostTracker()
-        self.memory = AgentMemory()
         self.user = None  # Will be set during completion calls
         
         # Load model translations
@@ -276,6 +220,7 @@ class Controller:
             prompts, threshold, self.model_pair
         )
 
+    # Unused
     def route(self, prompt: str, router: str, threshold: float):
         self._validate_router_threshold(router, threshold)
 
@@ -808,7 +753,6 @@ class Longwriter(Controller):
         # Initialize content writer messages
         self.content_writer_messages = None
         self.cost_tracker = RequestCostTracker()
-        self.memory = AgentMemory()
 
     async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
         logging.info(f"Making completion call for content strategy using model: {model}")
@@ -1142,49 +1086,8 @@ class Longwriter(Controller):
         threshold: Optional[float] = None,
         **kwargs,
     ):
-        """Handle streaming responses for Longwriter"""
-        logging.info("WEB_SEARCH: Starting acompletion_stream")
-        if "model" in kwargs:
-            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
-            router = router or parsed_router
-            threshold = threshold or parsed_threshold
-        
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
-        
-        # Check for predefined prompts in streaming context
-        if "messages" in kwargs:
-            last_message = kwargs["messages"][-1]["content"]
-            predefined_answer = self.check_predefined_prompt(last_message)
-            if predefined_answer:
-                # For predefined prompts in async generators, we need to yield the content
-                # instead of returning a dictionary
-                logging.info("Using predefined prompt response in Longwriter")
-                # Yield the entire predefined answer as a single token
-                yield predefined_answer, len(predefined_answer.split())
-                return  # Exit the generator after yielding the predefined answer
-        
-            # Add web search results
-            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
-            kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
-        else:
-            logging.info("WEB_SEARCH: No messages provided, skipping web search enhancement")
-        
-        request = ContentRequest(
-            prompt=kwargs["messages"][-1]["content"],
-            allowed_html_tags=kwargs.get("allowed_html_tags", ""),
-            allowed_html_classes=kwargs.get("allowed_html_classes", ""),
-            messages=kwargs.get("messages"),
-            user=kwargs.get("user")
-        )
+        raise NotImplementedError
 
-        async for token, token_count in self.content_creation_agent(request, kwargs["model"]):
-            yield token, token_count
             
     async def acompletion(
         self,
@@ -1193,13 +1096,8 @@ class Longwriter(Controller):
         fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
-        """Override of base acompletion to handle longwriter-specific behavior."""
-        # For streaming responses, delegate to acompletion_stream
-        if kwargs.get("stream", False):
-            return self.acompletion_stream(router=router, threshold=threshold, **kwargs)
-        
-        # For non-streaming, use the parent implementation
-        return await super().acompletion(router=router, threshold=threshold, fallbacks=fallbacks, **kwargs)
+        raise NotImplementedError
+
 
 class Controllers:
     def __init__(self, **kwargs):
@@ -1502,9 +1400,8 @@ def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], com
                 error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
-            
             logging.info("DEBUG : Updating cost in database from controllers.update_token_usage")
-            app.db.update_usage_with_response(
+            app.cache.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens

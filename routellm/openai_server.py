@@ -14,8 +14,6 @@ import signal
 import time
 import shortuuid
 import re
-import subprocess
-import socket
 
 import logging
 import fastapi
@@ -34,6 +32,7 @@ from routellm.models import InsufficientTokensError
 import routellm.models 
 from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
 from routellm.web_search import enhance_with_web_search
+from routellm.database_cache import DatabaseCache
 
 from dotenv import load_dotenv
 
@@ -143,7 +142,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+app.cache = DatabaseCache(app)
 
 # ------------------------------------------------------------------------------
 # UTILITY ENDPOINTS
@@ -247,88 +246,6 @@ async def health_check():
     </html>
     """
     return HTMLResponse(content=html_content, status_code=200)
-
-@app.get("/health/db")
-async def health_db():
-    """Check database health and connection status"""
-    try:
-        # Get database connection
-        db = app.db
-        
-        # Check if Cloud SQL Proxy is running (if applicable)
-        cloud_sql_proxy_running = False
-        if os.getenv("INSTANCE_CONNECTION_NAME"):
-            try:
-                # Check if cloud_sql_proxy process is running
-                result = subprocess.run(
-                    ["pgrep", "-f", "cloud_sql_proxy"], 
-                    capture_output=True, 
-                    text=True
-                )
-                cloud_sql_proxy_running = result.returncode == 0
-                
-                if not cloud_sql_proxy_running:
-                    logging.warning("Cloud SQL Proxy does not appear to be running")
-            except Exception as e:
-                logging.error(f"Error checking Cloud SQL Proxy status: {str(e)}")
-        
-        # Check if port 5432 is open
-        port_open = False
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1)
-                result = s.connect_ex(('127.0.0.1', 5432))
-                port_open = result == 0
-                
-            if not port_open:
-                logging.warning("PostgreSQL port 5432 is not open")
-        except Exception as e:
-            logging.error(f"Error checking PostgreSQL port status: {str(e)}")
-        
-        # Validate database connection using a simple query
-        connection = db.get_validated_connection()
-        cursor = connection.get_cursor()
-        cursor.execute("SELECT 1")
-        result = cursor.fetchone()
-            
-        # Get connection pool stats if available
-        pool_stats = {}
-        if hasattr(db, '_local') and hasattr(db._local, 'db') and hasattr(db._local.db, 'engine'):
-            engine = db._local.db.engine
-            if hasattr(engine, 'pool'):
-                pool = engine.pool
-                pool_stats = {
-                    "pool_size": getattr(pool, 'size', None),
-                    "pool_overflow": getattr(pool, 'overflow', None),
-                    "pool_checked_out": getattr(pool, 'checkedout', None),
-                }
-            
-        # Return health status
-        return {
-            "status": "healthy",
-            "message": "Database connection is working properly",
-            "timestamp": datetime.now().isoformat(),
-            "query_result": result[0] if result else None,
-            "environment": os.getenv("ENVIRONMENT", "unknown"),
-            "instance_connection_name": os.getenv("INSTANCE_CONNECTION_NAME", "N/A"),
-            "cloud_sql_proxy": {
-                "running": cloud_sql_proxy_running,
-                "port_open": port_open
-            },
-            "connection_pool": pool_stats
-        }
-    except Exception as e:
-        logging.error(f"Database health check failed: {type(e).__name__}: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "unhealthy",
-                "message": f"Database connection failed: {str(e)}",
-                "timestamp": datetime.now().isoformat(),
-                "error_type": type(e).__name__,
-                "environment": os.getenv("ENVIRONMENT", "unknown"),
-            }
-        )
 
 @app.get("/v1/account/balance")
 async def get_account_balance(user_id: int = Depends(JWTBearer())):
@@ -579,7 +496,8 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     
     # Check balance without updating
     try:
-        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
+        logging.info("CHECKING BALANCE")
+        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
@@ -642,7 +560,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         routing_cost = cost_tracker.get_total()
         remaining_prompt_tokens = estimated_prompt_tokens - routing_cost
         
-        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
+        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(remaining_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
@@ -802,9 +720,9 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         
                         # Update database with final word count
                         try:
+                            logging.debug("Updating word count in database")
                             final_word_count = count_words(word_buffer)
-                            logging.info("DEBUG : Updating cost in database")
-                            app.db.update_usage_with_response(
+                            app.cache.update_usage_with_response(
                                 account_id=int(user_id),
                                 prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                                 completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
@@ -1093,8 +1011,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             
                             # Update token usage in database
                             try:
-                                logging.info("DEBUG : Updating cost in database #2")
-                                app.db.update_usage_with_response(
+                                app.cache.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
                                     completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
