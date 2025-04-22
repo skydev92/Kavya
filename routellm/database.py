@@ -1027,7 +1027,7 @@ class Database:
                 # Use a simpler, more direct transaction
                 with self.get_transaction() as db:
                     final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
-                    
+                    db.commit()
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
                     

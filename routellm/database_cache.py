@@ -23,6 +23,8 @@ class DatabaseCache:
             result = self.app.db.check_sufficient_balance(account_id, prompt_tokens, completion_tokens, word_count)
             current_balance = result[1]
             current_balance["creation"] = time.time()
+        
+        logging.info("DATA AGE IN SECONDS : " + str(time.time() - current_balance["creation"]))
 
         # Calculate sufficient balance directly
         token_balance_in = float(current_balance["token_balance_in"])
