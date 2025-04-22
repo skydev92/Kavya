@@ -1029,7 +1029,7 @@ class Database:
                     final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
                     db.commit()
 
-                    alance_msg = f"\n====== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ======\n"
+                    balance_msg = f"\n====== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ======\n"
                     balance_msg += f"Account: {account_id}\n"
                     balance_msg += f"Final Balance: {final_balance}\n"
                     balance_msg += f"================================================================"
