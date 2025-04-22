@@ -1,17 +1,36 @@
 import os
-
 import logging
 import re
 import httpx
 import asyncio
 import json
+import yaml
 from typing import List, Optional
 from datetime import datetime
 
-from routellm.models import ConfidenceEvaluation
+from routellm.models import WebSearchEvaluation
+
+def get_web_search_config():
+    """Get web search configuration from config.yaml. Requires explicit threshold setting."""
+    try:
+        with open("config.yaml", "r") as f:
+            config = yaml.safe_load(f)
+            
+        if "web_search" not in config:
+            raise ValueError("web_search configuration section is missing from config.yaml")
+            
+        web_search_config = config["web_search"]
+        if "need_threshold" not in web_search_config:
+            raise ValueError("need_threshold is required in web_search configuration")
+            
+        return web_search_config
+            
+    except Exception as e:
+        logging.error(f"WEB_SEARCH: Failed to load required web search configuration: {str(e)}")
+        raise RuntimeError(f"Web search configuration error: {str(e)}")
 
 async def enhance_with_web_search(controller, messages):
-    """Add web search results to messages if confidence is below threshold."""
+    """Add web search results to messages if web search need is above threshold."""
     # Get API key from environment
     jina_api_key = os.environ.get("JINA_API_KEY")
     logging.info(f"WEB_SEARCH: Jina API key present: {jina_api_key is not None}")
@@ -19,8 +38,8 @@ async def enhance_with_web_search(controller, messages):
         return messages
         
     try:
-        # Evaluate confidence in answering without search
-        eval_result = await evaluate_confidence(controller, messages)
+        # Evaluate if web search would help
+        eval_result = await evaluate_web_search_need(controller, messages)
         if not eval_result.search_required:
             return messages
         
@@ -148,23 +167,27 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
         logging.error(f"WEB_SEARCH: Query generation failed: {str(e)}")
         return user_msg[:150]  # Fallback to truncated original message
 
-async def evaluate_confidence(controller, messages) -> ConfidenceEvaluation:
-    """Evaluate model confidence using the weak model."""
+async def evaluate_web_search_need(controller, messages) -> WebSearchEvaluation:
+    """Evaluate how much web search would help with answering this request."""
     last_user_message = next((m["content"] for m in reversed(messages) 
                              if m["role"] == "user"), "")
+    
+    # Get web search threshold from config
+    config = get_web_search_config()
+    threshold = config["need_threshold"]
     
     # Include current date in prompt
     current_date = datetime.now().strftime("%Y-%m-%d")
     prompt = f"""Today's date is {current_date}.
-Evaluate your confidence in answering this request accurately with up-to-date information.
+Rate how much this request requires web search for accurate and up-to-date information.
 Task: {last_user_message}
 
-Respond with a JSON object containing:
-1. 'score': Number between 0-100 indicating your confidence level
-2. 'search_required': Boolean (true/false) indicating if web search would be helpful
+Respond with a JSON object containing a single field:
+'score': Number between 0-100 indicating how much web search would help (0=not needed, 100=definitely needed)
 
-Example: {{"score": 85, "search_required": false}}
-If you're less than 70% confident, set search_required to true."""
+Examples:
+- For "What is 2+2?": {{"score": 0}}
+- For "What are the latest AI developments?": {{"score": 85}}"""
     
     # Get user ID for tracking
     user_id = next((m.get("user") for m in messages if isinstance(m, dict) and "user" in m), None)
@@ -174,7 +197,6 @@ If you're less than 70% confident, set search_required to true."""
     
     # Use litellm directly to avoid recursion
     import litellm
-    import json
     response = await litellm.acompletion(
         model=controller.model_pair.weak,
         messages=[{"role": "user", "content": prompt}],
@@ -186,26 +208,24 @@ If you're less than 70% confident, set search_required to true."""
     
     content = response["choices"][0]["message"]["content"].strip()
     
-    import json
     try:
         json_data = json.loads(content)
         
         if "score" in json_data and isinstance(json_data["score"], (int, float)):
             score = int(json_data["score"])
             if score < 0 or score > 100:
-                raise ValueError(f"Confidence score {score} must be between 0 and 100")
+                raise ValueError(f"Web search need score {score} must be between 0 and 100")
             
-            search_required = json_data.get("search_required", score < 70)
-            if not isinstance(search_required, bool):
-                search_required = score < 70
-                
-            return ConfidenceEvaluation(score=score, search_required=search_required)
+            # Create evaluation and compute search_required based on threshold
+            evaluation = WebSearchEvaluation(score=score)
+            evaluation.compute_search_required(threshold)
+            return evaluation
             
-        raise ValueError("Missing required fields in JSON response")
+        raise ValueError("Missing required score field in JSON response")
         
     except (json.JSONDecodeError, ValueError) as e:
-        logging.error(f"WEB_SEARCH: Failed to parse confidence evaluation: {str(e)}")
-        raise RuntimeError(f"Failed to evaluate confidence: {str(e)}")
+        logging.error(f"WEB_SEARCH: Failed to parse web search need evaluation: {str(e)}")
+        raise RuntimeError(f"Failed to evaluate web search need: {str(e)}")
 
 async def search_web(query: str, api_key: str) -> Optional[str]:
     """Search the web using Jina Search API and return markdown text response."""

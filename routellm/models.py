@@ -484,10 +484,15 @@ class WebSearchResult(BaseModel):
     url: str
     summary: str
 
-class ConfidenceEvaluation(BaseModel):
-    """Model confidence evaluation."""
+class WebSearchEvaluation(BaseModel):
+    """Model for evaluating web search necessity. Higher score (0-100) indicates greater need for web search.
+    Examples: mathematical facts score low (5), current events score high (85)."""
     score: int = Field(..., ge=0, le=100)
-    search_required: bool
+    search_required: bool = Field(default=None)  # Will be set based on score and threshold
+
+    def compute_search_required(self, threshold: int) -> None:
+        """Set search_required based on score and threshold comparison."""
+        self.search_required = self.score > threshold
 
 # ######################
 # LONGWRITER MODELS
