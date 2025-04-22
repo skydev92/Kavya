@@ -901,7 +901,7 @@ class Database:
         
         # Now update the account balance
         today = datetime.now().strftime("%Y-%m-%d")
-        
+
         # Use the FOR UPDATE SKIP LOCKED approach to avoid waiting on locks
         # This will either update immediately or skip if locked
         cursor.execute("""
@@ -947,7 +947,7 @@ class Database:
             """, (account_id,))
             
             balance = cursor.fetchone()
-            
+
             if balance:
                 if not balance[3]:  # Could not get advisory lock
                     # This is likely a lock contention issue, retry
@@ -1028,6 +1028,7 @@ class Database:
                 with self.get_transaction() as db:
                     final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
                     db.commit()
+
                     logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
                     logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
                     

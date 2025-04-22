@@ -26,6 +26,7 @@ class DatabaseCache:
         
         logging.info("DATA AGE IN SECONDS : " + str(time.time() - current_balance["creation"]))
 
+
         # Calculate sufficient balance directly
         token_balance_in = float(current_balance["token_balance_in"])
         token_balance_out = float(current_balance["token_balance_out"])
