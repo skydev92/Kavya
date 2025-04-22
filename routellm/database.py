@@ -1244,11 +1244,11 @@ class Database:
                         'total_word_usage': int(updated_result[6])
                     }
                     
-                    logging.info(f"=== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ===")
-                    logging.info(f"[ID: {transaction_id}] Final Balance: {final_balance}")
-                    
-                    # Periodically check for dead tuples after updates
-                    self._check_dead_tuples_after_update()
+                    balance_msg = f"\n====== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ======\n"
+                    balance_msg += f"Account: {account_id}\n"
+                    balance_msg += f"Final Balance: {final_balance}\n"
+                    balance_msg += f"================================================================"
+                    logging.info(f"\033[32m{balance_msg}\033[0m")  # Using \033[32m for bright green
                     
                     return final_balance
                     
@@ -1320,102 +1320,6 @@ class Database:
             error_msg = f"Failed to update token usage after {max_retries} attempts"
             logging.error(f"[ID: {transaction_id}] CRITICAL: {error_msg}")
             raise RuntimeError(error_msg)
-    
-    def _check_dead_tuples_after_update(self):
-        """
-        Periodically check for dead tuples after database updates.
-        If too many dead tuples are found, log a warning and consider running VACUUM.
-        """
-        try:
-            # Only check occasionally to avoid overhead
-            current_time = time.time()
-            last_check_time = getattr(self, '_last_dead_tuple_check_time', 0)
-            check_interval = int(os.getenv("DB_DEAD_TUPLE_CHECK_INTERVAL", "1800"))  # Default: once per 30 minutes
-            
-            if current_time - last_check_time > check_interval:
-                # Get transaction count to determine if we should check
-                transaction_threshold = int(os.getenv("DB_TRANSACTION_THRESHOLD", "500"))  # Lowered from 1000
-                last_transaction_count = getattr(self, '_last_transaction_count', 0)
-                
-                with self.get_transaction() as db:
-                    cursor = db.get_cursor()
-                    cursor.execute("SELECT SUM(transactions) FROM account_totals")
-                    result = cursor.fetchone()
-                    if result and result[0]:
-                        current_transaction_count = int(result[0])
-                        transaction_diff = current_transaction_count - last_transaction_count
-                        
-                        # If we've had enough transactions since last check, check for dead tuples
-                        if transaction_diff > transaction_threshold:
-                            logging.info(f"Checking for dead tuples after {transaction_diff} transactions")
-                            
-                            # Check dead tuples in account_totals
-                            cursor.execute("""
-                                SELECT n_dead_tup, n_live_tup,
-                                       CASE WHEN n_live_tup > 0 
-                                            THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
-                                            ELSE 0 
-                                       END as dead_tuple_pct
-                                FROM pg_stat_user_tables
-                                WHERE relname = 'account_totals'
-                            """)
-                            
-                            account_totals_result = cursor.fetchone()
-                            if account_totals_result:
-                                dead_tuple_pct = account_totals_result[2]
-                                logging.info(f"account_totals table has {dead_tuple_pct}% dead tuples")
-                                
-                                if dead_tuple_pct > 15:  # Lowered from 20%
-                                    logging.warning(f"account_totals table has {dead_tuple_pct}% dead tuples - consider running VACUUM")
-                                    
-                                    # Auto-vacuum if enabled and dead tuple percentage is high
-                                    auto_vacuum_threshold = int(os.getenv("DB_AUTO_VACUUM_THRESHOLD", "30"))  # Lowered from 50%
-                                    if dead_tuple_pct > auto_vacuum_threshold:
-                                        logging.info(f"Auto-vacuuming account_totals table ({dead_tuple_pct}% dead tuples)")
-                                        try:
-                                            cursor.execute("VACUUM ANALYZE account_totals")
-                                            logging.info(f"Successfully vacuumed account_totals table")
-                                        except Exception as e:
-                                            logging.warning(f"Failed to vacuum account_totals: {str(e)}")
-                            
-                            # Check dead tuples in account_daily_summary
-                            cursor.execute("""
-                                SELECT n_dead_tup, n_live_tup,
-                                       CASE WHEN n_live_tup > 0 
-                                            THEN round(100 * n_dead_tup / (n_live_tup + n_dead_tup), 2)
-                                            ELSE 0 
-                                       END as dead_tuple_pct
-                                FROM pg_stat_user_tables
-                                WHERE relname = 'account_daily_summary'
-                            """)
-                            
-                            daily_summary_result = cursor.fetchone()
-                            if daily_summary_result:
-                                dead_tuple_pct = daily_summary_result[2]
-                                logging.info(f"account_daily_summary table has {dead_tuple_pct}% dead tuples")
-                                
-                                if dead_tuple_pct > 15:  # Lowered from 20%
-                                    logging.warning(f"account_daily_summary table has {dead_tuple_pct}% dead tuples - consider running VACUUM")
-                                    
-                                    # Auto-vacuum if enabled and dead tuple percentage is high
-                                    auto_vacuum_threshold = int(os.getenv("DB_AUTO_VACUUM_THRESHOLD", "30"))  # Lowered from 50%
-                                    if dead_tuple_pct > auto_vacuum_threshold:
-                                        logging.info(f"Auto-vacuuming account_daily_summary table ({dead_tuple_pct}% dead tuples)")
-                                        try:
-                                            cursor.execute("VACUUM ANALYZE account_daily_summary")
-                                            logging.info(f"Successfully vacuumed account_daily_summary table")
-                                        except Exception as e:
-                                            logging.warning(f"Failed to vacuum account_daily_summary: {str(e)}")
-                            
-                            # Update the last check time and transaction count
-                            self._last_dead_tuple_check_time = current_time
-                            self._last_transaction_count = current_transaction_count
-                            
-                            # Log completion of check
-                            logging.info("Dead tuple check completed")
-        except Exception as e:
-            logging.warning(f"Error checking for dead tuples: {str(e)}")
-            # Don't propagate the exception - this is a background task
 
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""
