@@ -1,0 +1,9 @@
+{
+    "model": "kavya-m1",
+    "messages": [
+      { "role": "system", "content": "" },
+      { "role": "user", "content": "Who was president of USA in 2022? Answer with a name and nothing else." }
+    ],
+    "stream": true
+  }
+  
