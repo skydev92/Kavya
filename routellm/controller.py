@@ -206,7 +206,7 @@ class Controller:
 
         # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
         # self.model_counts[routed_model] += 1
-        logging.info(f"DEBUG : current model for _get_routed_model_for_completion is: {routed_model}"
+        logging.info(f"DEBUG : current model for _get_routed_model_for_completion is: {routed_model}")
 
         return routed_model
 
