@@ -9,7 +9,7 @@ model_translations:
 # Model pairs for different model types
 model_pairs:
     default:
-        strong: chatgpt-4o-latest
+        strong: gpt-4o
         weak: gpt-4o-mini
     kavya-m1-eu:
         strong: mistral/mistral-large-latest
@@ -26,7 +26,7 @@ web_search:
 fallback_configs:
     kavya-m1:
         models:
-            - chatgpt-4o-latest
+            - gpt-4o
             - gpt-4o-mini
             - gemini/gemini-2.5-flash
             - anthropic/claude-3-7-sonnet-latest
@@ -54,8 +54,8 @@ general_settings:
 provider_configs:
     openai:
         models:
-            - chatgpt-4o-latest
-            - chatgpt-4o-latest
+            - gpt-4o
+            - gpt-4o
     anthropic:
         models:
             - anthropic/claude-3-7-sonnet-latest
