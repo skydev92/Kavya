@@ -51,11 +51,13 @@ class DatabaseCache:
         return has_sufficient_balance, self.cache["sufficient_balance"][account_id]
 
     def update_usage_with_response(self, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int = 0):
-        logging.info("=== CACHE UPDATE START ===")
-        logging.info(f"Account ID: {account_id}")
-        logging.info(f"Prompt Tokens: {prompt_tokens}")
-        logging.info(f"Completion Tokens: {completion_tokens}")
-        logging.info(f"Word Count: {word_count}")
+        cache_start_msg = f"\n====== CACHE UPDATE START ======\n"
+        cache_start_msg += f"Account: {account_id}\n"
+        cache_start_msg += f"Requested Prompt Tokens: {prompt_tokens}\n"
+        cache_start_msg += f"Requested Completion Tokens: {completion_tokens}\n"
+        cache_start_msg += f"Requested Word Count: {word_count}\n"
+        cache_start_msg += f"=================================="
+        logging.info(f"\033[32m{cache_start_msg}\033[0m")  # Using \033[32m for bright green
 
         current_usage_updates = self.cache["usage_updates"].get(account_id, 
             {
@@ -87,4 +89,13 @@ class DatabaseCache:
             )
             del self.cache["usage_updates"][account_id]
         
-        logging.info("=== CACHE UPDATE SUCCEEDED ===")
+        cache_msg = f"\n====== CACHE UPDATE SUCCEEDED ======\n"
+        cache_msg += f"Account: {account_id}\n"
+        cache_msg += f"Prompt Tokens: +{prompt_tokens}\n"
+        cache_msg += f"Completion Tokens: +{completion_tokens}\n"
+        cache_msg += f"Word Count: +{word_count}\n"
+        cache_msg += f"Total Cached Prompt Tokens: {current_usage_updates['prompt_tokens']}\n"
+        cache_msg += f"Total Cached Completion Tokens: {current_usage_updates['completion_tokens']}\n"
+        cache_msg += f"Total Cached Word Count: {current_usage_updates['word_count']}\n"
+        cache_msg += f"=================================="
+        logging.info(f"\033[32m{cache_msg}\033[0m")  # Using \033[32m for bright green
