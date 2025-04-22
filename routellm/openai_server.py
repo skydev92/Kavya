@@ -34,7 +34,6 @@ from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
 from routellm.web_search import enhance_with_web_search
 from routellm.database_cache import DatabaseCache
 
-
 from dotenv import load_dotenv
 
 # ------------------------------------------------------------------------------
@@ -103,18 +102,9 @@ async def lifespan(app: fastapi.FastAPI):
         # Store provider configurations from config for later use
         app.provider_configs = config.get("provider_configs", {}) if config else {}
         
-        # Default provider configs if not in config file
+        # Check if provider_configs are defined
         if not app.provider_configs:
-            app.provider_configs = {
-                "openai": {"models": ["gpt-4o", "gpt-4o-mini"]},
-                "anthropic": {"models": ["anthropic.claude-3-7-sonnet-20250219-v1:0"]},
-                "mistralai": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
-                "mistral": {"models": ["mistral/mistral-large-latest", "mistral/mistral-medium-latest"]},
-                "google": {"models": ["gemini/gemini-2.0-flash"]},
-                "gemini": {"models": ["gemini/gemini-2.0-flash"]},
-                "groq": {"models": ["groq/llama3-70b-8192"]}
-            }
-            logging.warning("No provider_configs found in config file, using defaults")
+            raise ValueError("Missing required configuration: 'provider_configs' not found in config file.")
         
         # Initialize database
         app.db = Database()
@@ -754,6 +744,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 # Use the routed model if available, otherwise use completion's default model
                 if request.model:
                     kwargs = request.model_dump(exclude_none=True)
+                    logging.info(f"DEBUG : Model in request is {request.model}")
                 else:
                     kwargs = request.model_dump(exclude_none=True)
                     kwargs["model"] = app.controllers.completion.model_pair.weak
@@ -1098,10 +1089,10 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
                     kwargs["max_tokens"] = 4096
             
-            res = await app.controllers.response(request, controller_name, "acompletion", user=str(user_id))
+            res = await app.controllers.response(request, controller_name, "acompletion", **kwargs)
             
             is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-            chosen_model = res['model'] if is_predefined else res.model_dump()['model']
+            chosen_model = res['original_model'] if is_predefined else res.model_dump()['original_model']
 
             # Get current token balance
             try:

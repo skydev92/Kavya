@@ -9,7 +9,7 @@ model_translations:
 # Model pairs for different model types
 model_pairs:
     default:
-        strong: gpt-4o
+        strong: chatgpt-4o-latest
         weak: gpt-4o-mini
     kavya-m1-eu:
         strong: mistral/mistral-large-latest
@@ -22,11 +22,11 @@ model_pairs:
 fallback_configs:
     kavya-m1:
         models:
-            - gpt-4o
+            - chatgpt-4o-latest
             - gpt-4o-mini
-            - gemini/gemini-2.0-flash
+            - gemini/gemini-2.5-flash
             - anthropic/claude-3-7-sonnet-latest
-            - xai/grok-2-latest
+            - xai/grok-3-mini-beta
         max_retries: 6
         retry_delay: 2.0
     kavya-m1-eu:
@@ -43,13 +43,14 @@ fallback_configs:
         retry_delay: 1.0
 
 general_settings:
-    basic_router_max_chars: 7000  # Maximum characters to analyze in prompt for basic router decisions
+    basic_router_max_chars: 5000  # Maximum characters to analyze in prompt for basic router decisions
+    routellm_force_model: "strong"  # Options: null, "strong", "weak". If set, bypasses router and uses specified model type.
 
 # Provider definitions for fallback handling
 provider_configs:
     openai:
         models:
-            - gpt-4o
+            - chatgpt-4o-latest
             - gpt-4o-mini
     anthropic:
         models:
@@ -61,8 +62,8 @@ provider_configs:
             - mistral/mistral-medium-latest
     gemini:
         models:
-            - gemini-2.5-pro-preview-03-25
-            - gemini/gemini-2.0-flash
+            - gemini/gemini-2.5-pro-preview-03-25
+            - gemini/gemini-2.5-flash
     groq:
         models:
             - groq/llama3-70b-8192

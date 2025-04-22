@@ -1,21 +1,21 @@
 import os
-import requests
+
 import logging
 import re
-from typing import List
-from datetime import datetime
 import httpx
 import asyncio
-import random
+import json
+from typing import List, Optional
+from datetime import datetime
 
-from routellm.models import WebSearchResult, ConfidenceEvaluation
+from routellm.models import ConfidenceEvaluation
 
 async def enhance_with_web_search(controller, messages):
     """Add web search results to messages if confidence is below threshold."""
-    # Hardcoded API key from environment
-    api_key = os.environ.get("BRAVE_SEARCH_API_KEY")
-    logging.info(f"WEB_SEARCH: API key present: {api_key is not None}")
-    if not api_key:
+    # Get API key from environment
+    jina_api_key = os.environ.get("JINA_API_KEY")
+    logging.info(f"WEB_SEARCH: Jina API key present: {jina_api_key is not None}")
+    if not jina_api_key:
         return messages
         
     try:
@@ -24,47 +24,27 @@ async def enhance_with_web_search(controller, messages):
         if not eval_result.search_required:
             return messages
         
-        # Extract user query for the generator
+        # Extract user query for search
         user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         
-        # Generate 3 creative queries using the LLM
-        search_queries = await generate_search_queries(controller, user_msg)
-
-        # Track URLs to avoid duplicates
-        processed_urls = set()
-
-        # Search web using the generated queries in parallel
-        tasks = []
-        for i, query in enumerate(search_queries):
-            logging.info(f"WEB_SEARCH: Preparing parallel search #{i+1} with generated query: '{query}'")
-            tasks.append(search_web(query, api_key, processed_urls))  # Pass the URL tracking set
+        # Generate optimized search query using LLM
+        search_query = await generate_search_query(controller, user_msg)
+        logging.info(f"WEB_SEARCH: Generated optimized search query: '{search_query}'")
         
-        # Run tasks concurrently and gather results
-        logging.info(f"WEB_SEARCH: Running {len(tasks)} searches in parallel.")
-        list_of_results = await asyncio.gather(*tasks) 
-        logging.info(f"WEB_SEARCH: Parallel searches completed.")
-
-        # Flatten the list of lists into a single list
-        results = [item for sublist in list_of_results for item in sublist]
+        # Perform web search
+        logging.info(f"WEB_SEARCH: Searching for: '{search_query}'")
+        search_results = await search_web(search_query, jina_api_key)
         
-        if not results:
+        if not search_results:
             return messages
         
-        # Format results as context with XML tags
-        context = "<web_search_results>\n"
-        context += "  <header>Recent web search results:</header>\n"
-        for i, r in enumerate(results):
-            context += f"  <search_result index=\"{i+1}\">\n"
-            context += f"    <title>{r.title}</title>\n"
-            context += f"    <url>{r.url}</url>\n"
-            context += f"    <full_content>{r.summary}</full_content>\n"
-            context += f"  </search_result>\n"
-        context += "</web_search_results>"
+        # Add results in a simple web_search_results tag
+        context = f"<web_search_results>\n{search_results}\n</web_search_results>"
         
         # Log the beginning of the context
-        logging.info(f"WEB_SEARCH: Adding search context (first 10000 chars):\n{context[:10000]}")
+        logging.info(f"WEB_SEARCH: Adding search context (first 20000 chars):\n{context[:20000]}")
 
-        # Instead of adding a system message, find the last user message and append the context.
+        # Find the last user message and append the context
         new_msgs = messages.copy()
         last_user_msg_index = -1
         for i in range(len(new_msgs) - 1, -1, -1):
@@ -79,14 +59,94 @@ async def enhance_with_web_search(controller, messages):
             logging.info(f"WEB_SEARCH: Appended search context to last user message at index {last_user_msg_index}")
             return new_msgs
         else:
-            # Fallback: If no user message found (unlikely), add as system message anyway or log error
-            logging.warning("WEB_SEARCH: No user message found to append search context to. Adding as system message as fallback.")
-            new_msgs.insert(0, {"role": "system", "content": context})
-            return new_msgs
+            # Hard fail if no user message found - don't use fallback
+            logging.error("WEB_SEARCH: No user message found to append search context to. Cannot proceed.")
+            raise RuntimeError("No user message found in conversation history. Web search results cannot be attached.")
         
     except Exception as e:
         logging.error(f"WEB_SEARCH: Error: {str(e)}")
         return messages
+
+async def generate_search_query(controller, user_msg: str) -> str:
+    """Generate an optimized search query using the weak LLM."""
+    # Extract text between <TASK> tags if present
+    task_match = re.search(r'<TASK>(.*?)</TASK>', user_msg, re.DOTALL)
+    if task_match:
+        user_msg = task_match.group(1).strip()
+    
+    # Remove any HTML tags and special markers
+    user_msg = re.sub(r'<[^>]+>', '', user_msg)
+    user_msg = re.sub(r'@@@\w+@@@', '', user_msg)
+    user_msg = re.sub(r'\s+', ' ', user_msg).strip()
+    
+    # Get current year for time-sensitive queries
+    current_year = datetime.now().year
+    
+    # Create prompt for conceptual search query generation
+    prompt = f"""As a search expert, create a conceptual search query that will find relevant information for this question or task. 
+
+Question/Task: "{user_msg}"
+
+Focus on creating a search query that:
+1. Captures the conceptual information need rather than literal words
+2. Uses broader terms for general understanding of the topic
+3. For current events, news, technology, or people in ongoing roles, ADD "{current_year}" to the query
+4. When user mentions "current", "latest", "recent", or "now", INCLUDE the year {current_year}
+5. For rapidly evolving fields (tech, science, politics, entertainment), ADD the year {current_year}
+6. Uses open-ended phrasing that allows for diverse results
+7. Removes specific constraints (like word counts, formats, or stylistic requests)
+8. Omits action words like "write", "create", "explain", "list" that wouldn't appear in information sources
+9. For historical topics or topics with clear time periods, include relevant time frames
+
+Adding the current year {current_year} is IMPORTANT for getting up-to-date information in search results.
+Only omit the year for timeless topics like mathematical concepts, established historical events, or fundamental scientific principles.
+
+Return ONLY the search query - no explanation, no formatting, no quote marks.
+"""
+    
+    # Get user ID for tracking
+    user_id = getattr(controller, 'user', 'system_query_generator')
+    
+    try:
+        # Use the weak model to generate the query
+        import litellm
+        response = await litellm.acompletion(
+            model=controller.model_pair.weak,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=80,
+            temperature=0.3,
+            user=user_id
+        )
+        
+        # Extract and clean the generated query
+        generated_query = response["choices"][0]["message"]["content"].strip()
+        
+        # Use original user message as fallback if generation fails
+        if not generated_query:
+            logging.warning(f"WEB_SEARCH: Empty query generated, using original message")
+            return user_msg[:150]  # Limit to 150 chars just in case
+            
+        # Remove any quotes around the entire query if present
+        if (generated_query.startswith('"') and generated_query.endswith('"')) or \
+           (generated_query.startswith("'") and generated_query.endswith("'")):
+            generated_query = generated_query[1:-1]
+        
+        # Add current year if it's not already in the query and seems like a current topic
+        if str(current_year) not in generated_query:
+            lower_query = generated_query.lower()
+            time_indicators = ["current", "latest", "recent", "now", "today", "this year"]
+            topic_indicators = ["news", "update", "trend", "development", "release", "version", "state of"]
+            
+            # Check if query contains time indicators but no year
+            if any(indicator in lower_query for indicator in time_indicators + topic_indicators):
+                generated_query = f"{generated_query} {current_year}"
+                logging.info(f"WEB_SEARCH: Added year to query: '{generated_query}'")
+                
+        return generated_query
+            
+    except Exception as e:
+        logging.error(f"WEB_SEARCH: Query generation failed: {str(e)}")
+        return user_msg[:150]  # Fallback to truncated original message
 
 async def evaluate_confidence(controller, messages) -> ConfidenceEvaluation:
     """Evaluate model confidence using the weak model."""
@@ -114,6 +174,7 @@ If you're less than 70% confident, set search_required to true."""
     
     # Use litellm directly to avoid recursion
     import litellm
+    import json
     response = await litellm.acompletion(
         model=controller.model_pair.weak,
         messages=[{"role": "user", "content": prompt}],
@@ -146,228 +207,80 @@ If you're less than 70% confident, set search_required to true."""
         logging.error(f"WEB_SEARCH: Failed to parse confidence evaluation: {str(e)}")
         raise RuntimeError(f"Failed to evaluate confidence: {str(e)}")
 
-async def generate_search_queries(controller, user_msg: str) -> List[str]:
-    """Use the weak LLM to generate 3 distinct search queries."""
-    logging.info(f"WEB_SEARCH: Generating creative search queries for: '{user_msg[:100]}...'")
+async def search_web(query: str, api_key: str) -> Optional[str]:
+    """Search the web using Jina Search API and return markdown text response."""
+    logging.info(f"JINA_SEARCH: Searching for: '{query}'")
     
-    # Clean the base message for the prompt to the generator LLM
-    base_query_for_prompt = clean_search_query(user_msg)
+    # Format query for URL
+    encoded_query = query.replace(' ', '+')
+    jina_url = f"https://s.jina.ai/?q={encoded_query}"
     
-    # Get the current year
-    current_year = datetime.now().year
-
-    prompt = f"""Based on the following user task, generate exactly 3 distinct search queries.
-**Crucial Instruction:** Analyze the user task for references to entities, roles, products, software, or concepts.
-1.  **If the user uses relative terms** (e.g., "current president", "latest version", "most recent findings"): Preserve these exact terms in your search queries. Do NOT replace them with specific names, dates, or versions you think are correct.
-2.  **If the user refers to something without a specific version or qualifier, but the context implies the most recent or current one** (e.g., "Drupal", "iPhone features", "President of the USA"): Assume the user wants the latest/current and use year qualifier instead of replacing with a specific entity based on your potentially outdated knowledge.
-
-For EACH generated query, independently assess if it focuses on a contemporary topic requiring current information.
-- If it IS contemporary (and doesn't already have a specific historical context), include the current year "{current_year}".
-- If it relates to a specific historical event or non-contemporary topic, use relevant historical time periods or omit the year.
-
-User Task: {base_query_for_prompt}
-
-Return the queries as a JSON object with a single key "queries" containing a list of 3 strings.
-
-Example for a task "latest Drupal security update":
-{{
-  "queries": [
-    "latest Drupal security update {current_year}",
-    "recent Drupal core vulnerabilities {current_year}",
-    "Drupal security best practices {current_year}" 
-  ]
-}}
-Example for a task "biography of the president of USA":
-{{
-  "queries": [
-    "biography of the current president of USA {current_year}",
-    "current US president accomplishments {current_year}",
-    "who is the current president of the USA {current_year}" 
-  ]
-}}
-Example for a historical task "features of Drupal 7":
-{{
-  "queries": [
-    "Drupal 7 features list",
-    "Drupal 7 end of life",
-    "migrating from Drupal 7"
-  ]
-}}
-"""
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'X-Engine': 'no-content',
+        "X-Retain-Images": "none"
+    }
     
-    # Get user ID for tracking (can reuse logic from evaluate_confidence)
-    # For simplicity here, let's assume we get it from the controller or default
-    user_id = getattr(controller, 'user', 'system_query_generator')
-    
-    # Fallback queries - update to potentially include year based on a simple heuristic
-    # Note: These fallbacks don't fully implement the sophisticated logic above, but aim for recency.
-    fallback_queries = [
-        f"latest {base_query_for_prompt} {current_year}", # Try adding 'latest' and year
-        f"{base_query_for_prompt} current details",
-        f"{base_query_for_prompt} overview"
-    ]
-
-    try:
-        import litellm
-        response = await litellm.acompletion(
-            model=controller.model_pair.weak,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=900, # More tokens needed for 3 queries
-            temperature=0.7, # Allow some creativity
-            response_format={"type": "json_object"},
-            user=user_id
-        )
-        
-        content = response["choices"][0]["message"]["content"].strip()
-        
-        import json
-        json_data = json.loads(content)
-        
-        if "queries" in json_data and isinstance(json_data["queries"], list) and len(json_data["queries"]) == 3:
-            generated_queries = [str(q) for q in json_data["queries"]]
-            logging.info(f"WEB_SEARCH: Successfully generated queries: {generated_queries}")
-            return generated_queries
-        else:
-            logging.warning(f"WEB_SEARCH: LLM did not return 3 queries in expected format. Response: {content}")
-            return fallback_queries
-            
-    except (json.JSONDecodeError, ValueError, KeyError, IndexError, Exception) as e:
-        logging.error(f"WEB_SEARCH: Failed to generate/parse search queries: {str(e)}")
-        return fallback_queries
-
-def clean_search_query(query: str) -> str:
-    """Clean HTML tags and formatting from search query to get plain text."""
-    # Extract text between <TASK> tags if present
-    task_match = re.search(r'<TASK>(.*?)</TASK>', query, re.DOTALL)
-    if task_match:
-        query = task_match.group(1).strip()
-    
-    # Remove any remaining HTML tags
-    query = re.sub(r'<[^>]+>', '', query)
-    
-    # Remove special markers
-    query = re.sub(r'@@@\w+@@@', '', query)
-    
-    # Clean up extra whitespace
-    query = re.sub(r'\s+', ' ', query).strip()
-    
-    # Limit query length
-    MAX_QUERY_LENGTH = 150
-    if len(query) > MAX_QUERY_LENGTH:
-        query = query[:MAX_QUERY_LENGTH]
-        
-    return query
-
-async def search_web(query: str, api_key: str, processed_urls: set = None) -> List[WebSearchResult]:
-    """Get top URL from Brave, fetch full content via Jina Reader."""
-    # Initialize processed_urls if not provided
-    if processed_urls is None:
-        processed_urls = set()
-        
-    logging.info(f"WEB_SEARCH: Received query for Brave: '{query}'") # Log received query
-    
-    brave_url = "https://api.search.brave.com/res/v1/web/search"
-    headers = {"Accept": "application/json", "X-Subscription-Token": api_key}
-    params = {"q": query, "count": 1} # Use received query directly
-    
-    # --- Get URL from Brave (with retry) ---
+    # Set up retry parameters
     max_retries = 3
     base_delay = 1
-    original_url = None
-    title = ""
     
     for attempt in range(max_retries):
         try:
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+            delay = base_delay * (2 ** attempt) + (asyncio.get_event_loop().time() % 1)  # Add some jitter
             if attempt > 0:
-                logging.info(f"BRAVE_SEARCH: Retry attempt {attempt+1}/{max_retries} after {delay:.2f}s delay")
+                logging.info(f"JINA_SEARCH: Retry attempt {attempt+1}/{max_retries} after {delay:.2f}s delay")
                 await asyncio.sleep(delay)
                 
-            # Use httpx for async request to Brave
-            async with httpx.AsyncClient() as client:
-                response = await client.get(brave_url, headers=headers, params=params)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(jina_url, headers=headers)
                 
             status_code = response.status_code
             if status_code == 429:
-                logging.warning(f"BRAVE_SEARCH: Rate limited (429), will retry in {delay:.2f}s")
+                logging.warning(f"JINA_SEARCH: Rate limited (429), will retry in {delay:.2f}s")
                 continue
-            
+                
             response.raise_for_status()
-            data = response.json()
             
-            if "web" in data and "results" in data["web"] and data["web"]["results"]:
-                top_result = data["web"]["results"][0]
-                original_url = top_result.get("url")
-                title = top_result.get("title", "")
-                if original_url:
-                    # Skip if URL was already processed
-                    if original_url in processed_urls:
-                        logging.info(f"BRAVE_SEARCH: Skipping already processed URL: {original_url}")
-                        return []
-                    
-                    logging.info(f"BRAVE_SEARCH: Found URL: {original_url}")
-                    # Add to processed URLs set
-                    processed_urls.add(original_url)
-                    break # Exit retry loop on success
-                else:
-                    logging.warning("BRAVE_SEARCH: Top result missing URL.")
-            else:
-                 logging.warning("BRAVE_SEARCH: No results found.")
-                 return [] # No results, return empty
-
+            # Get raw text content from response
+            result_text = response.text
+            
+            # Remove markdown links with regex, keeping only the link text
+            result_text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', result_text)
+            
+            # Remove list items (asterisks, dashes, bullets) - both indented and non-indented
+            result_text = re.sub(r'^\s*[\*\-•⁃◦▪▫◘○◙♦✓→⟹⟶◆★☆⬧⚫⚪►◄▶◀]\s+.*$', '', result_text, flags=re.MULTILINE)
+            
+            # Remove list items with numbers or letters (1., a., etc.)
+            result_text = re.sub(r'^\s*[\d]+\.\s+.*$', '', result_text, flags=re.MULTILINE)
+            result_text = re.sub(r'^\s*[a-zA-Z]\.\s+.*$', '', result_text, flags=re.MULTILINE)
+            
+            # Remove URL Source and Description lines often found in search results
+            result_text = re.sub(r'^\[\d+\]\s+(Title|URL Source|Description):.*$', '', result_text, flags=re.MULTILINE)
+            
+            # Remove table formatting and info boxes (lines with vertical bars/pipes)
+            result_text = re.sub(r'^\s*\|.*\|\s*$', '', result_text, flags=re.MULTILINE)
+            result_text = re.sub(r'^\s*\+[-\+]+\s*$', '', result_text, flags=re.MULTILINE)  # Table separator lines
+            
+            # Remove empty lines created by the previous operations
+            result_text = re.sub(r'\n\s*\n', '\n\n', result_text)
+            
+            # Limit text length if necessary
+            if len(result_text) > 200000:
+                result_text = result_text[:200000]
+                logging.info(f"JINA_SEARCH: Truncated response text to 200000 characters")
+            
+            logging.info(f"JINA_SEARCH: Successfully retrieved search results ({len(result_text)} chars)")
+            return result_text
+            
         except httpx.RequestError as e:
-             if attempt == max_retries - 1:
-                 logging.error(f"BRAVE_SEARCH: Failed after {max_retries} attempts: {str(e)}")
-                 return []
+            if attempt == max_retries - 1:
+                logging.error(f"JINA_SEARCH: Failed after {max_retries} attempts: {str(e)}")
+                return None
         except Exception as e:
-             logging.error(f"BRAVE_SEARCH: Unexpected error: {str(e)}")
-             return []
-
-    if not original_url:
-        logging.warning("BRAVE_SEARCH: Could not retrieve a valid URL after retries.")
-        return []
-
-    # --- Fetch full content using Jina Reader (with retry) ---
-    jina_url = f"https://r.jina.ai/{original_url}"
-    logging.info(f"JINA_READER: Fetching content from: {jina_url}")
-
-    for attempt in range(max_retries):
-        try:
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-            if attempt > 0:
-                logging.info(f"JINA_READER: Retry attempt {attempt+1}/{max_retries} after {delay:.2f}s delay")
-                await asyncio.sleep(delay)
-
-            async with httpx.AsyncClient(timeout=30.0) as client: # Added timeout
-                 jina_response = await client.get(jina_url)
-
-            status_code = jina_response.status_code
-            # Jina might use different codes, but 429 is common
-            if status_code == 429:
-                 logging.warning(f"JINA_READER: Rate limited (429), will retry in {delay:.2f}s")
-                 continue
-            
-            jina_response.raise_for_status()
-            full_content = jina_response.text
-            
-            # Limit content to 10000 characters
-            if len(full_content) > 10000:
-                logging.info(f"JINA_READER: Trimming content from {len(full_content)} to 10000 chars")
-                full_content = full_content[:10000]
-            
-            logging.info(f"JINA_READER: Successfully fetched full content ({len(full_content)} chars)")
-            
-            # Use the 'summary' field to hold the full content
-            return [WebSearchResult(title=title, url=original_url, summary=full_content)]
-
-        except httpx.RequestError as e:
-             # Log specific Jina errors differently
-             if attempt == max_retries - 1:
-                 logging.error(f"JINA_READER: Failed after {max_retries} attempts: {str(e)}")
-                 return []
-        except Exception as e:
-             logging.error(f"JINA_READER: Unexpected error: {str(e)}")
-             return []
-
-    logging.warning("JINA_READER: Failed to fetch content after retries.")
-    return [] # Return empty if all Jina retries fail 
+            logging.error(f"JINA_SEARCH: Unexpected error: {str(e)}")
+            if attempt == max_retries - 1:
+                return None
+    
+    logging.warning("JINA_SEARCH: Failed to get search results after retries")
+    return None 

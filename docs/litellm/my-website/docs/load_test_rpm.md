@@ -172,7 +172,7 @@ from openai import AsyncOpenAI, AsyncAzureOpenAI
 import random, uuid
 import time, asyncio, litellm
 # import logging
-# logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.INFO)
 #### LITELLM PROXY #### 
 litellm_client = AsyncOpenAI(
     api_key="sk-1234", # [CHANGE THIS]
