@@ -51,7 +51,7 @@ provider_configs:
     openai:
         models:
             - chatgpt-4o-latest
-            - gpt-4o-mini
+            - chatgpt-4o-latest
     anthropic:
         models:
             - anthropic/claude-3-7-sonnet-latest
