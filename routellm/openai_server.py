@@ -1138,7 +1138,7 @@ litellm.drop_params = True
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -1192,7 +1192,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 if args.verbose:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)
 
 if not asyncio.get_event_loop().is_running():
     print("Launching server with routers:", args.routers)
