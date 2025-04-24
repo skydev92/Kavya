@@ -1211,10 +1211,11 @@ class Database:
                     }
                 
                 # Calculate sufficient balance directly
-                token_balance_in = float(result[0])
-                token_balance_out = float(result[1])
-                word_balance = int(result[2])
-                transactions = int(result[3])
+                # For balance checks, it's better to assume sufficient balance than to fail the request
+                token_balance_in = float(result[0]) if result[0] is not None else self.DEFAULT_TOKEN_BALANCE_IN
+                token_balance_out = float(result[1]) if result[1] is not None else self.DEFAULT_TOKEN_BALANCE_OUT
+                word_balance = int(result[2]) if result[2] is not None else self.DEFAULT_WORD_BALANCE
+                transactions = int(result[3]) if result[3] is not None else 0
                 
                 has_sufficient_balance = (
                     token_balance_in >= prompt_tokens and 
