@@ -795,19 +795,20 @@ class Database:
                     pass
             
             # Specifically target network errors for detailed logging
-            if "network" in error_details.lower() or isinstance(e, (exc.DisconnectionError, exc.OperationalError, exc.TimeoutError)):
-                # Log the exact error type and representation
-                logging.error(f"Transaction {transaction_id} network error - Type: {error_type}, Repr: {repr(e)}")
-                
-                # Try to get connection state information
-                try:
-                    if hasattr(db, 'connection') and db.connection:
-                        conn_info = "Connection exists"
-                    else:
-                        conn_info = "No connection"
-                    logging.error(f"Connection state for transaction {transaction_id}: {conn_info}")
-                except Exception:
-                    pass
+            is_network_error = isinstance(error_type, (exc.InterfaceError, exc.OperationalError, exc.TimeoutError, exc.DisconnectionError)) or "network error" in error_details.lower()
+            
+            # Log the exact error type and representation
+            logging.error(f"Transaction {transaction_id} network error - Type: {error_type}, Repr: {repr(e)}")
+            
+            # Try to get connection state information
+            try:
+                if hasattr(db, 'connection') and db.connection:
+                    conn_info = "Connection exists"
+                else:
+                    conn_info = "No connection"
+                logging.error(f"Connection state for transaction {transaction_id}: {conn_info}")
+            except Exception:
+                pass
 
             # Log environment information for debugging in production
             if self.env == "prod":
@@ -858,11 +859,13 @@ class Database:
         is_transaction_aborted = "current transaction is aborted" in error_msg.lower() or "25P02" in error_msg
         is_failed_transaction = "in failed transaction" in error_msg.lower()
         is_lock_contention = "could not acquire lock" in error_msg.lower()
+        # Add check for network/connection errors based on type
+        is_network_error = isinstance(error_type, (exc.InterfaceError, exc.OperationalError, exc.TimeoutError, exc.DisconnectionError)) or "network error" in error_msg.lower()
         
         # For recoverable errors, retry with backoff
         is_retryable = (is_lock_timeout or is_statement_timeout or is_deadlock or 
                         is_serialize_failure or is_transaction_aborted or 
-                        is_failed_transaction or is_lock_contention)
+                        is_failed_transaction or is_lock_contention or is_network_error)
         wait_time = None
         error_category = "unknown"
 
@@ -870,8 +873,11 @@ class Database:
             # Shorter exponential backoff with small random jitter
             backoff = backoff_base * (1.5 ** (retry_count - 1))  # Less aggressive exponential growth
             jitter = random.uniform(0, backoff * 0.2)  # 20% jitter
-            wait_time = backoff + jitter
-            
+            wait_time = (backoff + jitter) # Calculate wait time in milliseconds
+            # Ensure wait_time is never None if is_retryable is True
+            if wait_time is None:
+                wait_time = backoff_base # Default to base backoff if calculation failed somehow
+
             # Log specific error type for better debugging
             if is_lock_timeout:
                 error_category = "lock timeout"
@@ -1044,7 +1050,7 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                error_data = self._check_error_message(error_type, error_msg, backoff_base, retry_count)
                 is_retryable = error_data["is_retryable"]
                 wait_time_seconds = error_data["wait_time_seconds"]
                 error_category = error_data["error_category"]
@@ -1237,7 +1243,7 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                error_data = self._check_error_message(error_msg, backoff_base, retry_count)
+                error_data = self._check_error_message(error_type, error_msg, backoff_base, retry_count)
                 is_retryable = error_data["is_retryable"]
                 wait_time = error_data["wait_time"]
                 error_category = error_data["error_category"]
