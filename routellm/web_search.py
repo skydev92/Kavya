@@ -6,10 +6,10 @@ import asyncio
 import json
 import yaml
 import litellm
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
 
-from routellm.models import WebSearchEvaluation
+from routellm.models import WebSearchAnalysisResponse, MultipleQueryResponse
 
 def get_web_search_config():
     """Get web search configuration from config.yaml. Requires explicit threshold setting."""
@@ -30,8 +30,135 @@ def get_web_search_config():
         logging.error(f"WEB_SEARCH: Failed to load required web search configuration: {str(e)}")
         raise RuntimeError(f"Web search configuration error: {str(e)}")
 
+async def analyze_web_search_request(controller, messages) -> Optional[WebSearchAnalysisResponse]:
+    """Analyze user request for web search need and optimal query count."""
+    last_user_message = next((m["content"] for m in reversed(messages) 
+                             if m["role"] == "user"), "")
+    if not last_user_message:
+        logging.warning("WEB_SEARCH: Could not extract last user message for analysis.")
+        return None
+
+    # Get user ID for tracking
+    user_id = next((m.get("user") for m in messages if isinstance(m, dict) and "user" in m), None)
+    if not user_id and hasattr(controller, "user"):
+        user_id = controller.user
+    user_id = user_id or "system_web_search_analyzer"
+
+    # Get current date for prompt context
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Prompt for combined analysis
+    prompt = f"""Today's date is {current_date}.
+Analyze the following user request. Determine the need for real-time web search and the optimal number of distinct search queries required.
+
+Request: "{last_user_message}"
+
+Respond ONLY with a JSON object containing two fields:
+- "need_web_search": An integer score (0-100) indicating how much web search is needed (0=none, 100=essential).
+- "web_search_count": An integer (1-5) representing the optimal number of distinct search queries needed to comprehensively answer the request if search is required. If need_web_search is low (e.g., < 30), web_search_count should typically be 1. Consider complexity, multiple topics, comparisons etc.
+
+Examples:
+- Request: "What is 2+2?" -> {{"need_web_search": 0, "web_search_count": 1}}
+- Request: "Latest AI developments?" -> {{"need_web_search": 90, "web_search_count": 1}}
+- Request: "Compare speed and cost of Model A vs Model B." -> {{"need_web_search": 75, "web_search_count": 2}}
+- Request: "Summarize the plot, themes, and reception of book X." -> {{"need_web_search": 60, "web_search_count": 3}}
+"""
+
+    try:
+        # Use response_format=json_object instead of response_model
+        raw_response = await litellm.acompletion(
+            model=controller.model_pair.weak,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}, # Ask for JSON string
+            max_tokens=100, 
+            temperature=0.1,
+            user=user_id
+        )
+
+        # Manually parse and validate the response
+        if raw_response and raw_response.choices:
+            content = raw_response.choices[0].message.content.strip()
+            # Clean potential markdown formatting
+            content = re.sub(r'^```json\s*|\s*```$', '', content, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(content)
+                # Validate with Pydantic model
+                analysis = WebSearchAnalysisResponse(**data)
+                return analysis
+            except (json.JSONDecodeError, TypeError, ValueError) as parse_error: # Broader catch for validation errors
+                logging.error(f"WEB_SEARCH Analysis: Failed to parse/validate JSON: {parse_error}. Content: {content}", exc_info=True)
+                return None
+        else:
+            logging.error(f"WEB_SEARCH Analysis: Received unexpected response structure from LiteLLM: {raw_response}")
+            return None
+
+    except Exception as e:
+        logging.error(f"WEB_SEARCH Analysis: LiteLLM call failed - {str(e)}", exc_info=True)
+        return None
+
+async def generate_multiple_queries(controller, user_msg: str, count: int, user_id: str) -> Optional[MultipleQueryResponse]:
+    """Generate a specified number of distinct search queries using the weak LLM."""
+    
+    # Revised prompt emphasizing deconstruction
+    prompt = f"""**Deconstruct** the following user request into its core components or distinct sub-topics. Generate exactly {count} specific, search-engine-friendly queries where **each query targets ONLY ONE** of these distinct components or sub-topics.
+
+Request: "{user_msg}"
+
+Guidelines for Queries:
+- Each query MUST focus on a single, unique aspect of the original request.
+- Ensure the queries are substantially different from each other.
+- Use specific keywords relevant to the sub-topic.
+- Avoid conversational filler or action verbs.
+- If the request involves comparisons (e.g., A vs B on criteria X, Y), generate separate queries for each comparison point or criterion as needed to meet the {count}.
+
+Return ONLY a JSON object containing a single key "queries" which is a list of exactly {count} strings.
+
+Examples:
+- Request: "Compare speed and cost of Model A vs Model B.", count=2 -> {{"queries": ["Model A vs Model B speed comparison", "Model A vs Model B cost comparison"]}}
+- Request: "Summarize the plot, themes, and reception of book X.", count=3 -> {{"queries": ["Book X plot summary", "Book X main themes analysis", "Book X critical reception review"]}}
+- Request: "Latest Pixel vs iPhone battery and camera?", count=4 -> {{"queries": ["latest Google Pixel phone battery life", "latest iPhone battery life", "latest Google Pixel phone camera performance", "latest iPhone camera performance"]}} # (Example of finer-grained split if count allows)
+"""
+
+    try:
+        # Use response_format=json_object instead of response_model
+        raw_response = await litellm.acompletion(
+            model=controller.model_pair.weak,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}, # Ask for JSON string
+            max_tokens=80 * count, 
+            temperature=0.2,
+            user=user_id
+        )
+        
+        # Manually parse and validate the response
+        if raw_response and raw_response.choices:
+            content = raw_response.choices[0].message.content.strip()
+            # Clean potential markdown formatting
+            content = re.sub(r'^```json\s*|\s*```$', '', content, flags=re.MULTILINE).strip()
+            try:
+                data = json.loads(content)
+                # Validate with Pydantic model
+                multi_query_resp = MultipleQueryResponse(**data)
+                # Extra check: ensure the correct number of queries was returned
+                if len(multi_query_resp.queries) == count:
+                    return multi_query_resp
+                else:
+                    logging.warning(f"Multi-Query Gen: LLM returned {len(multi_query_resp.queries)} queries, expected {count}. Data: {data}")
+                    return None # Or potentially try to use the queries anyway?
+            except (json.JSONDecodeError, TypeError, ValueError) as parse_error:
+                logging.error(f"Multi-Query Gen: Failed to parse/validate JSON: {parse_error}. Content: {content}", exc_info=True)
+                return None
+        else:
+            logging.error(f"Multi-Query Gen: Received unexpected response structure from LiteLLM: {raw_response}")
+            return None
+
+    except Exception as e:
+        logging.error(f"Multi-Query Gen: LiteLLM call failed - {str(e)}", exc_info=True)
+        return None
+
 async def enhance_with_web_search(controller, messages):
-    """Add web search results to messages if web search need is above threshold."""
+    """Add web search results to messages if web search need is above threshold.
+    May perform multiple searches concurrently for complex requests."""
     # Check if the Perplexity API key is set for LiteLLM to use
     perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
     logging.info(f"WEB_SEARCH: Perplexity API key present for LiteLLM: {perplexity_api_key_present}")
@@ -39,31 +166,82 @@ async def enhance_with_web_search(controller, messages):
         return messages # Skip if key is missing
 
     try:
-        # Evaluate if web search would help
-        eval_result = await evaluate_web_search_need(controller, messages)
-        if not eval_result.search_required:
+        # --- Part 1: Analysis ---
+        analysis_result = await analyze_web_search_request(controller, messages)
+        if not analysis_result:
+            logging.warning("WEB_SEARCH: Failed to get analysis result. Skipping web search.")
+            return messages
+
+        # Get threshold from config
+        config = get_web_search_config()
+        threshold = config["need_threshold"]
+
+        # Check if search is needed based on score
+        if analysis_result.need_web_search <= threshold:
+            logging.info(f"WEB_SEARCH: Need score {analysis_result.need_web_search} <= threshold {threshold}. Skipping search.")
             return messages
         
-        # Extract user query for search
+        logging.info(f"WEB_SEARCH: Need score {analysis_result.need_web_search} > threshold {threshold}. Proceeding with {analysis_result.web_search_count} search(es).")
+
+        # Extract user query for search generation
         user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-        
-        # Generate optimized search query using LLM
-        search_query = await generate_search_query(controller, user_msg)
-        logging.info(f"WEB_SEARCH: Generated optimized search query: '{search_query}'")
-        
-        # Perform web search using Perplexity via LiteLLM
-        logging.info(f"PERPLEXITY_SEARCH: Searching for: '{search_query}'")
-        # Pass only the query, LiteLLM handles the API key from env
-        search_results = await search_web(search_query)
-        
-        if not search_results:
+        if not user_msg:
+             logging.error("WEB_SEARCH: Could not extract user message for query generation.")
+             return messages # Cannot proceed without user message
+
+        # Extract user ID (do this once, use for all subsequent calls)
+        user_id = next((m.get("user") for m in messages if isinstance(m, dict) and "user" in m), None)
+        if not user_id and hasattr(controller, "user"):
+            user_id = controller.user
+        user_id = user_id or "system_web_search_process" # Fallback user for the process
+
+        # --- Part 2: Query Generation ---
+        search_queries: List[str] = []
+        if analysis_result.web_search_count <= 1:
+            logging.info(f"WEB_SEARCH: Generating 1 search query.")
+            single_query = await generate_search_query(controller, user_msg)
+            if single_query:
+                search_queries = [single_query]
+                logging.info(f"WEB_SEARCH: Generated single query: '{single_query}'")
+            else:
+                 logging.warning("WEB_SEARCH: Failed to generate single search query.")
+        else:
+            logging.info(f"WEB_SEARCH: Generating {analysis_result.web_search_count} search queries.")
+            multi_query_response = await generate_multiple_queries(controller, user_msg, analysis_result.web_search_count, user_id)
+            if multi_query_response and multi_query_response.queries:
+                search_queries = multi_query_response.queries
+                logging.info(f"WEB_SEARCH: Generated multiple queries: {search_queries}")
+            else:
+                 logging.warning(f"WEB_SEARCH: Failed to generate {analysis_result.web_search_count} search queries.")
+
+        if not search_queries:
+            logging.warning("WEB_SEARCH: No search queries were generated. Skipping search execution.")
             return messages
+
+        # --- Part 3: Concurrent Execution ---
+        logging.info(f"PERPLEXITY_SEARCH: Executing {len(search_queries)} search(es) concurrently.")
+        tasks = [search_web(query, user=user_id) for query in search_queries]
+        results_list = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # --- Part 4: Aggregation & Context ---
+        successful_results = [res for res in results_list if res is not None and not isinstance(res, Exception)]
+        exceptions = [res for res in results_list if isinstance(res, Exception)]
+
+        if exceptions:
+             logging.warning(f"WEB_SEARCH: Encountered {len(exceptions)} error(s) during concurrent search: {[str(e) for e in exceptions]}")
+
+        if not successful_results:
+            logging.warning("WEB_SEARCH: No successful search results obtained.")
+            return messages
+
+        # Aggregate results (simple concatenation with separator)
+        aggregated_results = "\n\n---\n\n".join(successful_results)
         
         # Add results in a simple web_search_results tag
-        context = f"<web_search_results>\n{search_results}\n</web_search_results>"
+        context = f"<web_search_results>\n{aggregated_results}\n</web_search_results>"
         
         # Log the beginning of the context
-        logging.info(f"WEB_SEARCH: Adding search context (first 20000 chars):\n{context[:20000]}")
+        logging.info(f"WEB_SEARCH: Adding combined search context ({len(successful_results)} results, first 20000 chars):\n{context[:20000]}")
 
         # Find the last user message and append the context
         new_msgs = messages.copy()
@@ -77,7 +255,7 @@ async def enhance_with_web_search(controller, messages):
             # Prepend the context to the last user message content, separated by newlines
             original_content = new_msgs[last_user_msg_index]["content"]
             new_msgs[last_user_msg_index]["content"] = f"{context}\n\n{original_content}"
-            logging.info(f"WEB_SEARCH: Appended search context to last user message at index {last_user_msg_index}")
+            logging.info(f"WEB_SEARCH: Appended combined search context to last user message at index {last_user_msg_index}")
             return new_msgs
         else:
             # Hard fail if no user message found - don't use fallback
@@ -85,7 +263,7 @@ async def enhance_with_web_search(controller, messages):
             raise RuntimeError("No user message found in conversation history. Web search results cannot be attached.")
         
     except Exception as e:
-        logging.error(f"WEB_SEARCH: Error during Perplexity search enhancement: {str(e)}")
+        logging.error(f"WEB_SEARCH: Error during multi-query search enhancement: {str(e)}", exc_info=True)
         return messages
 
 async def generate_search_query(controller, user_msg: str) -> str:
@@ -168,68 +346,9 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
         logging.error(f"WEB_SEARCH: Query generation failed: {str(e)}")
         return user_msg[:150]  # Fallback to truncated original message
 
-async def evaluate_web_search_need(controller, messages) -> WebSearchEvaluation:
-    """Evaluate how much web search would help with answering this request."""
-    last_user_message = next((m["content"] for m in reversed(messages) 
-                             if m["role"] == "user"), "")
-    
-    # Get web search threshold from config
-    config = get_web_search_config()
-    threshold = config["need_threshold"]
-    
-    # Include current date in prompt
-    current_date = datetime.now().strftime("%Y-%m-%d")
-    prompt = f"""Today's date is {current_date}.
-Rate how much this request requires web search for accurate and up-to-date information.
-Task: {last_user_message}
-
-Respond with a JSON object containing a single field:
-'score': Number between 0-100 indicating how much web search would help (0=not needed, 100=definitely needed)
-
-Examples:
-- For "What is 2+2?": {{"score": 0}}
-- For "What are the latest AI developments?": {{"score": 85}}"""
-    
-    # Get user ID for tracking
-    user_id = next((m.get("user") for m in messages if isinstance(m, dict) and "user" in m), None)
-    if not user_id and hasattr(controller, "user"):
-        user_id = controller.user
-    user_id = user_id or "system_web_search"
-    
-    # Use litellm directly to avoid recursion
-    response = await litellm.acompletion(
-        model=controller.model_pair.weak,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=50,
-        temperature=0.1,
-        response_format={"type": "json_object"},
-        user=user_id
-    )
-    
-    content = response["choices"][0]["message"]["content"].strip()
-    
-    try:
-        json_data = json.loads(content)
-        
-        if "score" in json_data and isinstance(json_data["score"], (int, float)):
-            score = int(json_data["score"])
-            if score < 0 or score > 100:
-                raise ValueError(f"Web search need score {score} must be between 0 and 100")
-            
-            # Create evaluation and compute search_required based on threshold
-            evaluation = WebSearchEvaluation(score=score)
-            evaluation.compute_search_required(threshold)
-            return evaluation
-            
-        raise ValueError("Missing required score field in JSON response")
-        
-    except (json.JSONDecodeError, ValueError) as e:
-        logging.error(f"WEB_SEARCH: Failed to parse web search need evaluation: {str(e)}")
-        raise RuntimeError(f"Failed to evaluate web search need: {str(e)}")
-
-async def search_web(query: str) -> Optional[str]:
+async def search_web(query: str, user: str) -> Optional[str]:
     """Search the web using Perplexity AI API via LiteLLM and return text response."""
-    logging.info(f"PERPLEXITY_SEARCH: Searching for: '{query}' via LiteLLM")
+    logging.info(f"PERPLEXITY_SEARCH: Searching for: '{query}' via LiteLLM for user: {user}")
 
     model_name = "perplexity/sonar-pro" # Using sonar-pro as requested
     messages = [
@@ -244,6 +363,7 @@ async def search_web(query: str) -> Optional[str]:
         response = await litellm.acompletion(
             model=model_name,
             messages=messages,
+            user=user,
             # temperature=0.3, # Example optional parameter
             # max_tokens=1000 # Example optional parameter
         )
@@ -267,5 +387,6 @@ async def search_web(query: str) -> Optional[str]:
         # Handle potential exceptions from LiteLLM
         # Consider specific exception types based on LiteLLM docs if available
         # (e.g., litellm.exceptions.AuthenticationError, litellm.exceptions.RateLimitError)
-        logging.error(f"PERPLEXITY_SEARCH: LiteLLM call failed: {str(e)}")
-        return None # Propagate failure 
+        logging.error(f"PERPLEXITY_SEARCH: LiteLLM call failed for user {user}: {str(e)}", exc_info=True)
+        # Return exception instead of None to be caught by asyncio.gather
+        raise e # Re-raise exception to be caught by gather 

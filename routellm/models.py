@@ -478,21 +478,27 @@ class RoutingAnalysis(BaseModel):
         description="If it's primarily a list/data without narrative"
     )
 
-class WebSearchResult(BaseModel):
-    """Search result from web."""
-    title: str
-    url: str
-    summary: str
+class WebSearchAnalysisResponse(BaseModel):
+    """Combined analysis of web search need and optimal query count."""
+    need_web_search: int = Field(
+        ...,
+        ge=0,
+        le=100,
+        description="Score (0-100) indicating need for web search."
+    )
+    web_search_count: int = Field(
+        ...,
+        ge=1,
+        le=5,
+        description="Optimal number of web searches needed (1-5)."
+    )
 
-class WebSearchEvaluation(BaseModel):
-    """Model for evaluating web search necessity. Higher score (0-100) indicates greater need for web search.
-    Examples: mathematical facts score low (5), current events score high (85)."""
-    score: int = Field(..., ge=0, le=100)
-    search_required: bool = Field(default=None)  # Will be set based on score and threshold
-
-    def compute_search_required(self, threshold: int) -> None:
-        """Set search_required based on score and threshold comparison."""
-        self.search_required = self.score > threshold
+class MultipleQueryResponse(BaseModel):
+    """Response containing multiple generated search queries."""
+    queries: List[str] = Field(
+        ...,
+        description="List of distinct search queries"
+    )
 
 # ######################
 # LONGWRITER MODELS
