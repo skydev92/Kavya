@@ -850,6 +850,7 @@ class Database:
         """, (account_id,))
         return True
 
+    @staticmethod
     def _check_error_message(error_type, error_msg, backoff_base, retry_count):
         # Check for specific errors that might be retryable
         is_lock_timeout = "lock timeout" in error_msg.lower() or "55P03" in error_msg
@@ -1050,7 +1051,7 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                error_data = self._check_error_message(error_type, error_msg, backoff_base, retry_count)
+                error_data = Database._check_error_message(error_type, error_msg, backoff_base, retry_count)
                 is_retryable = error_data["is_retryable"]
                 wait_time_seconds = error_data["wait_time_seconds"]
                 error_category = error_data["error_category"]
@@ -1243,7 +1244,7 @@ class Database:
                 error_type = type(e).__name__
                 error_msg = str(e)
                 
-                error_data = self._check_error_message(error_type, error_msg, backoff_base, retry_count)
+                error_data = Database._check_error_message(error_type, error_msg, backoff_base, retry_count)
                 is_retryable = error_data["is_retryable"]
                 wait_time = error_data["wait_time"]
                 error_category = error_data["error_category"]
