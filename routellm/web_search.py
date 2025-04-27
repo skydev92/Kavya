@@ -5,6 +5,7 @@ import httpx
 import asyncio
 import json
 import yaml
+import litellm
 from typing import List, Optional
 from datetime import datetime
 
@@ -31,12 +32,12 @@ def get_web_search_config():
 
 async def enhance_with_web_search(controller, messages):
     """Add web search results to messages if web search need is above threshold."""
-    # Get API key from environment
-    jina_api_key = os.environ.get("JINA_API_KEY")
-    logging.info(f"WEB_SEARCH: Jina API key present: {jina_api_key is not None}")
-    if not jina_api_key:
-        return messages
-        
+    # Check if the Perplexity API key is set for LiteLLM to use
+    perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
+    logging.info(f"WEB_SEARCH: Perplexity API key present for LiteLLM: {perplexity_api_key_present}")
+    if not perplexity_api_key_present:
+        return messages # Skip if key is missing
+
     try:
         # Evaluate if web search would help
         eval_result = await evaluate_web_search_need(controller, messages)
@@ -50,9 +51,10 @@ async def enhance_with_web_search(controller, messages):
         search_query = await generate_search_query(controller, user_msg)
         logging.info(f"WEB_SEARCH: Generated optimized search query: '{search_query}'")
         
-        # Perform web search
-        logging.info(f"WEB_SEARCH: Searching for: '{search_query}'")
-        search_results = await search_web(search_query, jina_api_key)
+        # Perform web search using Perplexity via LiteLLM
+        logging.info(f"PERPLEXITY_SEARCH: Searching for: '{search_query}'")
+        # Pass only the query, LiteLLM handles the API key from env
+        search_results = await search_web(search_query)
         
         if not search_results:
             return messages
@@ -83,7 +85,7 @@ async def enhance_with_web_search(controller, messages):
             raise RuntimeError("No user message found in conversation history. Web search results cannot be attached.")
         
     except Exception as e:
-        logging.error(f"WEB_SEARCH: Error: {str(e)}")
+        logging.error(f"WEB_SEARCH: Error during Perplexity search enhancement: {str(e)}")
         return messages
 
 async def generate_search_query(controller, user_msg: str) -> str:
@@ -128,7 +130,6 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
     
     try:
         # Use the weak model to generate the query
-        import litellm
         response = await litellm.acompletion(
             model=controller.model_pair.weak,
             messages=[{"role": "user", "content": prompt}],
@@ -196,7 +197,6 @@ Examples:
     user_id = user_id or "system_web_search"
     
     # Use litellm directly to avoid recursion
-    import litellm
     response = await litellm.acompletion(
         model=controller.model_pair.weak,
         messages=[{"role": "user", "content": prompt}],
@@ -227,80 +227,45 @@ Examples:
         logging.error(f"WEB_SEARCH: Failed to parse web search need evaluation: {str(e)}")
         raise RuntimeError(f"Failed to evaluate web search need: {str(e)}")
 
-async def search_web(query: str, api_key: str) -> Optional[str]:
-    """Search the web using Jina Search API and return markdown text response."""
-    logging.info(f"JINA_SEARCH: Searching for: '{query}'")
-    
-    # Format query for URL
-    encoded_query = query.replace(' ', '+')
-    jina_url = f"https://s.jina.ai/?q={encoded_query}"
-    
-    headers = {
-        'Authorization': f'Bearer {api_key}',
-        'X-Engine': 'no-content',
-        "X-Retain-Images": "none"
-    }
-    
-    # Set up retry parameters
-    max_retries = 3
-    base_delay = 1
-    
-    for attempt in range(max_retries):
-        try:
-            delay = base_delay * (2 ** attempt) + (asyncio.get_event_loop().time() % 1)  # Add some jitter
-            if attempt > 0:
-                logging.info(f"JINA_SEARCH: Retry attempt {attempt+1}/{max_retries} after {delay:.2f}s delay")
-                await asyncio.sleep(delay)
-                
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(jina_url, headers=headers)
-                
-            status_code = response.status_code
-            if status_code == 429:
-                logging.warning(f"JINA_SEARCH: Rate limited (429), will retry in {delay:.2f}s")
-                continue
-                
-            response.raise_for_status()
-            
-            # Get raw text content from response
-            result_text = response.text
-            
-            # Remove markdown links with regex, keeping only the link text
-            result_text = re.sub(r'\[(.*?)\]\(.*?\)', r'\1', result_text)
-            
-            # Remove list items (asterisks, dashes, bullets) - both indented and non-indented
-            result_text = re.sub(r'^\s*[\*\-•⁃◦▪▫◘○◙♦✓→⟹⟶◆★☆⬧⚫⚪►◄▶◀]\s+.*$', '', result_text, flags=re.MULTILINE)
-            
-            # Remove list items with numbers or letters (1., a., etc.)
-            result_text = re.sub(r'^\s*[\d]+\.\s+.*$', '', result_text, flags=re.MULTILINE)
-            result_text = re.sub(r'^\s*[a-zA-Z]\.\s+.*$', '', result_text, flags=re.MULTILINE)
-            
-            # Remove URL Source and Description lines often found in search results
-            result_text = re.sub(r'^\[\d+\]\s+(Title|URL Source|Description):.*$', '', result_text, flags=re.MULTILINE)
-            
-            # Remove table formatting and info boxes (lines with vertical bars/pipes)
-            result_text = re.sub(r'^\s*\|.*\|\s*$', '', result_text, flags=re.MULTILINE)
-            result_text = re.sub(r'^\s*\+[-\+]+\s*$', '', result_text, flags=re.MULTILINE)  # Table separator lines
-            
-            # Remove empty lines created by the previous operations
-            result_text = re.sub(r'\n\s*\n', '\n\n', result_text)
-            
-            # Limit text length if necessary
-            if len(result_text) > 200000:
-                result_text = result_text[:200000]
-                logging.info(f"JINA_SEARCH: Truncated response text to 200000 characters")
-            
-            logging.info(f"JINA_SEARCH: Successfully retrieved search results ({len(result_text)} chars)")
-            return result_text
-            
-        except httpx.RequestError as e:
-            if attempt == max_retries - 1:
-                logging.error(f"JINA_SEARCH: Failed after {max_retries} attempts: {str(e)}")
-                return None
-        except Exception as e:
-            logging.error(f"JINA_SEARCH: Unexpected error: {str(e)}")
-            if attempt == max_retries - 1:
-                return None
-    
-    logging.warning("JINA_SEARCH: Failed to get search results after retries")
-    return None 
+async def search_web(query: str) -> Optional[str]:
+    """Search the web using Perplexity AI API via LiteLLM and return text response."""
+    logging.info(f"PERPLEXITY_SEARCH: Searching for: '{query}' via LiteLLM")
+
+    model_name = "perplexity/sonar-pro" # Using sonar-pro as requested
+    messages = [
+        # Optional: Add system prompt if desired/recommended by Perplexity for search
+        # {"role": "system", "content": "Provide concise and factual search results."},
+        {"role": "user", "content": query}
+    ]
+
+    try:
+        # LiteLLM handles retries based on its configuration.
+        # Add other relevant LiteLLM parameters if needed (e.g., temperature=0.3)
+        response = await litellm.acompletion(
+            model=model_name,
+            messages=messages,
+            # temperature=0.3, # Example optional parameter
+            # max_tokens=1000 # Example optional parameter
+        )
+
+        # Extract result (check LiteLLM response structure - assuming standard format)
+        if response and response.get("choices") and response["choices"][0].get("message"):
+            result_text = response["choices"][0]["message"]["content"].strip()
+        else:
+            logging.warning(f"PERPLEXITY_SEARCH: Received unexpected response structure from LiteLLM: {response}")
+            return None
+
+        # Limit text length if necessary
+        if len(result_text) > 200000:
+            result_text = result_text[:200000]
+            logging.info(f"PERPLEXITY_SEARCH: Truncated response text to 200000 characters")
+
+        logging.info(f"PERPLEXITY_SEARCH: Successfully retrieved search results ({len(result_text)} chars)")
+        return result_text
+
+    except Exception as e:
+        # Handle potential exceptions from LiteLLM
+        # Consider specific exception types based on LiteLLM docs if available
+        # (e.g., litellm.exceptions.AuthenticationError, litellm.exceptions.RateLimitError)
+        logging.error(f"PERPLEXITY_SEARCH: LiteLLM call failed: {str(e)}")
+        return None # Propagate failure 

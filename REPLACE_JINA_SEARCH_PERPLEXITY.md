@@ -1,23 +1,25 @@
-# MVP Migration Plan: Jina Search to Perplexity AI
+# MVP Migration Plan: Jina Search to Perplexity AI (using LiteLLM)
 
-This document outlines the minimum viable steps to replace the Jina Search API with the Perplexity AI API for the web search feature in `routellm/web_search.py`. Functional changes beyond adapting to the new API are out of scope for this MVP.
+This document outlines the minimum viable steps to replace the Jina Search API with the Perplexity AI API for the web search feature in `routellm/web_search.py`, utilizing LiteLLM for the API interaction. Functional changes beyond adapting to the new API and integration method are out of scope for this MVP.
 
 **Assumptions:**
 
-*   You have access to and have reviewed the latest official Perplexity AI Search API documentation for endpoints, authentication, request/response formats, and error codes.
+*   You have access to and have reviewed the latest official Perplexity AI Search API documentation and the LiteLLM documentation for Perplexity integration.
 *   You have obtained a Perplexity AI API key.
+*   LiteLLM is already integrated into the project and configured appropriately for basic usage.
 
 **Steps:**
 
 1.  **Configuration Update:**
-    *   Add `PERPLEXITY_API_KEY=<your_perplexity_api_key>` to your environment variable sources (e.g., `.env.prod`, `.env.dev`).
-    *   Update any template files (e.g., `.env.example`) to include `PERPLEXITY_API_KEY`.
+    *   Add `PERPLEXITYAI_API_KEY=<your_perplexity_api_key>` to your environment variable sources (e.g., `.env.prod`, `.env.dev`). **Note:** Use the `PERPLEXITYAI_API_KEY` name convention as shown in the LiteLLM docs.
+    *   Update any template files (e.g., `.env.example`) to include `PERPLEXITYAI_API_KEY`.
 
 2.  **Modify `routellm/web_search.py`:**
 
+    *   **Import LiteLLM in `search_web`:** Ensure `import litellm` is present if not already file-scoped.
     *   **Update API Key Check in `enhance_with_web_search`:**
         *   Locate the check for `JINA_API_KEY`.
-        *   Change it to check for `PERPLEXITY_API_KEY`:
+        *   Change it to check for `PERPLEXITYAI_API_KEY`:
             ```python
             # Replace this:
             # jina_api_key = os.environ.get("JINA_API_KEY")
@@ -26,61 +28,71 @@ This document outlines the minimum viable steps to replace the Jina Search API w
             #     return messages
 
             # With this:
-            perplexity_api_key = os.environ.get("PERPLEXITY_API_KEY")
-            logging.info(f"WEB_SEARCH: Perplexity API key present: {perplexity_api_key is not None}")
-            if not perplexity_api_key:
+            # Check if the key is set for LiteLLM to use (no need to pass it explicitly)
+            perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
+            logging.info(f"WEB_SEARCH: Perplexity API key present for LiteLLM: {perplexity_api_key_present}")
+            if not perplexity_api_key_present:
                 return messages # Skip if key is missing
             ```
-        *   Update the call to `search_web` within the `try` block to pass the `perplexity_api_key`.
+        *   **Remove API key passing:** Remove the `api_key` argument from the call to `search_web` within the `try` block, as LiteLLM picks it up from the environment.
         *   Update logging messages within this function from "Jina" to "Perplexity" where relevant.
 
     *   **Rewrite `search_web` Function:**
-        *   **Function Signature:** Update the `api_key` parameter name if desired (e.g., `perplexity_key`).
+        *   **Function Signature:** Remove the `api_key` (or `perplexity_key`) parameter. The function signature becomes `async def search_web(query: str) -> Optional[str]:`.
         *   **Logging:** Change `JINA_SEARCH` log prefixes to `PERPLEXITY_SEARCH`.
-        *   **Remove Jina Logic:** Delete the lines constructing the Jina URL (`jina_url = ...`) and the Jina-specific headers (`headers = {'Authorization': ..., 'X-Engine': ..., 'X-Retain-Images': ...}`). Delete the `httpx.get` call.
-        *   **Add Perplexity API Call:**
-            *   Define `PERPLEXITY_API_ENDPOINT` with the correct URL from their documentation.
-            *   Construct the required `headers` for Perplexity (e.g., `{'Authorization': f'Bearer {perplexity_key}', 'Content-Type': 'application/json'}`).
-            *   Construct the JSON `payload` according to Perplexity's documentation, including the `query` and necessary model parameters (e.g., `{"model": "...", "messages": [{"role": "user", "content": query}]}`). **Refer to Perplexity docs for the exact structure.**
-            *   Make the API call using `httpx.post`:
+        *   **Remove Jina Logic:** Delete the lines constructing the Jina URL (`jina_url = ...`), Jina-specific headers, and the `httpx.get` call.
+        *   **Remove Manual `httpx` Logic:** Delete any remaining manual `httpx.post` logic, header construction, and payload construction intended for Perplexity.
+        *   **Add Perplexity API Call via LiteLLM:**
+            *   Define the desired Perplexity model using the `perplexity/` prefix (e.g., `model="perplexity/sonar-pro"` or another model suitable for search tasks listed in their docs).
+            *   Construct the `messages` payload for LiteLLM.
+            *   Call `litellm.acompletion`.
                 ```python
-                # Example structure - VERIFY WITH PERPLEXITY DOCS!
-                PERPLEXITY_API_ENDPOINT = "https://api.perplexity.ai/chat/completions" # Check docs!
-                headers = {
-                    'Authorization': f'Bearer {perplexity_key}',
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json'
-                }
-                payload = {
-                    # Consult Perplexity API Docs for required fields
-                    "model": "pplx-7b-online", # Example model - check docs
-                    "messages": [
-                        {"role": "system", "content": "Provide concise and factual information."}, # Optional
-                        {"role": "user", "content": query}
-                    ]
-                }
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(PERPLEXITY_API_ENDPOINT, headers=headers, json=payload)
+                import litellm # Ensure import
+
+                # Example structure - VERIFY MODEL CHOICE & PARAMS
+                model_name = "perplexity/sonar-pro" # Choose appropriate model from docs
+                messages = [
+                    # Optional: Add system prompt if desired/recommended by Perplexity for search
+                    # {"role": "system", "content": "Provide concise and factual search results."},
+                    {"role": "user", "content": query}
+                ]
+
+                try:
+                    # Add other relevant LiteLLM parameters if needed (e.g., temperature, max_tokens)
+                    # Consult LiteLLM docs for error handling specifics
+                    response = await litellm.acompletion(
+                        model=model_name,
+                        messages=messages,
+                        # Add other parameters like temperature=0.3, max_tokens=... if needed
+                    )
+
+                    # Extract result (check LiteLLM response structure)
+                    result_text = response["choices"][0]["message"]["content"].strip()
+
+                except Exception as e:
+                    # Handle potential exceptions from LiteLLM
+                    logging.error(f"PERPLEXITY_SEARCH: LiteLLM call failed: {str(e)}")
+                    # Consider specific exception types based on LiteLLM docs if available
+                    return None # Propagate failure
+
                 ```
         *   **Adapt Error Handling & Retries:**
-            *   Review the `try...except` block and the status code checks (`if status_code == 429:`).
-            *   Modify the status code checks and associated logging/retry logic to match Perplexity's documented error codes for rate limits, bad requests, server errors, etc.
+            *   Remove the manual retry loop (`for attempt in range(max_retries):`). LiteLLM typically handles retries based on its configuration.
+            *   Focus the `try...except` block around the `litellm.acompletion` call to catch potential exceptions raised by LiteLLM (e.g., API connection errors, authentication errors, specific Perplexity errors surfaced by LiteLLM). Refer to LiteLLM's documentation for details on exception types.
         *   **Replace Result Processing:**
             *   **Remove all `re.sub(...)` calls** used for cleaning Jina's markdown response.
-            *   Parse the JSON response: `json_response = response.json()`.
-            *   Extract the relevant search result content from `json_response` based on the structure defined in Perplexity's documentation. This might involve accessing nested fields like `json_response['choices'][0]['message']['content']`. **Verify the exact path.**
-            *   Assign the extracted content to `result_text`.
+            *   The result extraction is now done from the LiteLLM `response` object as shown above (`response["choices"][0]["message"]["content"]`). **Verify this path in LiteLLM's standard response schema.**
             *   Keep the length truncation logic (`if len(result_text) > 200000:`).
 
 3.  **Testing:**
-    *   Perform integration testing locally by sending requests that trigger web search (e.g., current events queries) to your running server.
-    *   Verify logs show "PERPLEXITY_SEARCH" messages and successful API calls.
-    *   Confirm the format of the results added to the context matches expectations from Perplexity.
+    *   Perform integration testing locally by sending requests that trigger web search. Ensure `PERPLEXITYAI_API_KEY` is set in the environment.
+    *   Verify logs show "PERPLEXITY_SEARCH" messages and successful calls via LiteLLM.
+    *   Confirm the format of the results added to the context matches expectations from Perplexity via LiteLLM.
     *   Check that the final LLM output utilizes the fetched information.
 
 **Out of Scope for MVP:**
 
 *   Changes to the `evaluate_web_search_need` logic.
-*   Changes to the `generate_search_query` logic (unless Perplexity docs strongly recommend a different query style).
-*   Advanced result processing beyond extracting the primary content provided by the Perplexity API.
-*   Adding new configuration options specific to Perplexity (beyond the API key). 
+*   Changes to the `generate_search_query` logic.
+*   Advanced result processing beyond extracting the primary content provided by the Perplexity API via LiteLLM.
+*   Adding new configuration options specific to Perplexity or fine-tuning LiteLLM's retry/error handling beyond defaults. 
