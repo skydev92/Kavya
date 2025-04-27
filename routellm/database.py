@@ -33,14 +33,14 @@ logging.basicConfig(
 # Constants for connection management
 DEFAULT_POOL_SIZE = 5
 DEFAULT_MAX_OVERFLOW = 10
-DEFAULT_POOL_TIMEOUT = 30000  # milliseconds (30 seconds)
+DEFAULT_POOL_TIMEOUT = 20000  # milliseconds (20 seconds)
 DEFAULT_POOL_RECYCLE = 1800000  # milliseconds (30 minutes)
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_RETRY_BACKOFF = 500  # milliseconds (0.5 seconds)
 DEFAULT_CONNECT_TIMEOUT = 10000  # milliseconds (10 seconds)
-DEFAULT_COMMAND_TIMEOUT = 30000  # milliseconds (30 seconds)
-DEFAULT_LOCK_TIMEOUT = 30000  # milliseconds (30 seconds)
-DEFAULT_STATEMENT_TIMEOUT = 60000  # milliseconds (60 seconds)
+DEFAULT_COMMAND_TIMEOUT = 20000  # milliseconds (20 seconds)
+DEFAULT_LOCK_TIMEOUT = 20000  # milliseconds (20 seconds)
+DEFAULT_STATEMENT_TIMEOUT = 20000  # milliseconds (20 seconds)
 DEFAULT_VALIDATION_INTERVAL = 180000  # milliseconds (60 seconds)
 # Add constants for retry handling specific to token updates
 DEFAULT_TOKEN_UPDATE_RETRIES = 10
@@ -55,7 +55,7 @@ DEFAULT_RESTART_BACKOFF_MULTIPLIER = 2.0
 # https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS
 PG_LOCK_NAMESPACE = 54321  # Custom namespace for our application's advisory locks
 # Add constants for initialization
-DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 300000  # milliseconds (5 minutes)
+DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 20000  # milliseconds (20 seconds)
 
 class DatabaseConnection:
     def __init__(self):
