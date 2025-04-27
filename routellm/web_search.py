@@ -70,7 +70,6 @@ Examples:
             model=controller.model_pair.weak,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}, # Ask for JSON string
-            max_tokens=100, 
             temperature=0.1,
             user=user_id
         )
@@ -98,8 +97,11 @@ Examples:
 
 async def generate_multiple_queries(controller, user_msg: str, count: int, user_id: str) -> Optional[MultipleQueryResponse]:
     """Generate a specified number of distinct search queries using the weak LLM."""
-    
-    # Revised prompt emphasizing deconstruction
+
+    # Get current year for time-sensitive queries
+    current_year = datetime.now().year
+
+    # Revised prompt emphasizing deconstruction and time-sensitivity
     prompt = f"""**Deconstruct** the following user request into its core components or distinct sub-topics. Generate exactly {count} specific, search-engine-friendly queries where **each query targets ONLY ONE** of these distinct components or sub-topics.
 
 Request: "{user_msg}"
@@ -108,15 +110,20 @@ Guidelines for Queries:
 - Each query MUST focus on a single, unique aspect of the original request.
 - Ensure the queries are substantially different from each other.
 - Use specific keywords relevant to the sub-topic.
-- Avoid conversational filler or action verbs.
+- Avoid conversational filler or action verbs like "write", "explain", "list".
 - If the request involves comparisons (e.g., A vs B on criteria X, Y), generate separate queries for each comparison point or criterion as needed to meet the {count}.
+- **IMPORTANT Time Sensitivity:**
+  - For current events, news, technology, or people in ongoing roles, ADD "{current_year}" to the relevant query.
+  - If the user mentions "current", "latest", "recent", or "now", INCLUDE the year {current_year} in the relevant query.
+  - For rapidly evolving fields (tech, science, politics, entertainment), ADD the year {current_year} to the relevant query.
+  - Only omit the year for timeless topics (math concepts, historical events before {current_year-2}, fundamental science).
 
 Return ONLY a JSON object containing a single key "queries" which is a list of exactly {count} strings.
 
 Examples:
 - Request: "Compare speed and cost of Model A vs Model B.", count=2 -> {{"queries": ["Model A vs Model B speed comparison", "Model A vs Model B cost comparison"]}}
 - Request: "Summarize the plot, themes, and reception of book X.", count=3 -> {{"queries": ["Book X plot summary", "Book X main themes analysis", "Book X critical reception review"]}}
-- Request: "Latest Pixel vs iPhone battery and camera?", count=4 -> {{"queries": ["latest Google Pixel phone battery life", "latest iPhone battery life", "latest Google Pixel phone camera performance", "latest iPhone camera performance"]}} # (Example of finer-grained split if count allows)
+- Request: "Latest Pixel vs iPhone battery and camera?", count=4 -> {{"queries": [f"latest Google Pixel phone battery life {current_year}", f"latest iPhone battery life {current_year}", f"latest Google Pixel phone camera performance {current_year}", f"latest iPhone camera performance {current_year}"]}} # (Example of finer-grained split if count allows)
 """
 
     try:
@@ -125,7 +132,6 @@ Examples:
             model=controller.model_pair.weak,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}, # Ask for JSON string
-            max_tokens=80 * count, 
             temperature=0.2,
             user=user_id
         )
@@ -311,7 +317,6 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
         response = await litellm.acompletion(
             model=controller.model_pair.weak,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=80,
             temperature=0.3,
             user=user_id
         )
@@ -364,8 +369,6 @@ async def search_web(query: str, user: str) -> Optional[str]:
             model=model_name,
             messages=messages,
             user=user,
-            # temperature=0.3, # Example optional parameter
-            # max_tokens=1000 # Example optional parameter
         )
 
         # Extract result (check LiteLLM response structure - assuming standard format)

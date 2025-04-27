@@ -24,6 +24,7 @@ import enum
 from threading import Lock
 import asyncio
 import random
+import re
 
 from routellm.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
@@ -909,26 +910,59 @@ class Longwriter(Controller):
         chunk_size: int = DEFAULT_CHUNK_SIZE
     ) -> AsyncGenerator:
         logging.info(f"Making streaming completion call for content draft section '{section.title}' using model: {model}")
-        # Extract tone from system prompt if present
+        
+        # --- Step 1: Extract Search Results (if available) ---
+        extracted_search_results: Optional[str] = None
+        if hasattr(content_strategy, 'original_messages') and content_strategy.original_messages:
+            # Find the last user message in the original context
+            last_user_msg_content = None
+            for msg in reversed(content_strategy.original_messages):
+                if msg.get("role") == "user":
+                    last_user_msg_content = msg.get("content")
+                    break
+            
+            if last_user_msg_content:
+                # Use regex to find search results within the content
+                search_match = re.search(r"<web_search_results>(.*?)</web_search_results>", last_user_msg_content, re.DOTALL)
+                if search_match:
+                    extracted_search_results = search_match.group(1).strip()
+                    logging.info(f"Extracted web search results for section '{section.title}'")
+                else:
+                    logging.info(f"No <web_search_results> tag found in last user message for section '{section.title}'")
+            else:
+                logging.info(f"No user message found in original_messages for section '{section.title}'")
+        else:
+            logging.info(f"No original_messages found in content_strategy for section '{section.title}'")
+        
+        # --- Step 2: Construct Prompt with Optional Search Context ---
+        # Extract tone and image instructions as before
         tone_instruction = ""
         image_instructions = None
-        
-        # Get the original request messages from content_strategy
         if hasattr(content_strategy, 'original_messages') and content_strategy.original_messages:
             messages = content_strategy.original_messages
             if messages and messages[0]["role"] == "system":
-                import re
-                # Extract tone
+                # import re # Already imported at file level likely, but ensure it's available
                 tone_match = re.search(r'<TONE>(.*?)</TONE>', messages[0]["content"], re.DOTALL)
                 if tone_match:
                     tone = tone_match.group(1).strip()
-                    tone_instruction = f"\n9. Use this specific tone of voice:\n{tone}"
+                    tone_instruction = f"\n11. Use this specific tone of voice:\n{tone}" # Adjusted index
                 
-                # Extract image handling instructions
                 image_match = re.search(r'<IMAGE_HANDLING>(.*?)</IMAGE_HANDLING>', messages[0]["content"], re.DOTALL)
                 if image_match:
                     image_instructions = image_match.group(1).strip()
 
+        # Create the search context section string conditionally
+        search_context_section = ""
+        if extracted_search_results:
+            search_context_section = f"""
+
+        Context from Recent Web Search (Use this information where relevant):
+        --- START SEARCH RESULTS ---
+        {extracted_search_results}
+        --- END SEARCH RESULTS ---
+        """
+
+        # Define the main prompt using an f-string, injecting the search context
         content_writer_prompt = f'''
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with previous sections.
@@ -944,8 +978,10 @@ class Longwriter(Controller):
         8. Keep in mind the overall structure of the article as outlined
         9. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
         10. Only use the specified HTML tags for formatting{tone_instruction}
-        '''
+        {search_context_section}
+        ''' # End of main instruction block
 
+        # Append image requirements if needed
         if 'img' in html_strategy.tags:
             if image_instructions:
                 content_writer_prompt += f'''
@@ -953,6 +989,7 @@ class Longwriter(Controller):
         {image_instructions}
         '''
             else:
+                # Default image instructions
                 content_writer_prompt += '''
         Image Requirements:
         - Every <img> needs src and alt attributes
@@ -967,6 +1004,7 @@ class Longwriter(Controller):
         <img src="https://promptahuman.com/600x400@2x?bg_color=ghostwhite&&title=team_collaboration.jpg&prompt=Diverse team working together at modern office desk, sharing ideas 🤝✨" alt="Diverse team collaborating at a modern workspace, sharing creative ideas during a meeting">
         '''
 
+        # Append the outline and final instruction
         content_writer_prompt += f'''
         Here's the outline of the entire article:
         {outline.model_dump_json()}
@@ -974,7 +1012,7 @@ class Longwriter(Controller):
         Now, write the next section: {section.title}
         '''
 
-        # Initialize or update chat history
+        # Initialize or update chat history (using the fully constructed prompt)
         if self.content_writer_messages is None:
             self.content_writer_messages = [
                 {"role": "system", "content": content_writer_prompt},
@@ -986,6 +1024,7 @@ class Longwriter(Controller):
                 {"role": "user", "content": f"Write next section:\n{section.model_dump_json()}"}
             )
 
+        # --- Rest of the function (LLM call, streaming, history update) unchanged --- 
         response = await acompletion(
             model=model,  # Direct model use after routing decision
             messages=self.content_writer_messages,  # Use the maintained message history
