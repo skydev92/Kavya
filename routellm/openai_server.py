@@ -36,6 +36,14 @@ from routellm.database_cache import DatabaseCache
 
 from dotenv import load_dotenv
 
+load_dotenv()
+
+os.environ["LANGFUSE_PUBLIC_KEY"] = os.getenv("LANGFUSE_PUBLIC_KEY")
+os.environ["LANGFUSE_SECRET_KEY"] = os.getenv("LANGFUSE_SECRET_KEY")
+os.environ["LANGFUSE_HOST"] = os.getenv("LANGFUSE_HOST")
+
+# set langfuse as a callback, litellm will send the data to langfuse
+litellm.success_callback = ["langfuse"] 
 # ------------------------------------------------------------------------------
 # APPLICATION INITIALIZATION
 # ------------------------------------------------------------------------------
@@ -1144,7 +1152,6 @@ logging.basicConfig(
 )
 
 # Load environment variables from .env file
-load_dotenv()
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
