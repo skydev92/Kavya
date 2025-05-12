@@ -1104,7 +1104,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
 
             # Get current token balance
             try:
-                current_balance = app.db.get_balance(account_id=user_id)
+                current_balance = app.db.get_account_balance(account_id=user_id)
                 if is_predefined:
                     content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
                     content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
@@ -1119,7 +1119,15 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
                 else:
                     content = res.model_dump()
-                
+
+            print("Updating token usage...")
+            # Update token usage
+            print(f"Prompt tokens: {res.usage.prompt_tokens}, Completion tokens: {res.usage.completion_tokens}")
+            app.cache.update_usage_with_response(
+                account_id=user_id,
+                prompt_tokens=res.usage.prompt_tokens,
+                completion_tokens=res.usage.completion_tokens
+            )
             return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
             
     except Exception as e:
