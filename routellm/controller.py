@@ -825,7 +825,7 @@ class Longwriter(Controller):
         #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
         html_strategist_prompt = f'''
-        You are an HTML strategist. Given a list of allowed HTML tags, allowed HTML classes, and a content strategy, 
+        You are an HTML strategist. Given a constraint of allowed HTML tags, allowed HTML classes, and a content strategy, 
         provide a list of HTML tags and classes that would be most effective for structuring the content.
         '''
         
