@@ -28,9 +28,11 @@ fallback_configs:
         models:
             - gpt-4o
             - gpt-4o-mini
-            - gemini/gemini-2.5-flash
+            - gemini/gemini-2.5-pro-preview-05-06
+            - gemini/gemini-2.5-flash-preview-04-17
             - anthropic/claude-3-7-sonnet-latest
-            - xai/grok-3-mini-beta
+            - mistral/mistral-large-latest
+            - xai/grok-3-beta
         max_retries: 6
         retry_delay: 2.0
     kavya-m1-eu:
@@ -66,8 +68,8 @@ provider_configs:
             - mistral/mistral-medium-latest
     gemini:
         models:
-            - gemini/gemini-2.5-pro-preview-03-25
-            - gemini/gemini-2.5-flash
+            - gemini/gemini-2.5-pro-preview-05-06
+            - gemini/gemini-2.5-flash-preview-04-17
     groq:
         models:
             - groq/llama3-70b-8192
