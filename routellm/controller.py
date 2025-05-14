@@ -326,9 +326,9 @@ class Controller:
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
-                response = completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                response = completion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
         else:
-            response = completion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+            response = completion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
 
         # Handle enum responses
         if (
@@ -411,7 +411,7 @@ class Controller:
                         
                         # Use litellm's acompletion directly instead of going through provider
                         logging.info(f"DEBUG : current model for acompletion_with_fallbacks is: {current_kwargs['model']}")
-                        result = await acompletion(api_base=self.api_base, api_key=self.api_key, **current_kwargs)
+                        result = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **current_kwargs)
                         
                         # Convert Usage objects to dictionaries to ensure JSON serialization works
                         if result and hasattr(result, 'usage') and not isinstance(result.usage, dict):
@@ -547,9 +547,9 @@ class Controller:
             if self.suppress_warnings:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=UserWarning)
-                    response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                    response = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
             else:
-                response = await acompletion(api_base=self.api_base, api_key=self.api_key, **kwargs)
+                response = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
                 
             # Handle enum responses
             if (
@@ -792,7 +792,10 @@ class Longwriter(Controller):
                 model=model,  # Direct model use after routing decision
                 messages=llm_messages, # Use the combined messages list
                 response_format=ContentStrategy,
-                user=request.user  # Propagate user ID
+                user=request.user,  # Propagate user ID
+                metadata={
+                    "trace_user_id": request.user
+                }
             )
             
             # Update cost tracker with response usage
@@ -836,7 +839,10 @@ class Longwriter(Controller):
                     {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nAllowed HTML classes: {allowed_html_classes}\nContent strategy: {content_strategy.model_dump_json()}"}
                 ],
                 response_format=HTMLTagStrategy,
-                user=content_strategy.user  # Get user ID directly from content_strategy
+                user=content_strategy.user,  # Get user ID directly from content_strategy,
+                metadata={
+                    "trace_user_id": content_strategy.user
+                }
             )
 
             # Update cost tracker with response usage
@@ -882,7 +888,10 @@ class Longwriter(Controller):
                     {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
                 ],
                 response_format=ContentOutline,
-                user=content_strategy.user  # Get user ID from content strategy
+                user=content_strategy.user,  # Get user ID from content strategy
+                metadata={
+                    "trace_user_id": content_strategy.user
+                }
             )
 
             # Update cost tracker with response usage
@@ -1031,7 +1040,10 @@ class Longwriter(Controller):
             stream=True,
             api_base=self.api_base,
             api_key=self.api_key,
-            user=content_strategy.user  # Get user ID from content strategy
+            user=content_strategy.user,  # Get user ID from content strategy
+            metadata={
+                "trace_user_id": content_strategy.user
+            }
         )
         
         # Use provided chunk_size or default
@@ -1327,7 +1339,10 @@ For the needs_structure field specifically:
             api_base=default_controller.api_base,
             api_key=default_controller.api_key,
             response_format=RoutingAnalysis,
-            user=routing_request.user  # Pass through the user ID
+            user=routing_request.user,  # Pass through the user ID
+            metadata={
+                "trace_user_id": routing_request.user
+            }
         )
         
         # Add logging for routing analysis response and usage
@@ -1561,7 +1576,7 @@ def make_streaming_completion(prompt):
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
-        stream_options={"include_usage": True}  # Important for getting usage info in streaming
+        stream_options={"include_usage": True}  # Important for getting usage info in streaming,
     )
     
     # Process streaming response
