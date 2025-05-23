@@ -471,6 +471,11 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 status_code=400
             )
 
+    # Add thinking=False globally to all requests (will be dropped by litellm for unsupported models)
+    request_data["thinking"] = False
+    request_data["show_thinking"] = False
+    request_data["thinking_budget"] = 0
+
     # Create the ChatCompletionRequest from the validated data
     try:
         logging.info(f"DEBUG: Final request_data before creating ChatCompletionRequest: {request_data}")
