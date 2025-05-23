@@ -1234,6 +1234,11 @@ class Controllers:
         )
 
     async def basic_routing(self, request: ChatCompletionRequest, cost_tracker: Optional[RequestCostTracker] = None):
+        # Longwriter only supports streaming requests, so force non-streaming to use completion
+        if not request.stream:
+            logging.info("Non-streaming request detected, skipping routing analysis and using completion controller")
+            return "completion"
+            
         logging.info("Making completion call for routing analysis using weak model")
         
         # Check if original_model is kavya-m1-hyper and skip routing if so
