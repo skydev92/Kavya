@@ -892,11 +892,18 @@ class Database:
                 error_category = "transaction aborted"
             elif is_lock_contention:
                 error_category = "lock contention"
+        
+        # Safe calculation of wait_time_seconds - avoid NoneType division error
+        if wait_time is not None:
+            wait_time_seconds = wait_time / 1000.0
+        else:
+            wait_time_seconds = 0.0
+        
         return {
             "is_retryable" : is_retryable,
             "error_category" : error_category,
             "wait_time" : wait_time,
-            "wait_time_seconds" : wait_time / 1000.0
+            "wait_time_seconds" : wait_time_seconds
         }
 
     def _update_balance(self, cursor, account_id: int, prompt_tokens: int, completion_tokens: int, word_count: int, transaction_id: str) -> None:
