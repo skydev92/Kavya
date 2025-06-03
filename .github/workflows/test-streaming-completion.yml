@@ -1,10 +1,8 @@
 name: Test Streaming Completion
 
 on:
-  push:
-    branches: [ main, develop ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ 1.x ]
 
 jobs:
   test-streaming-completion:
