@@ -9,6 +9,7 @@ cryptography>=42.0.0
 # Database dependencies
 cloud-sql-python-connector>=1.2.0
 pg8000>=1.29.0
+psycopg2-binary>=2.9.0  # For GitHub Actions PostgreSQL tests
 SQLAlchemy>=2.0.0
 
 pandas

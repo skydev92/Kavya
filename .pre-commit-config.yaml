@@ -8,3 +8,26 @@ repos:
     hooks:
     - id: isort
       name: isort (python)
+-   repo: local
+    hooks:
+    -   id: test-streaming-completion
+        name: Test Streaming Completion
+        entry: ./tests/streaming-completion.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+    -   id: test-non-streaming-completion
+        name: Test Non-Streaming Completion
+        entry: ./tests/non-streaming-completion.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+    -   id: test-structured-completion
+        name: Test Structured Completion
+        entry: ./tests/structured-completion.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
