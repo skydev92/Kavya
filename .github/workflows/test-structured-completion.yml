@@ -61,8 +61,32 @@ jobs:
     - name: Start server
       run: |
         export $(grep -v '^#' .env | xargs)
-        python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 &
-        sleep 30  # Wait for server to start
+        
+        # Start server in background and capture output
+        python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 > server.log 2>&1 &
+        SERVER_PID=$!
+        
+        # Wait for server to be ready (max 60 seconds)
+        echo "Waiting for server to start..."
+        for i in {1..60}; do
+          if grep -q "Application startup complete" server.log && grep -q "Uvicorn running on" server.log; then
+            echo "Server is ready after $i seconds"
+            break
+          fi
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "Server process died, showing logs:"
+            cat server.log
+            exit 1
+          fi
+          sleep 1
+        done
+        
+        # Check if we timed out
+        if [ $i -eq 60 ]; then
+          echo "Server failed to start within 60 seconds, showing logs:"
+          cat server.log
+          exit 1
+        fi
     
     - name: Run structured completion test
       run: |
