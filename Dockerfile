@@ -2,8 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN echo "Debug: Starting build process for RouteLLM server"
-
 # Install build dependencies and wget for Cloud SQL proxy
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -19,13 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN echo "Debug: Build complete. Preparing to start RouteLLM server"
-
 # Create a start script that handles both dev and prod environments
 RUN echo '#!/bin/bash' > start.sh && \
-    echo 'echo "Debug: Starting RouteLLM server in container"' >> start.sh && \
     echo 'if [ "$ENVIRONMENT" = "prod" ]; then' >> start.sh && \
-    echo '  echo "Starting Cloud SQL proxy in background"' >> start.sh && \
     echo '  /cloud_sql_proxy --structured-logs "$INSTANCE_CONNECTION_NAME" &' >> start.sh && \
     echo '  sleep 5  # Wait for proxy to start' >> start.sh && \
     echo 'fi' >> start.sh && \

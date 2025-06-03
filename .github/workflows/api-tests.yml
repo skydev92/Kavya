@@ -1,0 +1,177 @@
+name: API Tests
+
+on:
+  pull_request:
+    branches: [ 1.x ]
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Set up environment variables
+      run: |
+        echo "JWT_TEST_TOKEN=${{ secrets.JWT_TEST_TOKEN }}" >> .env
+        echo "JWT_PUBLIC_KEY_B64=${{ secrets.JWT_PUBLIC_KEY_B64 }}" >> .env
+        echo "ENVIRONMENT=dev" >> .env
+        echo "DATABASE_URL=postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@localhost:5432/${{ secrets.DB_NAME }}" >> .env
+        echo "INSTANCE_CONNECTION_NAME=${{ secrets.INSTANCE_CONNECTION_NAME }}" >> .env
+        echo "DB_USER=${{ secrets.DB_USER }}" >> .env
+        echo "DB_PASS=${{ secrets.DB_PASS }}" >> .env
+        echo "DB_NAME=${{ secrets.DB_NAME }}" >> .env
+        echo "DB_SOCKET_DIR=${{ secrets.DB_SOCKET_DIR }}" >> .env
+        echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
+        echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> .env
+        echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" >> .env
+        echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+        echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+        echo "MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}" >> .env
+        echo "LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}" >> .env
+        echo "LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}" >> .env
+        echo "LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}" >> .env
+    
+    - name: Download Cloud SQL Proxy
+      run: |
+        curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.16.0/cloud-sql-proxy.linux.amd64
+        chmod +x cloud-sql-proxy
+    
+    - name: Set up Google Cloud Authentication
+      run: |
+        echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' > /tmp/gcp-key.json
+        export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json
+        echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json" >> $GITHUB_ENV
+    
+    - name: Start Cloud SQL Proxy
+      run: |
+        ./cloud-sql-proxy ${{ secrets.INSTANCE_CONNECTION_NAME }} &
+        sleep 10  # Wait for proxy to start
+    
+    - name: Start server
+      run: |
+        export $(grep -v '^#' .env | xargs)
+        
+        # Start server in background and capture output
+        python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 > server.log 2>&1 &
+        SERVER_PID=$!
+        
+        # Wait for server to be ready (max 60 seconds)
+        for i in {1..60}; do
+          if grep -q "Application startup complete" server.log && grep -q "Uvicorn running on" server.log; then
+            break
+          fi
+          if ! kill -0 $SERVER_PID 2>/dev/null; then
+            echo "Server process died, showing logs:"
+            cat server.log
+            exit 1
+          fi
+          sleep 1
+        done
+        
+        # Check if we timed out
+        if [ $i -eq 60 ]; then
+          echo "Server failed to start within 60 seconds, showing logs:"
+          cat server.log
+          exit 1
+        fi
+    
+    - name: Run API Tests
+      run: |
+        # Initialize summary
+        echo "# 🧪 API Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Test | Status | Request | Expected Output | Actual Output |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|---------|-----------------|---------------|" >> $GITHUB_STEP_SUMMARY
+        
+        # Test 1: Streaming Completion
+        echo "🧪 Running streaming completion test..."
+        chmod +x tests/streaming-completion.sh
+        
+        if ./tests/streaming-completion.sh > streaming_output.txt 2>&1; then
+          streaming_status="✅ PASS"
+          streaming_actual=$(cat streaming_output.txt | grep "✅\|❌" || echo "Test passed")
+        else
+          streaming_status="❌ FAIL"
+          streaming_actual=$(cat streaming_output.txt | grep "✅\|❌" || echo "Test failed")
+        fi
+        
+        echo "| Streaming Completion | $streaming_status | \`POST /v1/chat/completions\` with \`stream: true\` | Contains 'data:' chunks and '[DONE]' | $streaming_actual |" >> $GITHUB_STEP_SUMMARY
+        
+        # Test 2: Non-Streaming Completion  
+        echo "🧪 Running non-streaming completion test..."
+        chmod +x tests/non-streaming-completion.sh
+        
+        if ./tests/non-streaming-completion.sh > nonstreaming_output.txt 2>&1; then
+          nonstreaming_status="✅ PASS"
+          nonstreaming_actual=$(cat nonstreaming_output.txt | grep "✅\|❌" || echo "Test passed")
+        else
+          nonstreaming_status="❌ FAIL" 
+          nonstreaming_actual=$(cat nonstreaming_output.txt | grep "✅\|❌" || echo "Test failed")
+        fi
+        
+        echo "| Non-Streaming Completion | $nonstreaming_status | \`POST /v1/chat/completions\` (no stream) | 'Joe Biden' | $nonstreaming_actual |" >> $GITHUB_STEP_SUMMARY
+        
+        # Test 3: Structured Completion
+        echo "🧪 Running structured completion test..."
+        chmod +x tests/structured-completion.sh
+        
+        if ./tests/structured-completion.sh > structured_output.txt 2>&1; then
+          structured_status="✅ PASS"
+          structured_actual=$(cat structured_output.txt | grep "✅\|❌" || echo "Test passed")
+        else
+          structured_status="❌ FAIL"
+          structured_actual=$(cat structured_output.txt | grep "✅\|❌" || echo "Test failed")
+        fi
+        
+        echo "| Structured Completion | $structured_status | \`POST /v1/chat/completions\` with \`response_format: json_object\` | Valid JSON with name/age fields | $structured_actual |" >> $GITHUB_STEP_SUMMARY
+        
+        # Add detailed outputs section
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Detailed Test Outputs" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat streaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### Non-Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat nonstreaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "### Structured Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat structured_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Check if any tests failed
+        if [[ "$streaming_status" == *"FAIL"* ]] || [[ "$nonstreaming_status" == *"FAIL"* ]] || [[ "$structured_status" == *"FAIL"* ]]; then
+          echo "❌ One or more API tests failed"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **One or more tests failed. Check the detailed outputs above.**" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          echo "✅ All API tests passed!"
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **All API tests passed successfully!**" >> $GITHUB_STEP_SUMMARY
+        fi
+    
+    - name: Stop server and proxy
+      run: |
+        pkill -f "routellm.openai_server" || true
+        pkill -f "cloud-sql-proxy" || true 

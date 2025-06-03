@@ -67,10 +67,8 @@ jobs:
         SERVER_PID=$!
         
         # Wait for server to be ready (max 60 seconds)
-        echo "Waiting for server to start..."
         for i in {1..60}; do
           if grep -q "Application startup complete" server.log && grep -q "Uvicorn running on" server.log; then
-            echo "Server is ready after $i seconds"
             break
           fi
           if ! kill -0 $SERVER_PID 2>/dev/null; then
