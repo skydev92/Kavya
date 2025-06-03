@@ -129,6 +129,8 @@
    
    Without Docker (Direct Python):
    ```bash
+   # Install Cloud SQL Proxy first: brew install cloud-sql-proxy (macOS) or gcloud components install cloud-sql-proxy
+   
    # First start the Cloud SQL Proxy in the background
    ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
 
