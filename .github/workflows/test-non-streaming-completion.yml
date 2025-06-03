@@ -26,6 +26,7 @@ jobs:
         echo "JWT_TEST_TOKEN=${{ secrets.JWT_TEST_TOKEN }}" >> .env
         echo "JWT_PUBLIC_KEY_B64=${{ secrets.JWT_PUBLIC_KEY_B64 }}" >> .env
         echo "ENVIRONMENT=dev" >> .env
+        echo "DATABASE_URL=postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@localhost:5432/${{ secrets.DB_NAME }}" >> .env
         echo "INSTANCE_CONNECTION_NAME=${{ secrets.INSTANCE_CONNECTION_NAME }}" >> .env
         echo "DB_USER=${{ secrets.DB_USER }}" >> .env
         echo "DB_PASS=${{ secrets.DB_PASS }}" >> .env
