@@ -91,84 +91,119 @@ jobs:
         # Initialize summary
         echo "# 🧪 API Test Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "| Test | Status | Request | Expected Output | Actual Output |" >> $GITHUB_STEP_SUMMARY
-        echo "|------|--------|---------|-----------------|---------------|" >> $GITHUB_STEP_SUMMARY
         
         # Test 1: Streaming Completion
         echo "🧪 Running streaming completion test..."
         chmod +x tests/streaming-completion.sh
         
         if ./tests/streaming-completion.sh > streaming_output.txt 2>&1; then
-          streaming_status="✅ PASS"
+          streaming_status="✅ **PASSED**"
           streaming_actual=$(cat streaming_output.txt | grep "✅\|❌" || echo "Test passed")
         else
-          streaming_status="❌ FAIL"
+          streaming_status="❌ **FAILED**"
           streaming_actual=$(cat streaming_output.txt | grep "✅\|❌" || echo "Test failed")
         fi
         
-        echo "| Streaming Completion | $streaming_status | \`POST /v1/chat/completions\` with \`stream: true\` | Contains 'data:' chunks and '[DONE]' | $streaming_actual |" >> $GITHUB_STEP_SUMMARY
+        echo "## 🌊 Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "$streaming_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Full curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": "Who was president of USA in 2022? Answer only with first name and last name and nothing else."}], "stream": true}'"'"'' >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Expected:** Contains 'data:' chunks and ends with '[DONE]'" >> $GITHUB_STEP_SUMMARY
+        echo "**Result:** $streaming_actual" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat streaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         
         # Test 2: Non-Streaming Completion  
         echo "🧪 Running non-streaming completion test..."
         chmod +x tests/non-streaming-completion.sh
         
         if ./tests/non-streaming-completion.sh > nonstreaming_output.txt 2>&1; then
-          nonstreaming_status="✅ PASS"
+          nonstreaming_status="✅ **PASSED**"
           nonstreaming_actual=$(cat nonstreaming_output.txt | grep "✅\|❌" || echo "Test passed")
         else
-          nonstreaming_status="❌ FAIL" 
+          nonstreaming_status="❌ **FAILED**" 
           nonstreaming_actual=$(cat nonstreaming_output.txt | grep "✅\|❌" || echo "Test failed")
         fi
         
-        echo "| Non-Streaming Completion | $nonstreaming_status | \`POST /v1/chat/completions\` (no stream) | 'Joe Biden' | $nonstreaming_actual |" >> $GITHUB_STEP_SUMMARY
+        echo "## 💬 Non-Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "$nonstreaming_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Full curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": "Who was president of USA in 2022? Answer only with first name and last name and nothing else."}]}'"'"'' >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Expected:** 'Joe Biden'" >> $GITHUB_STEP_SUMMARY
+        echo "**Result:** $nonstreaming_actual" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat nonstreaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         
         # Test 3: Structured Completion
         echo "🧪 Running structured completion test..."
         chmod +x tests/structured-completion.sh
         
         if ./tests/structured-completion.sh > structured_output.txt 2>&1; then
-          structured_status="✅ PASS"
+          structured_status="✅ **PASSED**"
           structured_actual=$(cat structured_output.txt | grep "✅\|❌" || echo "Test passed")
         else
-          structured_status="❌ FAIL"
+          structured_status="❌ **FAILED**"
           structured_actual=$(cat structured_output.txt | grep "✅\|❌" || echo "Test failed")
         fi
         
-        echo "| Structured Completion | $structured_status | \`POST /v1/chat/completions\` with \`response_format: json_object\` | Valid JSON with name/age fields | $structured_actual |" >> $GITHUB_STEP_SUMMARY
-        
-        # Add detailed outputs section
+        echo "## 📊 Structured Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "$structured_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "## 📋 Detailed Test Outputs" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        echo "### Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        cat streaming_output.txt >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        echo "### Non-Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        cat nonstreaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "**Full curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": "Generate a person with name and age in JSON format."}], "response_format": {"type": "json_object"}}'"'"'' >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
-        echo "### Structured Completion Test" >> $GITHUB_STEP_SUMMARY
+        echo "**Expected:** Valid JSON with name and age fields" >> $GITHUB_STEP_SUMMARY
+        echo "**Result:** $structured_actual" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         cat structured_output.txt >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Check if any tests failed
-        if [[ "$streaming_status" == *"FAIL"* ]] || [[ "$nonstreaming_status" == *"FAIL"* ]] || [[ "$structured_status" == *"FAIL"* ]]; then
+        # Summary
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]]; then
+          echo "## ❌ Test Suite Result" >> $GITHUB_STEP_SUMMARY
+          echo "**FAILED** - One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "❌ One or more API tests failed"
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "❌ **One or more tests failed. Check the detailed outputs above.**" >> $GITHUB_STEP_SUMMARY
           exit 1
         else
+          echo "## ✅ Test Suite Result" >> $GITHUB_STEP_SUMMARY
+          echo "**PASSED** - All API tests completed successfully!" >> $GITHUB_STEP_SUMMARY
           echo "✅ All API tests passed!"
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ **All API tests passed successfully!**" >> $GITHUB_STEP_SUMMARY
         fi
     
     - name: Stop server and proxy
