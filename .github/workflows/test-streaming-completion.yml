@@ -41,9 +41,13 @@ jobs:
         echo "LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}" >> .env
         echo "LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}" >> .env
     
+    - name: Download Cloud SQL Proxy
+      run: |
+        curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.16.0/cloud-sql-proxy.linux.amd64
+        chmod +x cloud-sql-proxy
+    
     - name: Start Cloud SQL Proxy
       run: |
-        chmod +x ./cloud-sql-proxy
         ./cloud-sql-proxy ${{ secrets.INSTANCE_CONNECTION_NAME }} &
         sleep 10  # Wait for proxy to start
     
