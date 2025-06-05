@@ -7,7 +7,7 @@ export $(grep -v '^#' .env | xargs)
 
 # Make request with both response_format parameter AND prompt-based JSON instructions (with 60s timeout)
 # This ensures compatibility with different model requirements
-response=$(curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \
+response=$(curl -s --max-time 60 -w "HTTPSTATUS:%{http_code}" -X POST "http://localhost:8089/v1/chat/completions" \
   -H "Authorization: Bearer $JWT_TEST_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -42,13 +42,34 @@ response=$(curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completi
         }
       }
     }
-  }') || {
+  }')
+
+# Check if curl failed
+if [ $? -ne 0 ]; then
     echo "❌ Test failed: Request timed out or failed (server likely not running)"
     exit 1
-}
+fi
+
+# Extract status code and response body
+http_status=$(echo "$response" | grep -o "HTTPSTATUS:[0-9]*" | cut -d: -f2)
+response_body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
+
+# Check HTTP status
+if [ "$http_status" != "200" ]; then
+    echo "❌ Test failed: HTTP $http_status"
+    echo "Response: $response_body"
+    exit 1
+fi
 
 # Extract content from response
-content=$(echo "$response" | jq -r '.choices[0].message.content')
+content=$(echo "$response_body" | jq -r '.choices[0].message.content' 2>/dev/null)
+
+# Check if jq parsing failed
+if [ $? -ne 0 ] || [ -z "$content" ] || [ "$content" = "null" ]; then
+    echo "❌ Test failed: Could not parse response with jq"
+    echo "Full response: $response_body"
+    exit 1
+fi
 
 echo "Raw response content: $content"
 
