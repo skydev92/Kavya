@@ -38,6 +38,7 @@ jobs:
         echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
         echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
         echo "MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}" >> .env
+        echo "XAI_API_KEY=${{ secrets.XAI_API_KEY }}" >> .env
         echo "LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}" >> .env
         echo "LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}" >> .env
         echo "LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}" >> .env
