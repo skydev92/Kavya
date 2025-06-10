@@ -390,7 +390,6 @@ async def create_chat_completion(
         logging.info(f"DEBUG: Original model set to {original_model}")
 
         # Process providers parameter if it's valid (only for kavya-m1)
-        """
         if kavya_request.providers is not None and original_model == "kavya-m1":
             # Check for empty providers string
             if not kavya_request.providers.strip():
@@ -401,14 +400,18 @@ async def create_chat_completion(
                             "message": "The providers parameter cannot be empty. Please provide a comma-separated list of providers.",
                             "type": "invalid_request_error",
                             "param": "providers",
-                            "code": "invalid_providers_format"
+                            "code": "invalid_providers_format",
                         }
-                    }
+                    },
                 )
-                
+
             # Parse the comma-separated list into an array
-            raw_providers = [provider.strip() for provider in kavya_request.providers.split(',') if provider.strip()]
-            
+            raw_providers = [
+                provider.strip()
+                for provider in kavya_request.providers.split(",")
+                if provider.strip()
+            ]
+
             # Check if any providers remain after stripping
             if not raw_providers:
                 return JSONResponse(
@@ -418,71 +421,74 @@ async def create_chat_completion(
                             "message": "The providers parameter contains only empty values. Please provide valid provider names.",
                             "type": "invalid_request_error",
                             "param": "providers",
-                            "code": "invalid_providers_format"
+                            "code": "invalid_providers_format",
                         }
-                    }
+                    },
                 )
-                
+
             logging.info(f"DEBUG: Raw providers list: {raw_providers}")
-            
+
             # Get provider configurations from app
             provider_configs = app.provider_configs
-            
+
             # Validate providers list
             supported_providers = set(provider_configs.keys())
-            unsupported_providers = [p for p in raw_providers if p.lower() not in supported_providers]
-            
+            unsupported_providers = [
+                p for p in raw_providers if p.lower() not in supported_providers
+            ]
+
             if unsupported_providers:
                 return JSONResponse(
                     status_code=400,
                     content={
                         "error": {
                             "message": f"Unsupported providers in list: {', '.join(unsupported_providers)}. "
-                                      f"Supported providers are: {', '.join(sorted(supported_providers))}. "
-                                      f"Example valid format: 'openai,anthropic,mistral'",
+                            f"Supported providers are: {', '.join(sorted(supported_providers))}. "
+                            f"Example valid format: 'openai,anthropic,mistral'",
                             "type": "invalid_request_error",
                             "param": "providers",
                             "code": "invalid_providers",
-                            "supported_providers": sorted(list(supported_providers))
+                            "supported_providers": sorted(list(supported_providers)),
                         }
-                    }
+                    },
                 )
-            
+
             # Translate provider names to model names with fallbacks
             providers_list = []
             for provider in raw_providers:
                 # All providers are now guaranteed to be supported
                 providers_list.extend(provider_configs[provider.lower()]["models"])
-            
+
             # Store the translated providers list in the request data
-            logging.info(f"DEBUG: Using custom providers list (translated): {providers_list}")
+            logging.info(
+                f"DEBUG: Using custom providers list (translated): {providers_list}"
+            )
             request_data["providers_list"] = providers_list
-            
+
             # Use the first model from the providers list as the primary model
             if providers_list:
                 request_data["model"] = providers_list[0]
                 logging.info(f"DEBUG: Setting primary model to: {providers_list[0]}")
         else:
-        """
-        # If providers parameter is not used, translate the model
-        request_data["model"] = app.controllers.default.model_translations[
-            original_model
-        ]
-        logging.info(f"DEBUG: Translated model to: {request_data['model']}")
+            # If providers parameter is not used, translate the model
+            request_data["model"] = app.controllers.default.model_translations[
+                original_model
+            ]
+            logging.info(f"DEBUG: Translated model to: {request_data['model']}")
 
-        # Check if we have a specific model for this Kavya model
-        if (
-            hasattr(app, "model_translations")
-            and original_model in app.model_translations
-        ):
-            # Get the model for this Kavya model
-            model_to_use = app.model_translations[original_model]
-            logging.info(f"Using model for {original_model}: {model_to_use}")
+            # Check if we have a specific model for this Kavya model
+            if (
+                hasattr(app, "model_translations")
+                and original_model in app.model_translations
+            ):
+                # Get the model for this Kavya model
+                model_to_use = app.model_translations[original_model]
+                logging.info(f"Using model for {original_model}: {model_to_use}")
 
-            # Update the model in all controllers
-            for controller_name in ["default", "completion", "longwriter"]:
-                controller = app.controllers.controllers[controller_name]
-                controller.model = model_to_use
+                # Update the model in all controllers
+                for controller_name in ["default", "completion", "longwriter"]:
+                    controller = app.controllers.controllers[controller_name]
+                    controller.model = model_to_use
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
         if (

@@ -13,7 +13,8 @@ response=$(curl -s --max-time 60 -w "HTTPSTATUS:%{http_code}" -X POST "http://lo
   -H "Authorization: Bearer $JWT_TEST_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o",
+    "model": "kavya-m1",
+    "provider": "openai",
     "messages": [
       {
         "role": "user",

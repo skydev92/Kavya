@@ -63,7 +63,7 @@ jobs:
         export $(grep -v '^#' .env | xargs)
         
         # Start server in background and capture output
-        python -m kavya.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 > server.log 2>&1 &
+        python -m kavya.openai_server --verbose --config config.yaml --port 8089 > server.log 2>&1 &
         SERVER_PID=$!
         
         # Wait for server to be ready (max 60 seconds)
@@ -210,8 +210,31 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
+        # Test 5: Providers Parameter
+        echo "🧪 Running providers parameter test..."
+        chmod +x tests/providers-parameter.sh
+        
+        if ./tests/providers-parameter.sh > providers_output.txt 2>&1; then
+          providers_status="✅ **PASSED**"
+        else
+          providers_status="❌ **FAILED**"
+        fi
+        
+        echo "## ⚙️ Providers Parameter Test" >> $GITHUB_STEP_SUMMARY
+        echo "$providers_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests the 'providers' parameter with various valid configurations." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat providers_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$providers_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "❌ One or more API tests failed"
