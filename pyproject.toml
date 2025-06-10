@@ -12,14 +12,7 @@ dependencies = [
 	'importlib-metadata; python_version<"3.10"',
 	'pyyaml',
 	'pydantic',
-	"numpy<2",
-	'pandas',
-	'torch',
-	'scikit-learn',
-	'tqdm',
 	'openai',
-	'transformers',
-	'datasets',
 	'litellm==1.67.0'
 ]
 

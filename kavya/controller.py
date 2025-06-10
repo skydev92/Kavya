@@ -1,49 +1,52 @@
+import asyncio
+import enum
+import inspect
+import json
+import logging
+import os
+import random
+import re
+import sys
 import warnings
 from dataclasses import dataclass
+from textwrap import dedent
+from threading import Lock
 from types import SimpleNamespace
-from typing import Any, Optional, AsyncGenerator, List, Tuple
+from typing import Any, AsyncGenerator, List, Optional, Tuple
 
-import pandas as pd
 import litellm
 from litellm import (
-    acompletion, 
-    completion, 
+    acompletion,
+    completion,
     get_supported_openai_params,
     supports_response_schema,
 )
-from textwrap import dedent
-
-import os
-import json
-import logging
-import sys
-import inspect
-import enum
-from threading import Lock
-import asyncio
-import random
-import re
+from pydantic import BaseModel
 
 from kavya.models import (
-    ChatCompletionRequest, ContentRequest, ContentStrategy, 
-    HTMLTagStrategy, OutlineSection, ContentOutline, 
-    RoutingAnalysis
+    ChatCompletionRequest,
+    ContentOutline,
+    ContentRequest,
+    ContentStrategy,
+    HTMLTagStrategy,
+    OutlineSection,
+    RoutingAnalysis,
 )
-from pydantic import BaseModel
 from kavya.web_search import enhance_with_web_search
-
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
 
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+
 
 class RoutingError(Exception):
     pass
+
 
 class RequestCostTracker:
     def __init__(self):
@@ -51,23 +54,24 @@ class RequestCostTracker:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.lock = Lock()
-    
+
     def add_cost(self, cost: float):
         if cost is not None:  # Only add cost if it's not None
             with self.lock:
                 self.cost += cost
-    
+
     def update_prompt_tokens(self, tokens: int):
         with self.lock:
             self.prompt_tokens += tokens
-    
+
     def update_completion_tokens(self, tokens: int):
         with self.lock:
             self.completion_tokens += tokens
-    
+
     def get_total(self) -> float:
         with self.lock:
             return self.prompt_tokens + self.completion_tokens
+
 
 class Controller:
     def __init__(
@@ -82,8 +86,8 @@ class Controller:
         # Require config with all necessary settings
         if not config:
             raise ValueError("Config is required")
-        self.config = config # Store the config dictionary
-        
+        self.config = config  # Store the config dictionary
+
         # Validate all required config sections
         if "model_translations" not in self.config:
             raise ValueError("Config must include model_translations")
@@ -92,7 +96,7 @@ class Controller:
         if "basic_router_max_chars" not in self.config["general_settings"]:
             raise ValueError("general_settings must include basic_router_max_chars")
 
-        # Initialize model 
+        # Initialize model
         self.model = model
         logging.info(f"DEBUG: Controller creation using model: {self.model}")
 
@@ -102,11 +106,13 @@ class Controller:
         self.suppress_warnings = suppress_warnings
         self.cost_tracker = RequestCostTracker()
         self.user = None  # Will be set during completion calls
-        
+
         # Load model translations
         self.model_translations = self.config["model_translations"]
-        self.basic_router_max_chars = self.config["general_settings"]["basic_router_max_chars"]
-        
+        self.basic_router_max_chars = self.config["general_settings"][
+            "basic_router_max_chars"
+        ]
+
         # Load fallback configurations if available
         self.fallback_configs = self.config.get("fallback_configs", {})
 
@@ -116,16 +122,16 @@ class Controller:
                 create=self.completion, acreate=self.acompletion
             )
         )
-        
+
         # Load predefined prompts
         self.predefined_prompts = {}
         self.load_predefined_prompts()
 
     def load_predefined_prompts(self):
         """Load predefined prompts from a JSON file."""
-        file_path = os.path.join(os.path.dirname(__file__), 'predefined_prompts.json')
+        file_path = os.path.join(os.path.dirname(__file__), "predefined_prompts.json")
         try:
-            with open(file_path, 'r') as f:
+            with open(file_path, "r") as f:
                 self.predefined_prompts = json.load(f)
                 return self.predefined_prompts
         except:
@@ -137,7 +143,7 @@ class Controller:
         for key, value in self.predefined_prompts.items():
             if key in message:
                 return value
-        
+
         return None
 
     def completion(
@@ -149,32 +155,34 @@ class Controller:
             error_msg = "CRITICAL: No user ID provided in completion request. Every request must be associated with a user."
             logging.error(error_msg)
             raise ValueError(error_msg)
-            
+
         try:
             user_id = int(kwargs["user"])  # Validate user ID is a valid integer
         except (ValueError, TypeError):
-            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            error_msg = (
+                "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            )
             logging.error(error_msg)
             raise ValueError(error_msg)
 
-        model = kwargs.get('model', 'unspecified')
-        logging.info(f"Making {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
-        
+        model = kwargs.get("model", "unspecified")
+        logging.info(
+            f"Making {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}"
+        )
+
         # Store original_model if provided, before any model selection logic
-        if 'original_model' in kwargs:
-            self.original_model = kwargs.pop('original_model')
-            
+        if "original_model" in kwargs:
+            self.original_model = kwargs.pop("original_model")
+
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
             if predefined_answer:
                 return {
                     "choices": [
-                        {
-                            "message": {"role": "assistant", "content": predefined_answer}
-                        }
+                        {"message": {"role": "assistant", "content": predefined_answer}}
                     ],
-                    "model": "predefined_prompt"
+                    "model": "predefined_prompt",
                 }
 
         # Capture all arguments for get_model
@@ -193,27 +201,33 @@ class Controller:
             config = kwargs["config"]
             if isinstance(config, dict):
                 # Check if model supports response_format and json_schema
-                logging.info(f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {model}")
+                logging.info(
+                    f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {model}"
+                )
                 supported_params = get_supported_openai_params(model=model)
                 has_schema_support = supports_response_schema(model=model)
-                
+
                 if "response_schema" in config:
                     if not has_schema_support:
-                        logging.warning(f"Model {model} does not support json_schema. Enabling client-side validation.")
+                        logging.warning(
+                            f"Model {model} does not support json_schema. Enabling client-side validation."
+                        )
                         # Enable client-side validation for models that don't support schema
                         kwargs["config"]["enable_json_schema_validation"] = True
-                    
+
                     schema = config["response_schema"]
                     if isinstance(schema, type) and issubclass(schema, BaseModel):
                         # Convert Pydantic model to JSON schema
                         config["response_schema"] = {
                             "type": "json_schema",
                             "json_schema": schema.model_json_schema(),
-                            "strict": True
+                            "strict": True,
                         }
                     elif isinstance(schema, type) and issubclass(schema, enum.Enum):
                         if "response_format" not in supported_params:
-                            logging.warning(f"Model {model} does not support response_format. Enum responses may not work as expected.")
+                            logging.warning(
+                                f"Model {model} does not support response_format. Enum responses may not work as expected."
+                            )
                         # Convert enum to proper format
                         config["response_schema"] = {
                             "type": "string",
@@ -236,14 +250,24 @@ class Controller:
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
-                response = completion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
+                response = completion(
+                    api_base=self.api_base,
+                    api_key=self.api_key,
+                    metadata={"trace_user_id": kwargs["user"]},
+                    **kwargs,
+                )
         else:
-            response = completion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
+            response = completion(
+                api_base=self.api_base,
+                api_key=self.api_key,
+                metadata={"trace_user_id": kwargs["user"]},
+                **kwargs,
+            )
 
         # Handle enum responses
         if (
-            "config" in kwargs 
-            and kwargs["config"] 
+            "config" in kwargs
+            and kwargs["config"]
             and kwargs["config"].get("response_mime_type") == "text/x.enum"
             and "choices" in response
             and response["choices"]
@@ -253,12 +277,14 @@ class Controller:
             enum_class = kwargs["config"]["response_schema"]
             if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
                 enum_response = EnumResponse.from_enum(enum_class, enum_value)
-                response["choices"][0]["message"]["content"] = enum_response.model_dump()
+                response["choices"][0]["message"][
+                    "content"
+                ] = enum_response.model_dump()
 
         # If we have an original_model stored, use it in the response
-        if hasattr(self, 'original_model'):
+        if hasattr(self, "original_model"):
             if isinstance(response, dict):
-                response['model'] = self.original_model
+                response["model"] = self.original_model
             else:
                 response.model = self.original_model
 
@@ -278,80 +304,109 @@ class Controller:
         tried_models = []
         current_attempt = 0
         total_attempts = 5  # Increase total attempts for more resilience
-        
+
         # Get the fallback chain for the model, if it exists
         model_to_use = original_model if original_model else model
         fallback_chain = self.get_fallback_chain(model_to_use)
-        
+
         # By this point, fallback_chain should already be filtered to start after the failed model
         if not fallback_chain:
-            logging.warning(f"No fallback models available for {model_to_use} or all models have been tried")
+            logging.warning(
+                f"No fallback models available for {model_to_use} or all models have been tried"
+            )
             raise Exception(f"No fallback models available for {model_to_use}")
-            
+
         logging.info(f"Attempting fallbacks with chain: {fallback_chain}")
-        
+
         # Add exponential backoff for retry attempts
         base_delay = 0.5  # Start with a small delay
-        
+
         while current_attempt < total_attempts and fallback_chain:
             for fallback_model in fallback_chain:
                 # Skip models that are cooling down from rate limits
                 if fallback_model in cooling_down_models:
                     logging.info(f"Skipping cooled-down model: {fallback_model}")
                     continue
-                
+
                 tried_models.append(fallback_model)
-                logging.info(f"Attempting completion with fallback model: {fallback_model}")
-                
+                logging.info(
+                    f"Attempting completion with fallback model: {fallback_model}"
+                )
+
                 for attempt in range(max_retries):
                     try:
                         # Apply jitter to avoid thundering herd problem
                         jitter = random.uniform(0.8, 1.2)
-                        delay = base_delay * (2 ** current_attempt) * jitter
-                        
+                        delay = base_delay * (2**current_attempt) * jitter
+
                         if attempt > 0:
                             # Add increasing delay between retry attempts
-                            logging.info(f"Retry attempt {attempt+1}/{max_retries} for {fallback_model} after {delay:.2f}s delay")
+                            logging.info(
+                                f"Retry attempt {attempt+1}/{max_retries} for {fallback_model} after {delay:.2f}s delay"
+                            )
                             await asyncio.sleep(delay)
-                        
+
                         # Create a new kwargs dict with the current fallback model
                         current_kwargs = kwargs.copy()
                         current_kwargs["model"] = fallback_model
                         current_kwargs["messages"] = messages
-                        
+
                         # Use litellm's acompletion directly instead of going through provider
-                        logging.info(f"DEBUG : current model for acompletion_with_fallbacks is: {current_kwargs['model']}")
-                        result = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **current_kwargs)
-                        
+                        logging.info(
+                            f"DEBUG : current model for acompletion_with_fallbacks is: {current_kwargs['model']}"
+                        )
+                        result = await acompletion(
+                            api_base=self.api_base,
+                            api_key=self.api_key,
+                            metadata={"trace_user_id": kwargs["user"]},
+                            **current_kwargs,
+                        )
+
                         # Convert Usage objects to dictionaries to ensure JSON serialization works
-                        if result and hasattr(result, 'usage') and not isinstance(result.usage, dict):
+                        if (
+                            result
+                            and hasattr(result, "usage")
+                            and not isinstance(result.usage, dict)
+                        ):
                             # For Pydantic models (preferred approach)
-                            if hasattr(result.usage, 'model_dump'):
+                            if hasattr(result.usage, "model_dump"):
                                 result.usage = result.usage.model_dump()
                             # Fallback for non-Pydantic objects
-                            elif hasattr(result.usage, '__dict__'):
+                            elif hasattr(result.usage, "__dict__"):
                                 result.usage = vars(result.usage)
-                        
-                        logging.info(f"Successful completion with fallback model: {fallback_model}")
+
+                        logging.info(
+                            f"Successful completion with fallback model: {fallback_model}"
+                        )
                         return result
-                        
+
                     except litellm.RateLimitError as e:
-                        logging.warning(f"Rate limit hit for fallback model {fallback_model}, cooling down for {cooldown_seconds}s: {e}")
+                        logging.warning(
+                            f"Rate limit hit for fallback model {fallback_model}, cooling down for {cooldown_seconds}s: {e}"
+                        )
                         cooling_down_models.add(fallback_model)
                         break  # Break and try next model in fallback chain
-                        
+
                     except Exception as e:
-                        logging.warning(f"Error with fallback model {fallback_model} (attempt {attempt+1}/{max_retries}): {e}")
-                        
+                        logging.warning(
+                            f"Error with fallback model {fallback_model} (attempt {attempt+1}/{max_retries}): {e}"
+                        )
+
                         if attempt == max_retries - 1:
-                            if attempt > 0:  # Only log error for final attempt if we've tried more than once
-                                logging.error(f"All attempts failed for fallback model {fallback_model}: {e}")
-            
+                            if (
+                                attempt > 0
+                            ):  # Only log error for final attempt if we've tried more than once
+                                logging.error(
+                                    f"All attempts failed for fallback model {fallback_model}: {e}"
+                                )
+
             # If we've tried all models in the fallback chain, wait before trying again
             await asyncio.sleep(1.0)  # Add pause between cycles
             current_attempt += 1
-            logging.info(f"Tried all fallback models and failed. Starting cycle {current_attempt+1}/{total_attempts}")
-        
+            logging.info(
+                f"Tried all fallback models and failed. Starting cycle {current_attempt+1}/{total_attempts}"
+            )
+
         # If we've exhausted all attempts with all models, raise an exception
         raise Exception(f"All fallback models failed. Tried: {', '.join(tried_models)}")
 
@@ -366,36 +421,40 @@ class Controller:
             error_msg = "CRITICAL: No user ID provided in acompletion request. Every request must be associated with a user."
             logging.error(error_msg)
             raise ValueError(error_msg)
-            
+
         try:
             user_id = int(kwargs["user"])  # Validate user ID is a valid integer
         except (ValueError, TypeError):
-            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            error_msg = (
+                "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            )
             logging.error(error_msg)
             raise ValueError(error_msg)
 
-        model = kwargs.get('model', 'unspecified')
+        model = kwargs.get("model", "unspecified")
         logging.info(f"DEBUG: acompletion called with model: {model}")
-        logging.info(f"DEBUG: providers_list in kwargs: {kwargs.get('providers_list', 'None')}")
-        logging.info(f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}")
-        
+        logging.info(
+            f"DEBUG: providers_list in kwargs: {kwargs.get('providers_list', 'None')}"
+        )
+        logging.info(
+            f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}"
+        )
+
         # Store original_model if provided, before any model selection logic
-        if 'original_model' in kwargs:
-            self.original_model = kwargs.pop('original_model')
-            
+        if "original_model" in kwargs:
+            self.original_model = kwargs.pop("original_model")
+
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
             if predefined_answer:
                 return {
                     "choices": [
-                        {
-                            "message": {"role": "assistant", "content": predefined_answer}
-                        }
+                        {"message": {"role": "assistant", "content": predefined_answer}}
                     ],
-                    "model": "predefined_prompt"
+                    "model": "predefined_prompt",
                 }
-            
+
             # Add web search results
             logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
             kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
@@ -409,27 +468,33 @@ class Controller:
             config = kwargs["config"]
             if isinstance(config, dict):
                 # Check if model supports response_format and json_schema
-                logging.info(f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {kwargs['model']}")
+                logging.info(
+                    f"DEBUG : current model for get_supported_openai_params and supports_response_schema is: {kwargs['model']}"
+                )
                 supported_params = get_supported_openai_params(model=kwargs["model"])
                 has_schema_support = supports_response_schema(model=kwargs["model"])
-                
+
                 if "response_schema" in config:
                     if not has_schema_support:
-                        logging.warning(f"Model {kwargs['model']} does not support json_schema. Enabling client-side validation.")
+                        logging.warning(
+                            f"Model {kwargs['model']} does not support json_schema. Enabling client-side validation."
+                        )
                         # Enable client-side validation for models that don't support schema
                         kwargs["config"]["enable_json_schema_validation"] = True
-                    
+
                     schema = config["response_schema"]
                     if isinstance(schema, type) and issubclass(schema, BaseModel):
                         # Convert Pydantic model to JSON schema
                         config["response_schema"] = {
                             "type": "json_schema",
                             "json_schema": schema.model_json_schema(),
-                            "strict": True
+                            "strict": True,
                         }
                     elif isinstance(schema, type) and issubclass(schema, enum.Enum):
                         if "response_format" not in supported_params:
-                            logging.warning(f"Model {kwargs['model']} does not support response_format. Enum responses may not work as expected.")
+                            logging.warning(
+                                f"Model {kwargs['model']} does not support response_format. Enum responses may not work as expected."
+                            )
                         # Convert enum to proper format
                         config["response_schema"] = {
                             "type": "string",
@@ -443,27 +508,39 @@ class Controller:
                         if "strict" not in schema:
                             schema["strict"] = True
                         config["response_schema"] = schema
-        
+
         # Only necessary for the longwriter
         for key in LONGWRITER_ONLY_ARGS:
             if key in kwargs:
                 del kwargs[key]
-        
+
         # First try with the model selected by the router or provided directly
         try:
             # Keep the existing warning suppression logic
-            logging.info(f"DEBUG : current model for Controller.acompletion is: {kwargs['model']}")
+            logging.info(
+                f"DEBUG : current model for Controller.acompletion is: {kwargs['model']}"
+            )
             if self.suppress_warnings:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", category=UserWarning)
-                    response = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
+                    response = await acompletion(
+                        api_base=self.api_base,
+                        api_key=self.api_key,
+                        metadata={"trace_user_id": kwargs["user"]},
+                        **kwargs,
+                    )
             else:
-                response = await acompletion(api_base=self.api_base, api_key=self.api_key, metadata={"trace_user_id": kwargs["user"]}, **kwargs)
-                
+                response = await acompletion(
+                    api_base=self.api_base,
+                    api_key=self.api_key,
+                    metadata={"trace_user_id": kwargs["user"]},
+                    **kwargs,
+                )
+
             # Handle enum responses
             if (
-                "config" in kwargs 
-                and kwargs["config"] 
+                "config" in kwargs
+                and kwargs["config"]
                 and kwargs["config"].get("response_mime_type") == "text/x.enum"
                 and hasattr(response, "choices")
                 and response.choices
@@ -477,22 +554,29 @@ class Controller:
 
             # If we have an original_model stored, use it in the response
             # Problematic ?
-            if hasattr(self, 'original_model'):
+            if hasattr(self, "original_model"):
                 if isinstance(response, dict):
-                    response['original_model'] = self.original_model
+                    response["original_model"] = self.original_model
                 else:
                     response.original_model = self.original_model
-                    
+
             return response
-            
+
         except Exception as e:
             # If the primary model fails and we have fallbacks available, try them
-            if fallbacks or (hasattr(self, 'original_model') and self.original_model in self.fallback_configs):
-                logging.warning(f"Primary model {kwargs['model']} failed: {str(e)}. Activating fallback chain.")
-                
+            if fallbacks or (
+                hasattr(self, "original_model")
+                and self.original_model in self.fallback_configs
+            ):
+                logging.warning(
+                    f"Primary model {kwargs['model']} failed: {str(e)}. Activating fallback chain."
+                )
+
                 # If explicit fallbacks were provided, use those
                 if fallbacks:
-                    logging.info(f"Using explicitly provided fallback chain: {fallbacks}")
+                    logging.info(
+                        f"Using explicitly provided fallback chain: {fallbacks}"
+                    )
                     # Try the fallback chain, skipping the current model if it's in the chain
                     if kwargs["model"] in fallbacks:
                         idx = fallbacks.index(kwargs["model"]) + 1
@@ -504,46 +588,65 @@ class Controller:
                 elif "providers_list" in kwargs:
                     providers_list = kwargs.pop("providers_list")
                     logging.info(f"Using custom providers list: {providers_list}")
-                    
+
                     # If the current model is the first in the providers list, use the rest as fallbacks
                     if providers_list and kwargs["model"] == providers_list[0]:
                         if len(providers_list) > 1:
-                            fallbacks = providers_list[1:]  # Skip the first model (current one)
-                            logging.info(f"Using remaining models from providers list as fallbacks: {fallbacks}")
+                            fallbacks = providers_list[
+                                1:
+                            ]  # Skip the first model (current one)
+                            logging.info(
+                                f"Using remaining models from providers list as fallbacks: {fallbacks}"
+                            )
                         else:
                             fallbacks = []
-                            logging.warning(f"No fallbacks available in providers list after {kwargs['model']}")
+                            logging.warning(
+                                f"No fallbacks available in providers list after {kwargs['model']}"
+                            )
                     # If the current model is elsewhere in the providers list, use the rest as fallbacks
                     elif kwargs["model"] in providers_list:
                         idx = providers_list.index(kwargs["model"]) + 1
                         if idx < len(providers_list):
                             fallbacks = providers_list[idx:]
-                            logging.info(f"Starting fallback chain from next model after {kwargs['model']}")
+                            logging.info(
+                                f"Starting fallback chain from next model after {kwargs['model']}"
+                            )
                         else:
                             fallbacks = []
-                            logging.warning(f"No more fallbacks available after {kwargs['model']}")
+                            logging.warning(
+                                f"No more fallbacks available after {kwargs['model']}"
+                            )
                     else:
                         # If the current model isn't in the providers list, use the entire list as fallbacks
                         fallbacks = providers_list
-                        logging.info(f"Using entire providers list as fallbacks: {fallbacks}")
+                        logging.info(
+                            f"Using entire providers list as fallbacks: {fallbacks}"
+                        )
                 # Otherwise check for fallbacks in the config
-                elif hasattr(self, 'original_model') and self.original_model in self.fallback_configs:
+                elif (
+                    hasattr(self, "original_model")
+                    and self.original_model in self.fallback_configs
+                ):
                     # Get fallback models from config
                     fallback_config = self.fallback_configs[self.original_model]
-                    fallbacks = fallback_config.get('models', [])
-                    max_retries = fallback_config.get('max_retries', 3)
-                    retry_delay = fallback_config.get('retry_delay', 1.0)
-                    
+                    fallbacks = fallback_config.get("models", [])
+                    max_retries = fallback_config.get("max_retries", 3)
+                    retry_delay = fallback_config.get("retry_delay", 1.0)
+
                     # Skip the failed model if it's in the fallback chain
                     if kwargs["model"] in fallbacks:
                         idx = fallbacks.index(kwargs["model"]) + 1
                         if idx < len(fallbacks):
                             fallbacks = fallbacks[idx:]
-                            logging.info(f"Starting fallback chain from next model after {kwargs['model']}")
+                            logging.info(
+                                f"Starting fallback chain from next model after {kwargs['model']}"
+                            )
                         else:
                             fallbacks = []
-                            logging.warning(f"No more fallbacks available after {kwargs['model']}")
-                
+                            logging.warning(
+                                f"No more fallbacks available after {kwargs['model']}"
+                            )
+
                 # Use fallbacks if available
                 if fallbacks:
                     logging.info(f"Using fallback chain: {fallbacks}")
@@ -551,10 +654,12 @@ class Controller:
                         return await self.acompletion_with_fallbacks(
                             messages=kwargs["messages"],
                             model=kwargs["model"],
-                            original_model=getattr(self, 'original_model', None),
-                            max_retries=max_retries if 'max_retries' in locals() else 2,
-                            cooldown_seconds=retry_delay if 'retry_delay' in locals() else 60,
-                            **kwargs
+                            original_model=getattr(self, "original_model", None),
+                            max_retries=max_retries if "max_retries" in locals() else 2,
+                            cooldown_seconds=(
+                                retry_delay if "retry_delay" in locals() else 60
+                            ),
+                            **kwargs,
                         )
                     except Exception as fallback_error:
                         logging.error(f"All fallbacks failed: {str(fallback_error)}")
@@ -562,94 +667,100 @@ class Controller:
                         raise e
                 else:
                     logging.warning("No fallback models left to try")
-                    
+
             # If no fallbacks or all fallbacks failed, re-raise the exception
-            logging.error(f"No fallbacks configured or all fallbacks exhausted for {kwargs['model']}: {str(e)}")
+            logging.error(
+                f"No fallbacks configured or all fallbacks exhausted for {kwargs['model']}: {str(e)}"
+            )
             raise
 
-    def get_model(
-        self,
-        **kwargs
-    ):
+    def get_model(self, **kwargs):
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
             if predefined_answer:
                 return "predefined_prompt"
-            
+
         return kwargs["model"]
 
     def get_fallback_chain(self, model_name):
         """
         Get the fallback chain for a specific model.
-        
+
         Args:
             model_name: The name of the model to get fallbacks for
-            
+
         Returns:
             List of model names to try in sequence, or None if no fallback is configured
         """
         if not model_name:
             logging.warning("Cannot get fallback chain for None model name")
             return None
-            
+
         # Check if we have a specific fallback config for this model
         if model_name in self.fallback_configs:
-            fallback_models = self.fallback_configs[model_name].get('models', [])
-            
+            fallback_models = self.fallback_configs[model_name].get("models", [])
+
             # Validate the fallback chain
             if not fallback_models:
-                logging.warning(f"Empty fallback chain configured for model: {model_name}")
+                logging.warning(
+                    f"Empty fallback chain configured for model: {model_name}"
+                )
             else:
-                logging.debug(f"Found fallback chain for model {model_name}: {fallback_models}")
-                
+                logging.debug(
+                    f"Found fallback chain for model {model_name}: {fallback_models}"
+                )
+
             return fallback_models
-            
+
         # No fallback chain defined
         logging.debug(f"No fallback chain found for model: {model_name}")
         return None
+
 
 class TokenAccumulator:
     def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE):
         self.chunk_size = max(1, chunk_size)
         self.buffer: List[str] = []
         self.token_count = 0
-    
+
     async def add_token(self, token: str) -> Optional[Tuple[str, int]]:
         """Add a token to the buffer and return accumulated tokens if chunk size is reached."""
         self.buffer.append(token)
         self.token_count += 1  # Each token from the model is one token
         if self.token_count >= self.chunk_size:
-            result = ''.join(self.buffer)
-            tokens_to_return = self.token_count
-            self.buffer = []
-            self.token_count = 0
-            return result, tokens_to_return
-        return None, 0
-    
-    async def flush(self) -> Optional[Tuple[str, int]]:
-        """Flush any remaining tokens in the buffer."""
-        if self.buffer:
-            result = ''.join(self.buffer)
+            result = "".join(self.buffer)
             tokens_to_return = self.token_count
             self.buffer = []
             self.token_count = 0
             return result, tokens_to_return
         return None, 0
 
+    async def flush(self) -> Optional[Tuple[str, int]]:
+        """Flush any remaining tokens in the buffer."""
+        if self.buffer:
+            result = "".join(self.buffer)
+            tokens_to_return = self.token_count
+            self.buffer = []
+            self.token_count = 0
+            return result, tokens_to_return
+        return None, 0
+
+
 class Longwriter(Controller):
-    def __init__(
-        self,
-        **kwargs
-    ):
+    def __init__(self, **kwargs):
         # Constructor logic inherited from parent class
         super().__init__(**kwargs)
         # Initialize content writer messages
         self.content_writer_messages = None
         self.cost_tracker = RequestCostTracker()
 
-    async def get_content_strategy(self, request: ContentRequest, model: str) -> ContentStrategy:
-        logging.info(f"Making completion call for content strategy using model: {model}")
+    async def get_content_strategy(
+        self, request: ContentRequest, model: str
+    ) -> ContentStrategy:
+        logging.info(
+            f"Making completion call for content strategy using model: {model}"
+        )
         # Reset cost tracker for new request
         self.cost_tracker = RequestCostTracker()
         self.user = request.user
@@ -658,7 +769,7 @@ class Longwriter(Controller):
         # if not supports_function_calling(model=model):
         #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
-        content_strategist_prompt = '''
+        content_strategist_prompt = """
         You are a professional content strategist. Create a comprehensive content strategy that ensures:
         - Expertise in the subject matter
         - Authority in the field
@@ -666,13 +777,18 @@ class Longwriter(Controller):
         - User engagement and value
         
         Provide a content strategy that incorporates these principles without explicitly referencing them.
-        '''
-        
+        """
+
         # Prepare messages for the LLM call
         # Prepend the strategist system prompt to the messages from the request
-        strategist_system_prompt = {"role": "system", "content": str(dedent(content_strategist_prompt))}
+        strategist_system_prompt = {
+            "role": "system",
+            "content": str(dedent(content_strategist_prompt)),
+        }
         # Ensure request.messages is not None and is a list
-        llm_messages = [strategist_system_prompt] + (request.messages if request.messages else [])
+        llm_messages = [strategist_system_prompt] + (
+            request.messages if request.messages else []
+        )
 
         # If request.messages was empty or didn't exist, add the prompt as a user message
         if not request.messages:
@@ -683,45 +799,51 @@ class Longwriter(Controller):
                 api_base=self.api_base,
                 api_key=self.api_key,
                 model=model,  # Direct model use
-                messages=llm_messages, # Use the combined messages list
+                messages=llm_messages,  # Use the combined messages list
                 response_format=ContentStrategy,
                 user=request.user,  # Propagate user ID
-                metadata={
-                    "trace_user_id": request.user
-                }
+                metadata={"trace_user_id": request.user},
             )
-            
+
             # Update cost tracker with response usage
-            if hasattr(response, 'usage'):
+            if hasattr(response, "usage"):
                 self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
-            
+                self.cost_tracker.update_completion_tokens(
+                    response.usage.completion_tokens
+                )
+
             # Get the content from the response
             content = response.choices[0].message.content
             logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
-            
+
             strategy = ContentStrategy.model_validate_json(content)
             # Add the original messages and user ID to the strategy object
             strategy.original_messages = request.messages
             strategy.user = request.user  # Set the user ID
             return strategy
-            
+
         except Exception as e:
             logging.error(f"\033[91mError creating content strategy: {str(e)}\033[0m")
             raise
 
-    async def get_html_strategy(self, allowed_html_tags: str, allowed_html_classes: str = "", content_strategy: ContentStrategy = None, model: str = None) -> HTMLTagStrategy:
+    async def get_html_strategy(
+        self,
+        allowed_html_tags: str,
+        allowed_html_classes: str = "",
+        content_strategy: ContentStrategy = None,
+        model: str = None,
+    ) -> HTMLTagStrategy:
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
         # if not supports_function_calling(model=model):
         #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
-        html_strategist_prompt = f'''
+        html_strategist_prompt = f"""
         You are an HTML strategist. Given a constraint of allowed HTML tags, allowed HTML classes, and a content strategy, 
         provide a list of HTML tags and classes that would be most effective for structuring the content.
-        '''
-        
+        """
+
         try:
             response = await acompletion(
                 model=model,  # Direct model use
@@ -729,38 +851,46 @@ class Longwriter(Controller):
                 api_key=self.api_key,
                 messages=[
                     {"role": "system", "content": dedent(html_strategist_prompt)},
-                    {"role": "user", "content": f"Allowed HTML tags: {allowed_html_tags}\nAllowed HTML classes: {allowed_html_classes}\nContent strategy: {content_strategy.model_dump_json()}"}
+                    {
+                        "role": "user",
+                        "content": f"Allowed HTML tags: {allowed_html_tags}\nAllowed HTML classes: {allowed_html_classes}\nContent strategy: {content_strategy.model_dump_json()}",
+                    },
                 ],
                 response_format=HTMLTagStrategy,
                 user=content_strategy.user,  # Get user ID directly from content_strategy,
-                metadata={
-                    "trace_user_id": content_strategy.user
-                }
+                metadata={"trace_user_id": content_strategy.user},
             )
 
             # Update cost tracker with response usage
-            if hasattr(response, 'usage'):
+            if hasattr(response, "usage"):
                 self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
+                self.cost_tracker.update_completion_tokens(
+                    response.usage.completion_tokens
+                )
 
             # Get the content from the response
             content = response.choices[0].message.content
             logging.debug(f"\033[96mHTML Strategy Response:\n{content}\033[0m")
-            
+
             return HTMLTagStrategy.model_validate_json(content)
-            
+
         except Exception as e:
             logging.error(f"\033[91mError creating HTML strategy: {str(e)}\033[0m")
             raise
 
-    async def get_content_outline(self, content_strategy: ContentStrategy, html_strategy: HTMLTagStrategy, model: str) -> ContentOutline:
+    async def get_content_outline(
+        self,
+        content_strategy: ContentStrategy,
+        html_strategy: HTMLTagStrategy,
+        model: str,
+    ) -> ContentOutline:
         logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
         # if not supports_function_calling(model=model):
         #     raise ValueError(f"Model {model} does not support structured output (response_schema). Longwriter requires a model that supports structured output.")
 
-        content_outliner_prompt = '''
+        content_outliner_prompt = """
         You are a creative content outliner. Given a content strategy and HTML tag strategy, 
         create a detailed, structured outline for the content.
         
@@ -769,8 +899,8 @@ class Longwriter(Controller):
         2. Be creative and avoid archaic structures unless appropriate
         3. Each section should have clear, actionable content ideas
         4. Include multimedia suggestions based on available HTML tags
-        '''
-        
+        """
+
         try:
             response = await acompletion(
                 model=model,  # Direct model use after
@@ -778,78 +908,107 @@ class Longwriter(Controller):
                 api_key=self.api_key,
                 messages=[
                     {"role": "system", "content": dedent(content_outliner_prompt)},
-                    {"role": "user", "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}"}
+                    {
+                        "role": "user",
+                        "content": f"Content strategy: {content_strategy.model_dump_json()}\nHTML strategy: {html_strategy.model_dump_json()}",
+                    },
                 ],
                 response_format=ContentOutline,
                 user=content_strategy.user,  # Get user ID from content strategy
-                metadata={
-                    "trace_user_id": content_strategy.user
-                }
+                metadata={"trace_user_id": content_strategy.user},
             )
 
             # Update cost tracker with response usage
-            if hasattr(response, 'usage'):
+            if hasattr(response, "usage"):
                 self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(response.usage.completion_tokens)
+                self.cost_tracker.update_completion_tokens(
+                    response.usage.completion_tokens
+                )
 
             # Get the content from the response
             content = response.choices[0].message.content
             logging.debug(f"\033[96mContent Outline Response:\n{content}\033[0m")
-            
+
             return ContentOutline.model_validate_json(content)
-            
+
         except Exception as e:
             logging.error(f"\033[91mError creating content outline: {str(e)}\033[0m")
             raise
 
     async def get_content_draft(
         self,
-        section: OutlineSection, 
-        content_strategy: ContentStrategy, 
-        html_strategy: HTMLTagStrategy, 
-        outline: ContentOutline, 
+        section: OutlineSection,
+        content_strategy: ContentStrategy,
+        html_strategy: HTMLTagStrategy,
+        outline: ContentOutline,
         model: str,
-        chunk_size: int = DEFAULT_CHUNK_SIZE
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
     ) -> AsyncGenerator:
-        logging.info(f"Making streaming completion call for content draft section '{section.title}' using model: {model}")
-        
+        logging.info(
+            f"Making streaming completion call for content draft section '{section.title}' using model: {model}"
+        )
+
         # --- Step 1: Extract Search Results (if available) ---
         extracted_search_results: Optional[str] = None
-        if hasattr(content_strategy, 'original_messages') and content_strategy.original_messages:
+        if (
+            hasattr(content_strategy, "original_messages")
+            and content_strategy.original_messages
+        ):
             # Find the last user message in the original context
             last_user_msg_content = None
             for msg in reversed(content_strategy.original_messages):
                 if msg.get("role") == "user":
                     last_user_msg_content = msg.get("content")
                     break
-            
+
             if last_user_msg_content:
                 # Use regex to find search results within the content
-                search_match = re.search(r"<web_search_results>(.*?)</web_search_results>", last_user_msg_content, re.DOTALL)
+                search_match = re.search(
+                    r"<web_search_results>(.*?)</web_search_results>",
+                    last_user_msg_content,
+                    re.DOTALL,
+                )
                 if search_match:
                     extracted_search_results = search_match.group(1).strip()
-                    logging.info(f"Extracted web search results for section '{section.title}'")
+                    logging.info(
+                        f"Extracted web search results for section '{section.title}'"
+                    )
                 else:
-                    logging.info(f"No <web_search_results> tag found in last user message for section '{section.title}'")
+                    logging.info(
+                        f"No <web_search_results> tag found in last user message for section '{section.title}'"
+                    )
             else:
-                logging.info(f"No user message found in original_messages for section '{section.title}'")
+                logging.info(
+                    f"No user message found in original_messages for section '{section.title}'"
+                )
         else:
-            logging.info(f"No original_messages found in content_strategy for section '{section.title}'")
-        
+            logging.info(
+                f"No original_messages found in content_strategy for section '{section.title}'"
+            )
+
         # --- Step 2: Construct Prompt with Optional Search Context ---
         # Extract tone and image instructions as before
         tone_instruction = ""
         image_instructions = None
-        if hasattr(content_strategy, 'original_messages') and content_strategy.original_messages:
+        if (
+            hasattr(content_strategy, "original_messages")
+            and content_strategy.original_messages
+        ):
             messages = content_strategy.original_messages
             if messages and messages[0]["role"] == "system":
                 # import re # Already imported at file level likely, but ensure it's available
-                tone_match = re.search(r'<TONE>(.*?)</TONE>', messages[0]["content"], re.DOTALL)
+                tone_match = re.search(
+                    r"<TONE>(.*?)</TONE>", messages[0]["content"], re.DOTALL
+                )
                 if tone_match:
                     tone = tone_match.group(1).strip()
-                    tone_instruction = f"\n11. Use this specific tone of voice:\n{tone}" # Adjusted index
-                
-                image_match = re.search(r'<IMAGE_HANDLING>(.*?)</IMAGE_HANDLING>', messages[0]["content"], re.DOTALL)
+                    tone_instruction = f"\n11. Use this specific tone of voice:\n{tone}"  # Adjusted index
+
+                image_match = re.search(
+                    r"<IMAGE_HANDLING>(.*?)</IMAGE_HANDLING>",
+                    messages[0]["content"],
+                    re.DOTALL,
+                )
                 if image_match:
                     image_instructions = image_match.group(1).strip()
 
@@ -865,7 +1024,7 @@ class Longwriter(Controller):
         """
 
         # Define the main prompt using an f-string, injecting the search context
-        content_writer_prompt = f'''
+        content_writer_prompt = f"""
         You are a creative content writer. Write the next section of content based on the given outline and strategy.
         This section is part of a larger article, so ensure continuity with previous sections.
 
@@ -881,18 +1040,18 @@ class Longwriter(Controller):
         9. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
         10. Only use the specified HTML tags for formatting{tone_instruction}
         {search_context_section}
-        ''' # End of main instruction block
+        """  # End of main instruction block
 
         # Append image requirements if needed
-        if 'img' in html_strategy.tags:
+        if "img" in html_strategy.tags:
             if image_instructions:
-                content_writer_prompt += f'''
+                content_writer_prompt += f"""
         Image Requirements:
         {image_instructions}
-        '''
+        """
             else:
                 # Default image instructions
-                content_writer_prompt += '''
+                content_writer_prompt += """
         Image Requirements:
         - Every <img> needs src and alt attributes
         - Place images between content blocks, not inline with text
@@ -904,29 +1063,35 @@ class Longwriter(Controller):
 
         Example:
         <img src="https://promptahuman.com/600x400@2x?bg_color=ghostwhite&&title=team_collaboration.jpg&prompt=Diverse team working together at modern office desk, sharing ideas 🤝✨" alt="Diverse team collaborating at a modern workspace, sharing creative ideas during a meeting">
-        '''
+        """
 
         # Append the outline and final instruction
-        content_writer_prompt += f'''
+        content_writer_prompt += f"""
         Here's the outline of the entire article:
         {outline.model_dump_json()}
 
         Now, write the next section: {section.title}
-        '''
+        """
 
         # Initialize or update chat history (using the fully constructed prompt)
         if self.content_writer_messages is None:
             self.content_writer_messages = [
                 {"role": "system", "content": content_writer_prompt},
-                {"role": "user", "content": f"Write next section:\n{section.model_dump_json()}"}
+                {
+                    "role": "user",
+                    "content": f"Write next section:\n{section.model_dump_json()}",
+                },
             ]
         else:
             # For subsequent sections, use the same format
             self.content_writer_messages.append(
-                {"role": "user", "content": f"Write next section:\n{section.model_dump_json()}"}
+                {
+                    "role": "user",
+                    "content": f"Write next section:\n{section.model_dump_json()}",
+                }
             )
 
-        # --- Rest of the function (LLM call, streaming, history update) unchanged --- 
+        # --- Rest of the function (LLM call, streaming, history update) unchanged ---
         response = await acompletion(
             model=model,  # Direct model use
             messages=self.content_writer_messages,  # Use the maintained message history
@@ -934,15 +1099,13 @@ class Longwriter(Controller):
             api_base=self.api_base,
             api_key=self.api_key,
             user=content_strategy.user,  # Get user ID from content strategy
-            metadata={
-                "trace_user_id": content_strategy.user
-            }
+            metadata={"trace_user_id": content_strategy.user},
         )
-        
+
         # Use provided chunk_size or default
         accumulator = TokenAccumulator(chunk_size=chunk_size)
         full_response = ""
-        
+
         async for chunk in response:
             if chunk.choices[0].delta.content is not None:
                 token = chunk.choices[0].delta.content
@@ -950,13 +1113,12 @@ class Longwriter(Controller):
                 accumulated, token_count = await accumulator.add_token(token)
                 if accumulated:
                     yield accumulated, token_count
-        
+
         # Add the complete response to message history
-        self.content_writer_messages.append({
-            "role": "assistant",
-            "content": full_response
-        })
-        
+        self.content_writer_messages.append(
+            {"role": "assistant", "content": full_response}
+        )
+
         # Flush any remaining tokens
         final_chunk, final_count = await accumulator.flush()
         if final_chunk:
@@ -966,60 +1128,71 @@ class Longwriter(Controller):
         """Main content generation method that coordinates the content creation process."""
         # Ensure user ID is present in the request
         logging.info("CONTENT_CREATION_AGENT: Starting content creation agent")
-        if not hasattr(request, 'user') or not request.user:
+        if not hasattr(request, "user") or not request.user:
             error_msg = "CRITICAL: No user ID provided in content creation request. Every request must be associated with a user."
             logging.error(error_msg)
             raise ValueError(error_msg)
-            
+
         try:
             user_id = int(request.user)  # Validate user ID is a valid integer
         except (ValueError, TypeError):
-            error_msg = "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            error_msg = (
+                "CRITICAL: Invalid user ID format. User ID must be a valid integer."
+            )
             logging.error(error_msg)
             raise ValueError(error_msg)
-            
+
         # Reset content writer messages for new content
         self.content_writer_messages = None
-            
+
         content_strategy = await self.get_content_strategy(request, model)
-        
+
         # Instead of yielding formatted strings, yield tuples with special message type
         # Create a JSON string for the disclosure
-        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
-            prompt_tokens=self.cost_tracker.prompt_tokens,
-            completion_tokens=self.cost_tracker.completion_tokens,
-            description='Content strategy generation'
-        ))
+        disclosure_json = json.dumps(
+            kavya.models.create_cost_disclosure_dict(
+                prompt_tokens=self.cost_tracker.prompt_tokens,
+                completion_tokens=self.cost_tracker.completion_tokens,
+                description="Content strategy generation",
+            )
+        )
         # Yield as a tuple (content, token_count) to maintain consistent format
         yield disclosure_json, 0
-        
-        html_strategy = await self.get_html_strategy(request.allowed_html_tags, request.allowed_html_classes, content_strategy, model)
-        
+
+        html_strategy = await self.get_html_strategy(
+            request.allowed_html_tags,
+            request.allowed_html_classes,
+            content_strategy,
+            model,
+        )
+
         # Disclose HTML strategy costs - using tuple format
-        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
-            prompt_tokens=self.cost_tracker.prompt_tokens,
-            completion_tokens=self.cost_tracker.completion_tokens,
-            description='HTML strategy generation'
-        ))
+        disclosure_json = json.dumps(
+            kavya.models.create_cost_disclosure_dict(
+                prompt_tokens=self.cost_tracker.prompt_tokens,
+                completion_tokens=self.cost_tracker.completion_tokens,
+                description="HTML strategy generation",
+            )
+        )
         yield disclosure_json, 0
-        
-        content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
-        
+
+        content_outline = await self.get_content_outline(
+            content_strategy, html_strategy, model
+        )
+
         # Disclose content outline costs - using tuple format
-        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
-            prompt_tokens=self.cost_tracker.prompt_tokens,
-            completion_tokens=self.cost_tracker.completion_tokens,
-            description='Content outline generation'
-        ))
+        disclosure_json = json.dumps(
+            kavya.models.create_cost_disclosure_dict(
+                prompt_tokens=self.cost_tracker.prompt_tokens,
+                completion_tokens=self.cost_tracker.completion_tokens,
+                description="Content outline generation",
+            )
+        )
         yield disclosure_json, 0
-        
+
         for section in content_outline.sections:
             async for token, token_count in self.get_content_draft(
-                section,
-                content_strategy,
-                html_strategy,
-                content_outline,
-                model
+                section, content_strategy, html_strategy, content_outline, model
             ):
                 yield token, token_count
 
@@ -1029,7 +1202,6 @@ class Longwriter(Controller):
     ):
         raise NotImplementedError
 
-            
     async def acompletion(
         self,
         **kwargs,
@@ -1040,50 +1212,54 @@ class Longwriter(Controller):
 class Controllers:
     def __init__(self, **kwargs):
         self.controllers = {}
-        
+
         # Require config with general settings
-        config = kwargs.get('config')
-        if not config or 'general_settings' not in config:
-            raise ValueError("Config must include general_settings with basic_router_max_chars")
-            
-        if 'basic_router_max_chars' not in config['general_settings']:
+        config = kwargs.get("config")
+        if not config or "general_settings" not in config:
+            raise ValueError(
+                "Config must include general_settings with basic_router_max_chars"
+            )
+
+        if "basic_router_max_chars" not in config["general_settings"]:
             raise ValueError("general_settings must include basic_router_max_chars")
-            
-        self.basic_router_max_chars = config['general_settings']['basic_router_max_chars']
+
+        self.basic_router_max_chars = config["general_settings"][
+            "basic_router_max_chars"
+        ]
         self.create_controller("default", **kwargs)
 
     def create_controller(self, id, **kwargs):
         # getting kwargs
-        config=kwargs.get('config', None)
-        model=kwargs.get('model', None)
-        api_base=kwargs.get('api_base', None)
-        api_key=kwargs.get('api_key', None)
-        progress_bar=kwargs.get('progress_bar', None)
+        config = kwargs.get("config", None)
+        model = kwargs.get("model", None)
+        api_base = kwargs.get("api_base", None)
+        api_key = kwargs.get("api_key", None)
+        progress_bar = kwargs.get("progress_bar", None)
 
-        if id.startswith("longwriter") :
+        if id.startswith("longwriter"):
             # initializing longwriter
             controller = Longwriter(
                 config=config,
                 model=model,
                 api_base=api_base,
                 api_key=api_key,
-                progress_bar=progress_bar
+                progress_bar=progress_bar,
             )
-        else :
+        else:
             # initializing controller
             controller = Controller(
                 config=config,
                 model=model,
                 api_base=api_base,
                 api_key=api_key,
-                progress_bar=progress_bar
+                progress_bar=progress_bar,
             )
-        
+
         # storing controller
         self.controllers[id] = controller
 
         return controller
-    
+
     """
     Call an async method on a controller with the given id.
 
@@ -1100,45 +1276,66 @@ class Controllers:
     -------
     The response from the async method.
     """
-    async def response(self, request: ChatCompletionRequest, id, amethod_name, **kwargs):
-        logging.info(f"DEBUG: response method called with id: {id}, method: {amethod_name}")
+
+    async def response(
+        self, request: ChatCompletionRequest, id, amethod_name, **kwargs
+    ):
+        logging.info(
+            f"DEBUG: response method called with id: {id}, method: {amethod_name}"
+        )
         logging.info(f"DEBUG: request model: {request.model}")
         logging.info(f"DEBUG: kwargs: {kwargs}")
-        
+
         # Dump request to see all parameters
-        request_dump = request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True)
+        request_dump = request.model_dump(
+            exclude=LONGWRITER_ONLY_ARGS, exclude_none=True
+        )
         logging.info(f"DEBUG: request dump: {request_dump}")
-        
+
         return await self.controllers[id].__getattribute__(amethod_name)(
-            **{k: v for k, v in request.model_dump(exclude=LONGWRITER_ONLY_ARGS, exclude_none=True).items() if k not in kwargs and k not in ["router_usage"]},
-            **kwargs
+            **{
+                k: v
+                for k, v in request.model_dump(
+                    exclude=LONGWRITER_ONLY_ARGS, exclude_none=True
+                ).items()
+                if k not in kwargs and k not in ["router_usage"]
+            },
+            **kwargs,
         )
 
-    async def basic_routing(self, request: ChatCompletionRequest, cost_tracker: Optional[RequestCostTracker] = None):
+    async def basic_routing(
+        self,
+        request: ChatCompletionRequest,
+        cost_tracker: Optional[RequestCostTracker] = None,
+    ):
         # Longwriter only supports streaming requests, so force non-streaming to use completion
         if not request.stream:
-            logging.info("Non-streaming request detected, skipping routing analysis and using completion controller")
+            logging.info(
+                "Non-streaming request detected, skipping routing analysis and using completion controller"
+            )
             return "completion"
-            
+
         logging.info("Making completion call for routing analysis")
-        
+
         # Check if original_model is kavya-m1-hyper and skip routing if so
         request_data = request.model_dump()
         if request_data.get("original_model") == "kavya-m1-hyper":
-            logging.info("Detected kavya-m1-hyper model, skipping routing and using simple completion")
+            logging.info(
+                "Detected kavya-m1-hyper model, skipping routing and using simple completion"
+            )
             return "completion"
-            
+
         # Ensure user ID is present in the request
         user_id = request_data.get("user")
         if not user_id:
             error_msg = "CRITICAL: No user ID provided in request. Every request must be associated with a user."
             logging.error(error_msg)
             raise ValueError(error_msg)
-            
+
         # Get the default controller to use its methods
         default_controller = self.controllers["completion"]
-        
-        # First determine which model to use 
+
+        # First determine which model to use
         routed_model = default_controller.get_model(**request_data)
         # Store the model in the request for later use
         request.model = routed_model
@@ -1146,10 +1343,10 @@ class Controllers:
         # Trim long prompts for basic router analysis
         prompt = request_data["messages"][-1]["content"]
         if len(prompt) > self.basic_router_max_chars:
-            start = prompt[:self.basic_router_max_chars//3]  # Keep first third
-            end = prompt[-self.basic_router_max_chars//3:]   # Keep last third
+            start = prompt[: self.basic_router_max_chars // 3]  # Keep first third
+            end = prompt[-self.basic_router_max_chars // 3 :]  # Keep last third
             prompt = f"{start}\n...[middle trimmed]...\n{end}"
-        
+
         xml_guidance = ""
         if "<TASK>" in prompt:
             xml_guidance = """
@@ -1159,9 +1356,11 @@ analyze only "write a one-line bio" - ignore both context length and complexity.
 Focus on whether the requested task itself needs structure and organization,
 not the structure of the provided context or reference materials.
 """
-        logging.info(f"DEBUG : Model used by default controller {default_controller.model}")
+        logging.info(
+            f"DEBUG : Model used by default controller {default_controller.model}"
+        )
         routing_request = ChatCompletionRequest(
-            model=default_controller.model, 
+            model=default_controller.model,
             messages=[
                 {
                     "role": "system",
@@ -1199,16 +1398,13 @@ For the needs_structure field specifically:
   * Requires strategic organization of information
   * Benefits from a planned outline
   * Needs to guide the reader through complex information
-  * Would be improved by hierarchical organization"""
+  * Would be improved by hierarchical organization""",
                 },
-                {
-                    "role": "user",
-                    "content": "Analyze this prompt: " + prompt
-                }
+                {"role": "user", "content": "Analyze this prompt: " + prompt},
             ],
             stream=False,  # Force non-streaming for routing
             response_format=RoutingAnalysis,
-            user=request_data.get("user")  # Pass through the user ID
+            user=request_data.get("user"),  # Pass through the user ID
         )
 
         # Use regular completion for routing decision
@@ -1219,11 +1415,9 @@ For the needs_structure field specifically:
             api_key=default_controller.api_key,
             response_format=RoutingAnalysis,
             user=routing_request.user,  # Pass through the user ID
-            metadata={
-                "trace_user_id": routing_request.user
-            }
+            metadata={"trace_user_id": routing_request.user},
         )
-        
+
         # Add logging for routing analysis response and usage
         prompt_preview = format_prompt_preview(routing_request.messages[-1]["content"])
         usage_info = (
@@ -1232,56 +1426,61 @@ For the needs_structure field specifically:
             f"Total Tokens: {response.usage.total_tokens}"
         )
         cost = response._hidden_params.get("response_cost", 0)
-        
+
         if cost_tracker:
             cost_tracker.add_cost(cost)
-        logging.info(format_usage_log(
-            prompt_preview=prompt_preview, 
-            usage_info=usage_info, 
-            cost=cost, 
-            user_id=int(routing_request.user) if routing_request.user else None,
-            prompt_tokens=response.usage.prompt_tokens,
-            completion_tokens=response.usage.completion_tokens
-        ))
+        logging.info(
+            format_usage_log(
+                prompt_preview=prompt_preview,
+                usage_info=usage_info,
+                cost=cost,
+                user_id=int(routing_request.user) if routing_request.user else None,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+            )
+        )
 
         # Store router usage in the request object
         request.router_usage = {
             "prompt_tokens": response.usage.prompt_tokens,
             "completion_tokens": response.usage.completion_tokens,
-            "total_tokens": response.usage.total_tokens
+            "total_tokens": response.usage.total_tokens,
         }
 
         try:
             # Get the content directly from the response
             content = response.choices[0].message.content
-            
+
             # Check if content is None or empty before trying to parse
             if not content:
-                logging.error("Error: Empty or None content received from routing analysis")
+                logging.error(
+                    "Error: Empty or None content received from routing analysis"
+                )
                 return "completion"
-                
+
             analysis = RoutingAnalysis.model_validate_json(content)
-            
+
             # Add debug output for routing decision
             logging.debug("\033[95m=== Routing Analysis ===\033[0m")
             logging.debug(f"\033[94mLength Score: {analysis.length_score}\033[0m")
             logging.debug(f"\033[94mNeeds Structure: {analysis.needs_structure}\033[0m")
             logging.debug(f"\033[94mIs Data Dump: {analysis.is_data_dump}\033[0m")
-            
+
             # Route to longwriter if:
             # 1. Content will be long (> 1000 words)
             # 2. Content benefits from structure
             # 3. Not just a data dump
             use_longwriter = (
-                analysis.length_score > 0.7 and 
-                analysis.needs_structure and 
-                not analysis.is_data_dump
+                analysis.length_score > 0.7
+                and analysis.needs_structure
+                and not analysis.is_data_dump
             )
-            
-            
-            logging.debug(f"\033[93mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m")
+
+            logging.debug(
+                f"\033[93mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m"
+            )
             logging.debug("\033[95m=====================\033[0m")
-            
+
             return "longwriter" if use_longwriter else "completion"
         except Exception as e:
             logging.error(f"\033[91mError parsing routing analysis: {str(e)}\033[0m")
@@ -1324,27 +1523,49 @@ For the needs_structure field specifically:
     def __str__(self):
         return str(self.controllers)
 
-def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], completion_tokens: Optional[int]) -> None:
+
+def update_token_usage(
+    user_id: Optional[int],
+    prompt_tokens: Optional[int],
+    completion_tokens: Optional[int],
+) -> None:
     """Update token usage in the database. Raises RuntimeError if update fails."""
-    if user_id is not None and prompt_tokens is not None and completion_tokens is not None:
+    if (
+        user_id is not None
+        and prompt_tokens is not None
+        and completion_tokens is not None
+    ):
         try:
             from kavya.openai_server import app
-            if not hasattr(app, 'db') or not app.db:
+
+            if not hasattr(app, "db") or not app.db:
                 error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
                 logging.error(error_msg)
                 raise RuntimeError(error_msg)
-            logging.info("DEBUG : Updating cost in database from controllers.update_token_usage")
+            logging.info(
+                "DEBUG : Updating cost in database from controllers.update_token_usage"
+            )
             app.cache.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens
+                completion_tokens=completion_tokens,
             )
         except Exception as db_error:
-            error_msg = f"CRITICAL: Failed to update token usage in database: {str(db_error)}"
+            error_msg = (
+                f"CRITICAL: Failed to update token usage in database: {str(db_error)}"
+            )
             logging.error(error_msg)
             raise RuntimeError(error_msg) from db_error
 
-def format_usage_log(prompt_preview: str, usage_info: str, cost: Optional[float] = None, user_id: Optional[int] = None, prompt_tokens: Optional[int] = None, completion_tokens: Optional[int] = None) -> str:
+
+def format_usage_log(
+    prompt_preview: str,
+    usage_info: str,
+    cost: Optional[float] = None,
+    user_id: Optional[int] = None,
+    prompt_tokens: Optional[int] = None,
+    completion_tokens: Optional[int] = None,
+) -> str:
     """Format usage log with consistent styling and simple borders."""
     # Update token usage before logging
     update_token_usage(user_id, prompt_tokens, completion_tokens)
@@ -1360,31 +1581,39 @@ def format_usage_log(prompt_preview: str, usage_info: str, cost: Optional[float]
     usage_msg += "\n================================================================"
     return f"\033[94m{usage_msg}\033[0m"  # Using \033[94m for purple instead of \033[95m for pink
 
+
 def format_prompt_preview(prompt: str, max_length: int = 50) -> str:
     """Format prompt preview by replacing newlines with spaces and truncating."""
     # Replace all whitespace (including newlines) with a single space
-    cleaned = ' '.join(prompt.split())
-    return cleaned[:max_length] + ('...' if len(cleaned) > max_length else '')
+    cleaned = " ".join(prompt.split())
+    return cleaned[:max_length] + ("..." if len(cleaned) > max_length else "")
+
 
 def format_total_cost_log(total_cost: float) -> str:
     return f"\033[95m=== Total Request Cost: ${total_cost:.6f} ===\033[0m"
 
+
 def custom_cost_usage_callback(
-    kwargs,                  # kwargs to completion
-    completion_response,     # response from completion
-    start_time, end_time    # start/end time
+    kwargs,  # kwargs to completion
+    completion_response,  # response from completion
+    start_time,
+    end_time,  # start/end time
 ):
     # Get user ID from kwargs - hard fail if not present
     user = kwargs.get("user", None)
     if not user:
         error_msg = "CRITICAL: No user ID provided in callback. Every request must be billed to a user."
-        logging.critical(error_msg)  # Changed from error to critical for proper severity
+        logging.critical(
+            error_msg
+        )  # Changed from error to critical for proper severity
         raise ValueError(error_msg)
-        
+
     messages = kwargs.get("messages", [])
-    prompt_preview = format_prompt_preview(messages[-1]["content"]) if messages else "No prompt"
+    prompt_preview = (
+        format_prompt_preview(messages[-1]["content"]) if messages else "No prompt"
+    )
     is_streaming = kwargs.get("stream", False)
-    
+
     if is_streaming:
         if "complete_streaming_response" in kwargs:
             usage = kwargs["complete_streaming_response"].usage
@@ -1402,15 +1631,17 @@ def custom_cost_usage_callback(
             logging.info(usage_info)
             logging.info(f"Cost: ${cost}")
             logging.info("=== END TOKEN UPDATE ===")
-            
-            logging.info(format_usage_log(  # Using info level for usage logs
-                prompt_preview=prompt_preview, 
-                usage_info=usage_info, 
-                cost=cost, 
-                user_id=int(user),
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens
-            ))
+
+            logging.info(
+                format_usage_log(  # Using info level for usage logs
+                    prompt_preview=prompt_preview,
+                    usage_info=usage_info,
+                    cost=cost,
+                    user_id=int(user),
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                )
+            )
     else:
         usage = completion_response.usage
         cost = kwargs.get("response_cost", 0)
@@ -1427,27 +1658,31 @@ def custom_cost_usage_callback(
         logging.info(usage_info)
         logging.info(f"Cost: ${cost}")
         logging.info("=== END TOKEN UPDATE ===")
-        
-        logging.info(format_usage_log(  # Using info level for usage logs
-            prompt_preview=prompt_preview, 
-            usage_info=usage_info, 
-            cost=cost, 
-            user_id=int(user),
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens
-        ))
+
+        logging.info(
+            format_usage_log(  # Using info level for usage logs
+                prompt_preview=prompt_preview,
+                usage_info=usage_info,
+                cost=cost,
+                user_id=int(user),
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+            )
+        )
+
 
 # Register the callback
 litellm.success_callback = [custom_cost_usage_callback]
 logging.info("Registered custom_cost_usage_callback with litellm")
 
+
 # Example usage for non-streaming completion
 def make_non_streaming_completion(prompt):
     response = litellm.completion(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
+        model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}]
     )
     return response
+
 
 # Example usage for streaming completion
 def make_streaming_completion(prompt):
@@ -1455,13 +1690,15 @@ def make_streaming_completion(prompt):
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
-        stream_options={"include_usage": True}  # Important for getting usage info in streaming,
+        stream_options={
+            "include_usage": True
+        },  # Important for getting usage info in streaming,
     )
-    
+
     # Process streaming response
     collected_content = []
     for chunk in response:
         if chunk.choices[0].delta.content:
             collected_content.append(chunk.choices[0].delta.content)
-    
+
     return "".join(collected_content)
