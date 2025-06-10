@@ -31,3 +31,10 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-commit]
+    -   id: test-image-analysis
+        name: Test Image Analysis
+        entry: ./tests/image-analysis.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]

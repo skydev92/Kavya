@@ -179,8 +179,39 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
+        # Test 4: Image Analysis
+        echo "🧪 Running image analysis test..."
+        chmod +x tests/image-analysis.sh
+        
+        if ./tests/image-analysis.sh > image_output.txt 2>&1; then
+          image_status="✅ **PASSED**"
+        else
+          image_status="❌ **FAILED**"
+        fi
+        
+        echo "## 🖼️ Image Analysis Test" >> $GITHUB_STEP_SUMMARY
+        echo "$image_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests multi-modal content processing with text + image input" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": [{"type": "text", "text": "What text do you see in this image?"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}]}]}'"'"'' >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat image_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "❌ One or more API tests failed"

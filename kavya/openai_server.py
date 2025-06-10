@@ -4,36 +4,40 @@ It current only supports Chat Completions: https://platform.openai.com/docs/api-
 """
 
 import argparse
-import os
-import sys
 import asyncio
-import yaml
 import json
-from datetime import datetime
-import signal
-import time
-import shortuuid
-import re
-
 import logging
+import os
+import re
+import signal
+import sys
+import time
+from datetime import datetime
+
 import fastapi
-import uvicorn
 import litellm
-
-from fastapi.concurrency import asynccontextmanager
-from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Depends, BackgroundTasks
-
-from kavya.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE, RequestCostTracker
-from kavya.auth import JWTBearer
-from kavya.models import InsufficientTokensError
-import kavya.models 
-from kavya.database import Database, DEFAULT_VALIDATION_INTERVAL
-from kavya.web_search import enhance_with_web_search
-from kavya.database_cache import DatabaseCache
-
+import shortuuid
+import uvicorn
+import yaml
 from dotenv import load_dotenv
+from fastapi import BackgroundTasks, Depends
+from fastapi.concurrency import asynccontextmanager
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+import kavya.models
+from kavya.auth import JWTBearer
+from kavya.controller import (
+    DEFAULT_CHUNK_SIZE,
+    ContentRequest,
+    Controllers,
+    RequestCostTracker,
+    RoutingError,
+)
+from kavya.database import DEFAULT_VALIDATION_INTERVAL, Database
+from kavya.database_cache import DatabaseCache
+from kavya.models import InsufficientTokensError
+from kavya.web_search import enhance_with_web_search
 
 load_dotenv()
 
@@ -42,14 +46,16 @@ os.environ["LANGFUSE_SECRET_KEY"] = os.getenv("LANGFUSE_SECRET_KEY")
 os.environ["LANGFUSE_HOST"] = os.getenv("LANGFUSE_HOST")
 
 # set langfuse as a callback, litellm will send the data to langfuse
-# litellm.success_callback = ["langfuse"] 
+# litellm.success_callback = ["langfuse"]
 # ------------------------------------------------------------------------------
 # APPLICATION INITIALIZATION
 # ------------------------------------------------------------------------------
 
+
 def signal_handler(signum, frame):
     """Handle interrupt signals by outputting total cost before exit."""
     sys.exit(0)
+
 
 # Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
@@ -57,25 +63,30 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 # Removed periodic database health check
 
+
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     """Initialize and cleanup application state"""
-    
+
     try:
         # Load config
         config = yaml.safe_load(open(args.config, "r")) if args.config else None
-        
+
         # Get default model from config or command line arguments
         default_model = args.model
-        
+
         logging.info(f"Default model in arguments: {default_model}")
 
         # If config has model_translations section, use it to override defaults
-        if config and "model_translations" in config and "default" in config["model_translations"]:
+        if (
+            config
+            and "model_translations" in config
+            and "default" in config["model_translations"]
+        ):
             default_model = config["model_translations"]["default"]
-        
+
         logging.info(f"Default model after checking config: {default_model}")
-        
+
         app.controllers = Controllers(
             config=config,
             model=default_model,
@@ -83,58 +94,69 @@ async def lifespan(app: fastapi.FastAPI):
             api_key=args.api_key,
             progress_bar=True,
         )
-        app.controllers.create_controller("completion", 
+        app.controllers.create_controller(
+            "completion",
             config=config,
             model=default_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
-        app.controllers.create_controller("longwriter", 
+        app.controllers.create_controller(
+            "longwriter",
             config=config,
             model=default_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
-        logging.debug("Default controllers based on arguments, initialized successfully")
-        
+        logging.debug(
+            "Default controllers based on arguments, initialized successfully"
+        )
+
         # Store model from config for later use
         app.model_translations = config.get("model_translations", {}) if config else {}
-        
+
         # Store provider configurations from config for later use
         app.provider_configs = config.get("provider_configs", {}) if config else {}
-        
+
         # Check if provider_configs are defined
         if not app.provider_configs:
-            raise ValueError("Missing required configuration: 'provider_configs' not found in config file.")
-        
+            raise ValueError(
+                "Missing required configuration: 'provider_configs' not found in config file."
+            )
+
         # Initialize database
         app.db = Database()
-        
+
         # Test database connection by trying to create tables
         try:
             # Initialize the database (creates tables if needed)
             app.db.initialize_database()
-            
+
             # Removed health check task initialization
-            
+
             yield
         except Exception as e:
-            logging.error(f"Database initialization failed: {type(e).__name__}: {str(e)}")
-            raise Exception("Application startup failed - database initialization error") from e
-        
+            logging.error(
+                f"Database initialization failed: {type(e).__name__}: {str(e)}"
+            )
+            raise Exception(
+                "Application startup failed - database initialization error"
+            ) from e
+
     except Exception as e:
         logging.error(f"Failed to initialize application: {type(e).__name__}: {str(e)}")
         raise Exception("Application startup failed") from e
-    
+
     finally:
         # Cleanup on shutdown
-        if hasattr(app, 'db') and app.db:
+        if hasattr(app, "db") and app.db:
             app.db.close()
-        if hasattr(app, 'controllers'):
+        if hasattr(app, "controllers"):
             app.controllers = []
         logging.debug("All controllers shut down")
+
 
 app = fastapi.FastAPI(lifespan=lifespan)
 
@@ -150,6 +172,7 @@ app.cache = DatabaseCache(app)
 # ------------------------------------------------------------------------------
 # UTILITY ENDPOINTS
 # ------------------------------------------------------------------------------
+
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/health", response_class=HTMLResponse)
@@ -250,76 +273,81 @@ async def health_check():
     """
     return HTMLResponse(content=html_content, status_code=200)
 
+
 @app.get("/v1/account/balance")
 async def get_account_balance(user_id: int = Depends(JWTBearer())):
     """Get account balance for the authenticated user."""
     logging.info(f"Account balance check for user {user_id}")
-    
+
     try:
         # Get account balance
         balance = app.db.get_account_balance_model(account_id=user_id)
-        
+
         # Get daily usage for the current month
         today = datetime.now()
         start_date = f"{today.year}-{today.month:02d}-01"
         end_date = today.strftime("%Y-%m-%d")
-        
+
         daily_usage = app.db.get_daily_usage_model(
-            account_id=user_id,
-            start_date=start_date,
-            end_date=end_date
+            account_id=user_id, start_date=start_date, end_date=end_date
         )
-        
+
         # Calculate monthly totals
         monthly_totals = {
             "prompt_tokens": sum(day.daily_token_usage_in for day in daily_usage),
             "completion_tokens": sum(day.daily_token_usage_out for day in daily_usage),
             "word_count": sum(day.daily_word_usage for day in daily_usage),
-            "transaction_count": sum(day.transaction_count for day in daily_usage)
+            "transaction_count": sum(day.transaction_count for day in daily_usage),
         }
-        
+
         return JSONResponse(
             content={
                 "account_id": balance.account_id,
                 "balance": {
                     "token_balance_in": balance.token_balance_in,
                     "token_balance_out": balance.token_balance_out,
-                    "word_balance": balance.word_balance if hasattr(balance, 'word_balance') else 0,
-                    "transactions": balance.transactions
+                    "word_balance": (
+                        balance.word_balance if hasattr(balance, "word_balance") else 0
+                    ),
+                    "transactions": balance.transactions,
                 },
                 "monthly_usage": {
                     "month": f"{today.year}-{today.month:02d}",
                     "prompt_tokens": monthly_totals["prompt_tokens"],
                     "completion_tokens": monthly_totals["completion_tokens"],
                     "word_count": monthly_totals["word_count"],
-                    "transaction_count": monthly_totals["transaction_count"]
+                    "transaction_count": monthly_totals["transaction_count"],
                 },
-                "daily_usage": [day.model_dump() for day in daily_usage]
+                "daily_usage": [day.model_dump() for day in daily_usage],
             },
-            status_code=200
+            status_code=200,
         )
     except Exception as e:
         error_type = type(e).__name__
         error_msg = str(e)
         logging.error(f"Error getting account balance: {error_type}: {error_msg}")
-        
+
         return JSONResponse(
             content={
                 "error": {
                     "message": f"Failed to retrieve account balance: {error_msg}",
                     "type": error_type,
-                    "code": "balance_retrieval_failed"
+                    "code": "balance_retrieval_failed",
                 }
             },
-            status_code=500
+            status_code=500,
         )
+
 
 # ------------------------------------------------------------------------------
 # API ENDPOINTS
 # ------------------------------------------------------------------------------
 
+
 @app.post("/v1/chat/completions")
-async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id: int = Depends(JWTBearer())):
+async def create_chat_completion(
+    request_data: dict = fastapi.Body(...), user_id: int = Depends(JWTBearer())
+):
     # Validate and translate Kavya models before creating the ChatCompletionRequest
     if "model" not in request_data:
         return JSONResponse(
@@ -328,10 +356,10 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     "message": "Missing required field: model",
                     "type": "invalid_request_error",
                     "param": "model",
-                    "code": "missing_field"
+                    "code": "missing_field",
                 }
             },
-            status_code=400
+            status_code=400,
         )
 
     # First validate if it's a Kavya request
@@ -339,7 +367,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         kavya_request = kavya.models.KavyaRequest(**request_data)
         # Store original model name before translation
         original_model = kavya_request.model
-        
+
         # Validate providers is only allowed with kavya-m1
         if kavya_request.providers is not None and original_model != "kavya-m1":
             return JSONResponse(
@@ -348,19 +376,19 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         "message": "The providers parameter is only allowed with the kavya-m1 model",
                         "type": "invalid_request_error",
                         "param": "providers",
-                        "code": "invalid_parameter_combination"
+                        "code": "invalid_parameter_combination",
                     }
                 },
-                status_code=400
+                status_code=400,
             )
-            
+
         # Store original model in the request data and controllers
         request_data["original_model"] = original_model
         app.controllers.default.original_model = original_model
         app.controllers.completion.original_model = original_model
         app.controllers.longwriter.original_model = original_model
         logging.info(f"DEBUG: Original model set to {original_model}")
-            
+
         # Process providers parameter if it's valid (only for kavya-m1)
         """
         if kavya_request.providers is not None and original_model == "kavya-m1":
@@ -437,32 +465,41 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         else:
         """
         # If providers parameter is not used, translate the model
-        request_data["model"] = app.controllers.default.model_translations[original_model]
+        request_data["model"] = app.controllers.default.model_translations[
+            original_model
+        ]
         logging.info(f"DEBUG: Translated model to: {request_data['model']}")
-        
+
         # Check if we have a specific model for this Kavya model
-        if hasattr(app, 'model_translations') and original_model in app.model_translations:
+        if (
+            hasattr(app, "model_translations")
+            and original_model in app.model_translations
+        ):
             # Get the model for this Kavya model
             model_to_use = app.model_translations[original_model]
             logging.info(f"Using model for {original_model}: {model_to_use}")
-            
+
             # Update the model in all controllers
-            for controller_name in ['default', 'completion', 'longwriter']:
+            for controller_name in ["default", "completion", "longwriter"]:
                 controller = app.controllers.controllers[controller_name]
                 controller.model = model_to_use
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
-        if "model" in request_data and isinstance(request_data["model"], str) and request_data["model"].startswith("kavya-"):
+        if (
+            "model" in request_data
+            and isinstance(request_data["model"], str)
+            and request_data["model"].startswith("kavya-")
+        ):
             return JSONResponse(
                 content={
                     "error": {
                         "message": f"Invalid Kavya model. Must be one of: {', '.join(app.controllers.default.model_translations.keys())}",
                         "type": "invalid_request_error",
                         "param": "model",
-                        "code": "invalid_model"
+                        "code": "invalid_model",
                     }
                 },
-                status_code=400
+                status_code=400,
             )
 
     # Add thinking=False globally to all requests (will be dropped by litellm for unsupported models)
@@ -472,9 +509,13 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
 
     # Create the ChatCompletionRequest from the validated data
     try:
-        logging.info(f"DEBUG: Final request_data before creating ChatCompletionRequest: {request_data}")
+        logging.info(
+            f"DEBUG: Final request_data before creating ChatCompletionRequest: {request_data}"
+        )
         request = kavya.models.ChatCompletionRequest(**request_data)
-        logging.info(f"DEBUG: Created ChatCompletionRequest with model: {request.model}")
+        logging.info(
+            f"DEBUG: Created ChatCompletionRequest with model: {request.model}"
+        )
     except Exception as e:
         logging.error(f"Error creating ChatCompletionRequest: {str(e)}")
         return JSONResponse(
@@ -482,25 +523,42 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 "error": {
                     "message": f"Invalid request parameters: {str(e)}",
                     "type": "invalid_request_error",
-                    "code": "invalid_parameters"
+                    "code": "invalid_parameters",
                 }
             },
-            status_code=400
+            status_code=400,
         )
 
     logging.info(f"Received request: {request}")
-    
+
     # Ensure user_id is set in the request
     request_dict = request.model_dump(exclude_none=True)
-    request_dict["user"] = str(user_id)  # Convert to string as that's what the API expects
+    request_dict["user"] = str(
+        user_id
+    )  # Convert to string as that's what the API expects
     request = kavya.models.ChatCompletionRequest(**request_dict)
-    
+
     # Get token estimates for the request
-    messages_content = " ".join([msg["content"] for msg in request.messages])
+    def extract_text_content(content):
+        """Extract text content from either string or multi-modal content"""
+        if isinstance(content, str):
+            return content
+        elif isinstance(content, list):
+            # Extract text from multi-modal content
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+            return " ".join(text_parts)
+        return ""
+
+    messages_content = " ".join(
+        [extract_text_content(msg["content"]) for msg in request.messages]
+    )
     estimated_prompt_tokens = len(messages_content.split()) * 1.5  # Rough estimate
     estimated_completion_tokens = 500  # Conservative estimate for completion
     estimated_word_count = 100  # Conservative estimate for word count
-    
+
     # Check balance without updating
     try:
         logging.info("CHECKING BALANCE")
@@ -508,7 +566,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
-            word_count=estimated_word_count
+            word_count=estimated_word_count,
         )
         if not has_sufficient_balance:
             error_msg = (
@@ -527,18 +585,18 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         "message": error_msg,
                         "type": "insufficient_balance",
                         "param": None,
-                        "code": "insufficient_tokens"
+                        "code": "insufficient_tokens",
                     }
                 },
                 status_code=402,  # Payment Required
                 headers={
-                    "X-Current-Balance-In": str(current_balance['token_balance_in']),
-                    "X-Current-Balance-Out": str(current_balance['token_balance_out']),
-                    "X-Current-Balance-Words": str(current_balance['word_balance']),
+                    "X-Current-Balance-In": str(current_balance["token_balance_in"]),
+                    "X-Current-Balance-Out": str(current_balance["token_balance_out"]),
+                    "X-Current-Balance-Words": str(current_balance["word_balance"]),
                     "X-Required-Tokens-In": str(estimated_prompt_tokens),
                     "X-Required-Tokens-Out": str(estimated_completion_tokens),
-                    "X-Required-Words": str(estimated_word_count)
-                }
+                    "X-Required-Words": str(estimated_word_count),
+                },
             )
     except Exception as e:
         error_msg = f"Error checking token balance: {str(e)}"
@@ -549,29 +607,29 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     "message": error_msg,
                     "type": "internal_error",
                     "param": None,
-                    "code": "balance_check_failed"
+                    "code": "balance_check_failed",
                 }
             },
-            status_code=500
+            status_code=500,
         )
-    
+
     # Create a cost tracker for this request
     cost_tracker = RequestCostTracker()
-    
+
     try:
         # First determine routing - this will use some tokens
         controller_name = await app.controllers.basic_routing(request, cost_tracker)
         logging.debug("controller_name: " + controller_name)
-        
+
         # After routing, check remaining balance without updating
         routing_cost = cost_tracker.get_total()
         remaining_prompt_tokens = estimated_prompt_tokens - routing_cost
-        
+
         has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(remaining_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
-            word_count=estimated_word_count
+            word_count=estimated_word_count,
         )
         if not has_sufficient_balance:
             error_msg = (
@@ -590,102 +648,154 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         "message": error_msg,
                         "type": "insufficient_balance",
                         "param": None,
-                        "code": "insufficient_tokens"
+                        "code": "insufficient_tokens",
                     }
                 },
                 status_code=402,
                 headers={
-                    "X-Current-Balance-In": str(current_balance['token_balance_in']),
-                    "X-Current-Balance-Out": str(current_balance['token_balance_out']),
-                    "X-Current-Balance-Words": str(current_balance['word_balance']),
+                    "X-Current-Balance-In": str(current_balance["token_balance_in"]),
+                    "X-Current-Balance-Out": str(current_balance["token_balance_out"]),
+                    "X-Current-Balance-Words": str(current_balance["word_balance"]),
                     "X-Required-Tokens-In": str(remaining_prompt_tokens),
                     "X-Required-Tokens-Out": str(estimated_completion_tokens),
-                    "X-Required-Words": str(estimated_word_count)
-                }
+                    "X-Required-Words": str(estimated_word_count),
+                },
             )
-        
+
         if request.stream:
             if controller_name.startswith("longwriter"):
-                model = request.model or app.controllers.longwriter.get_model(**request.model_dump(exclude_none=True))
+                model = request.model or app.controllers.longwriter.get_model(
+                    **request.model_dump(exclude_none=True)
+                )
                 logging.debug("model: " + model)
+
                 async def iter_response():
                     logging.debug("iter_response")
                     try:
                         # First yield router usage information if available
-                        if hasattr(request, 'router_usage') and request.router_usage:
+                        if hasattr(request, "router_usage") and request.router_usage:
                             router_usage_event = {
                                 "jsonrpc": "2.0",
                                 "method": "agent/cost_disclosure",
                                 "params": {
-                                    "prompt_tokens": request.router_usage["prompt_tokens"],
-                                    "completion_tokens": request.router_usage["completion_tokens"],
-                                    "description": "Router analysis"
-                                }
+                                    "prompt_tokens": request.router_usage[
+                                        "prompt_tokens"
+                                    ],
+                                    "completion_tokens": request.router_usage[
+                                        "completion_tokens"
+                                    ],
+                                    "description": "Router analysis",
+                                },
                             }
-                            yield "data: "+json.dumps(router_usage_event) + "\n\n"
+                            yield "data: " + json.dumps(router_usage_event) + "\n\n"
 
                         # Default HTML tags
                         allowed_html_tags = "a, blockquote, code, em, figcaption, h1, h2, h3, img, li, ol, p, pre, strong, table, td, tr, ul"
                         # Check if custom tags are provided in request
                         if request.allowed_html_tags is not None:
                             allowed_html_tags = request.allowed_html_tags
-                            logging.debug(f"Using custom HTML tags: {allowed_html_tags}")
-                        
+                            logging.debug(
+                                f"Using custom HTML tags: {allowed_html_tags}"
+                            )
+
                         # Default HTML classes (empty)
                         allowed_html_classes = ""
                         # Check if custom classes are provided in request
                         if request.allowed_html_classes is not None:
                             allowed_html_classes = request.allowed_html_classes
-                            logging.debug(f"Using custom HTML classes: {allowed_html_classes}")
-                        
+                            logging.debug(
+                                f"Using custom HTML classes: {allowed_html_classes}"
+                            )
+
                         content_request = ContentRequest(
-                            prompt=request.messages[-1]["content"],
+                            prompt=extract_text_content(
+                                request.messages[-1]["content"]
+                            ),
                             allowed_html_tags=allowed_html_tags,
                             allowed_html_classes=allowed_html_classes,
                             messages=request.messages,
-                            user=str(user_id)  # Add user ID to content request
-                        ) 
+                            user=str(user_id),  # Add user ID to content request
+                        )
 
                         try:
-                            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
+                            logging.info(
+                                "WEB_SEARCH: Checking if web search enhancement is needed"
+                            )
                             # Enhance messages directly on the content_request object
-                            content_request.messages = await enhance_with_web_search(app.controllers.longwriter, content_request.messages)
+                            content_request.messages = await enhance_with_web_search(
+                                app.controllers.longwriter, content_request.messages
+                            )
                             logging.info("WEB_SEARCH: Enhancement check complete")
                         except Exception as web_search_error:
-                            logging.error(f"WEB_SEARCH: Error during enhancement: {web_search_error}", exc_info=True)
+                            logging.error(
+                                f"WEB_SEARCH: Error during enhancement: {web_search_error}",
+                                exc_info=True,
+                            )
                             # Proceeding without enhancement
-                        
 
                         logging.debug("Creating content strategy")
-                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
-                        content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
+                        yield "data: " + json.dumps(
+                            kavya.models.create_status_response_dict(
+                                "Creating content strategy", 1, 3, "planning"
+                            )
+                        ) + "\n\n"
+                        content_strategy = (
+                            await app.controllers.longwriter.get_content_strategy(
+                                content_request, model
+                            )
+                        )
                         # Disclose content strategy costs
-                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
-                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
-                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
-                            description="Content strategy generation"
-                        )) + "\n\n"
-                        
+                        yield "data: " + json.dumps(
+                            kavya.models.create_cost_disclosure_dict(
+                                prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                                completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                                description="Content strategy generation",
+                            )
+                        ) + "\n\n"
+
                         logging.debug("Creating HTML strategy")
-                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
-                        html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_request.allowed_html_classes, content_strategy, model)
+                        yield "data: " + json.dumps(
+                            kavya.models.create_status_response_dict(
+                                "Creating HTML strategy", 2, 3, "planning"
+                            )
+                        ) + "\n\n"
+                        html_strategy = (
+                            await app.controllers.longwriter.get_html_strategy(
+                                content_request.allowed_html_tags,
+                                content_request.allowed_html_classes,
+                                content_strategy,
+                                model,
+                            )
+                        )
                         # Disclose HTML strategy costs
-                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
-                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
-                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
-                            description="HTML strategy generation"
-                        )) + "\n\n"
-                        
+                        yield "data: " + json.dumps(
+                            kavya.models.create_cost_disclosure_dict(
+                                prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                                completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                                description="HTML strategy generation",
+                            )
+                        ) + "\n\n"
+
                         logging.debug("Creating Content outline")
-                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
-                        content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
+                        yield "data: " + json.dumps(
+                            kavya.models.create_status_response_dict(
+                                "Creating Content outline", 3, 3, "planning"
+                            )
+                        ) + "\n\n"
+                        content_outline = (
+                            await app.controllers.longwriter.get_content_outline(
+                                content_strategy, html_strategy, model
+                            )
+                        )
                         # Disclose content outline costs
-                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
-                            prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
-                            completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
-                            description="Content outline generation"
-                        )) + "\n\n"
-                        
+                        yield "data: " + json.dumps(
+                            kavya.models.create_cost_disclosure_dict(
+                                prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
+                                completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
+                                description="Content outline generation",
+                            )
+                        ) + "\n\n"
+
                         # Use async iteration for sections
                         response_id = f"chatcmpl-{shortuuid.random()}"
                         created_time = int(time.time())
@@ -694,37 +804,44 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         }
                         # Send initial assistant role
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
-                        
+
                         # Initialize word buffer for tracking total words
                         word_buffer = ""
-                        
+
                         def count_words(text: str) -> int:
                             """Count words in text after stripping HTML tags."""
                             # Remove HTML tags using regex
-                            text_without_html = re.sub(r'<[^>]+>', '', text)
+                            text_without_html = re.sub(r"<[^>]+>", "", text)
                             # Split on whitespace and filter out empty strings
-                            words = [word for word in text_without_html.split() if word.strip()]
+                            words = [
+                                word
+                                for word in text_without_html.split()
+                                if word.strip()
+                            ]
                             return len(words)
 
                         for section in content_outline.sections:
-                            async for token, token_count in app.controllers.longwriter.get_content_draft(
-                                section, 
-                                content_strategy, 
-                                html_strategy, 
-                                content_outline, 
-                                model
+                            async for (
+                                token,
+                                token_count,
+                            ) in app.controllers.longwriter.get_content_draft(
+                                section,
+                                content_strategy,
+                                html_strategy,
+                                content_outline,
+                                model,
                             ):
                                 # Accumulate content for word counting
                                 word_buffer += token
                                 current_word_count = count_words(word_buffer)
-                                
+
                                 # Send content chunk with word count
                                 usage = {
                                     "completion_tokens": token_count,
-                                    "word_count": current_word_count
+                                    "word_count": current_word_count,
                                 }
                                 yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                        
+
                         # Update database with final word count
                         try:
                             logging.debug("Updating word count in database")
@@ -733,11 +850,14 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 account_id=int(user_id),
                                 prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                                 completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
-                                word_count=final_word_count
+                                word_count=final_word_count,
                             )
                         except Exception as e:
-                            logging.error(f"Error updating word count in database: {str(e)}", exc_info=True)
-                        
+                            logging.error(
+                                f"Error updating word count in database: {str(e)}",
+                                exc_info=True,
+                            )
+
                         # Send final stop message
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
                         yield "data: [DONE]\n\n"
@@ -746,7 +866,12 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         logging.error(error_msg, exc_info=True)
                         yield f"data: {json.dumps({'error': {'message': error_msg}})}\n\n"
                         yield "data: [DONE]\n\n"
-                return StreamingResponse(iter_response(), media_type="text/event-stream", headers={"X-Chosen-Model": model})
+
+                return StreamingResponse(
+                    iter_response(),
+                    media_type="text/event-stream",
+                    headers={"X-Chosen-Model": model},
+                )
             else:
                 # Use the routed model if available, otherwise use completion's default model
                 if request.model:
@@ -755,31 +880,38 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 else:
                     kwargs = request.model_dump(exclude_none=True)
                     kwargs["model"] = app.controllers.completion.model
-                
-                logging.info("calling app.controllers.completion.completion for non-longwriter response")
-                
+
+                logging.info(
+                    "calling app.controllers.completion.completion for non-longwriter response"
+                )
+
                 # Ensure user ID is set
                 kwargs["user"] = str(user_id)
-                
+
                 # Remove original_model from kwargs before API call
-                original_model = kwargs.pop('original_model', None)
-                
+                original_model = kwargs.pop("original_model", None)
+
                 # Get router usage from the request object where it was stored during basic_routing
-                router_usage = getattr(request, 'router_usage', None)
-                
+                router_usage = getattr(request, "router_usage", None)
+
                 # Remove router_usage from kwargs if present
-                kwargs.pop('router_usage', None)
-                
+                kwargs.pop("router_usage", None)
+
                 # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
-                if original_model == "kavya-m1-hyper" and kwargs.get("max_tokens", 0) > 8000:
-                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
+                if (
+                    original_model == "kavya-m1-hyper"
+                    and kwargs.get("max_tokens", 0) > 8000
+                ):
+                    logging.info(
+                        f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model"
+                    )
                     kwargs["max_tokens"] = 8000
-                
+
                 # Limit max_tokens for Anthropic models based on model version
                 if kwargs.get("model", "").startswith("anthropic/"):
                     model_name = kwargs.get("model", "")
                     max_tokens_limit = 4096  # Default limit for Claude models
-                    
+
                     # Set specific limits based on model version
                     if "claude-3-7-sonnet" in model_name:
                         max_tokens_limit = 4096  # Claude 3.7 Sonnet limit
@@ -791,22 +923,28 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         max_tokens_limit = 4096  # Claude 3 Sonnet limit
                     elif "claude-3-haiku" in model_name:
                         max_tokens_limit = 4096  # Claude 3 Haiku limit
-                    
+
                     if kwargs.get("max_tokens", 0) > max_tokens_limit:
-                        logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}")
+                        logging.info(
+                            f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}"
+                        )
                         kwargs["max_tokens"] = max_tokens_limit
-                
+
                 # Handle max_tokens for xAI models (required parameter)
                 if kwargs.get("model", "").startswith("xai/"):
                     # Ensure max_tokens is set for xAI models
                     if "max_tokens" not in kwargs or kwargs.get("max_tokens", 0) == 0:
                         max_tokens_limit = 4096  # Default value if not provided
-                        logging.info(f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}")
+                        logging.info(
+                            f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}"
+                        )
                         kwargs["max_tokens"] = max_tokens_limit
                     elif kwargs.get("max_tokens", 0) > 4096:
-                        logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
+                        logging.info(
+                            f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}"
+                        )
                         kwargs["max_tokens"] = 4096
-                
+
                 # Make the API call asynchronously
                 async def generate_stream():
                     try:
@@ -817,56 +955,67 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                 "method": "agent/cost_disclosure",
                                 "params": {
                                     "prompt_tokens": router_usage["prompt_tokens"],
-                                    "completion_tokens": router_usage["completion_tokens"],
-                                    "description": "Router analysis"
-                                }
+                                    "completion_tokens": router_usage[
+                                        "completion_tokens"
+                                    ],
+                                    "description": "Router analysis",
+                                },
                             }
                             yield f"data: {json.dumps(router_usage_event)}\n\n"
-                        
+
                         # Initialize response_id and created_time at the start
                         response_id = f"chatcmpl-{shortuuid.random()}"
                         created_time = int(time.time())
-                        
+
                         # Initialize cost tracker
-                        app.controllers.completion.user = str(user_id)  # Set user ID for token tracking
-                        app.controllers.completion.cost_tracker = RequestCostTracker()  # Initialize cost tracker
+                        app.controllers.completion.user = str(
+                            user_id
+                        )  # Set user ID for token tracking
+                        app.controllers.completion.cost_tracker = (
+                            RequestCostTracker()
+                        )  # Initialize cost tracker
 
                         # Initialize prompt tokens
-                        messages_content = " ".join([msg["content"] for msg in kwargs.get("messages", [])])
-                        app.controllers.completion.cost_tracker.prompt_tokens = len(messages_content.split())
-                        
+                        messages_content = " ".join(
+                            [msg["content"] for msg in kwargs.get("messages", [])]
+                        )
+                        app.controllers.completion.cost_tracker.prompt_tokens = len(
+                            messages_content.split()
+                        )
+
                         try:
                             # Call acompletion and handle the response differently based on its type
                             res = await app.controllers.completion.acompletion(**kwargs)
-                            
+
                             # Check if the result is an async generator (streaming)
                             if hasattr(res, "__aiter__"):
                                 # First yield role assistant
                                 role_chunk = {
-                                    'id': response_id,
-                                    'object': 'chat.completion.chunk',
-                                    'created': created_time,
-                                    'model': original_model or kwargs.get('model', 'unknown'),
-                                    'choices': [
+                                    "id": response_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created_time,
+                                    "model": original_model
+                                    or kwargs.get("model", "unknown"),
+                                    "choices": [
                                         {
-                                            'index': 0,
-                                            'delta': {'role': 'assistant'},
-                                            'finish_reason': None
+                                            "index": 0,
+                                            "delta": {"role": "assistant"},
+                                            "finish_reason": None,
                                         }
                                     ],
-                                    'usage': {
-                                        'prompt_tokens': app.controllers.completion.cost_tracker.prompt_tokens
-                                    }
+                                    "usage": {
+                                        "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens
+                                    },
                                 }
                                 yield f"data: {json.dumps(role_chunk)}\n\n"
-                                
+
                                 # For streaming response, iterate through the async generator
                                 accumulated_word_count = 0
                                 async for chunk in res:
                                     # Handle different types of yielded values
                                     token = None
                                     token_count = 0
-                                    
+
                                     # Case 1: Tuple of (token, token_count)
                                     if isinstance(chunk, tuple) and len(chunk) == 2:
                                         token, token_count = chunk
@@ -875,9 +1024,16 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                         token = chunk
                                         token_count = 1  # Default to 1 token
                                     # Case 3: ModelResponseStream object
-                                    elif hasattr(chunk, 'choices') and len(chunk.choices) > 0 and hasattr(chunk.choices[0], 'delta'):
+                                    elif (
+                                        hasattr(chunk, "choices")
+                                        and len(chunk.choices) > 0
+                                        and hasattr(chunk.choices[0], "delta")
+                                    ):
                                         delta = chunk.choices[0].delta
-                                        if hasattr(delta, 'content') and delta.content is not None:
+                                        if (
+                                            hasattr(delta, "content")
+                                            and delta.content is not None
+                                        ):
                                             token = delta.content
                                             token_count = 1
                                         else:
@@ -885,96 +1041,115 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                                             continue
                                     # Case 4: Other object types (skip)
                                     else:
-                                        logging.warning(f"Unexpected chunk type in stream: {type(chunk)}")
+                                        logging.warning(
+                                            f"Unexpected chunk type in stream: {type(chunk)}"
+                                        )
                                         continue
-                                    
+
                                     # Check if this is a cost disclosure message (JSON string)
                                     try:
                                         # Try to parse as JSON to see if it's a cost disclosure
                                         json_obj = json.loads(token)
-                                        if isinstance(json_obj, dict) and json_obj.get("jsonrpc") == "2.0" and json_obj.get("method") == "agent/cost_disclosure":
+                                        if (
+                                            isinstance(json_obj, dict)
+                                            and json_obj.get("jsonrpc") == "2.0"
+                                            and json_obj.get("method")
+                                            == "agent/cost_disclosure"
+                                        ):
                                             # This is a cost disclosure message, yield it directly
                                             yield f"data: {token}\n\n"
                                             continue
                                     except (json.JSONDecodeError, TypeError):
                                         # Not JSON or not a cost disclosure, treat as normal token
                                         pass
-                                        
+
                                     # Track word count for non-JSON tokens
-                                    if isinstance(token, str) and not token.startswith('{"jsonrpc"'):
+                                    if isinstance(token, str) and not token.startswith(
+                                        '{"jsonrpc"'
+                                    ):
                                         # Simple word count approximation by splitting on whitespace
                                         words = token.split()
                                         if words:
                                             accumulated_word_count += len(words)
-                                    
+
                                     # Process regular token as before
                                     # Convert to stream response format
                                     chunk_response = {
-                                        'id': response_id,
-                                        'object': 'chat.completion.chunk',
-                                        'created': created_time,
-                                        'model': original_model or kwargs.get('model', 'unknown'),
-                                        'choices': [
+                                        "id": response_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created_time,
+                                        "model": original_model
+                                        or kwargs.get("model", "unknown"),
+                                        "choices": [
                                             {
-                                                'index': 0,
-                                                'delta': {'content': token},
-                                                'finish_reason': None
+                                                "index": 0,
+                                                "delta": {"content": token},
+                                                "finish_reason": None,
                                             }
                                         ],
-                                        'usage': {
-                                            'completion_tokens': token_count,
-                                            'word_count': 1  # Approximate word count
-                                        }
+                                        "usage": {
+                                            "completion_tokens": token_count,
+                                            "word_count": 1,  # Approximate word count
+                                        },
                                     }
                                     yield f"data: {json.dumps(chunk_response)}\n\n"
-                                
+
                                 # Send final stop message
                                 final_chunk = {
-                                    'id': response_id,
-                                    'object': 'chat.completion.chunk',
-                                    'created': created_time,
-                                    'model': original_model or kwargs.get('model', 'unknown'),
-                                    'choices': [
+                                    "id": response_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created_time,
+                                    "model": original_model
+                                    or kwargs.get("model", "unknown"),
+                                    "choices": [
                                         {
-                                            'index': 0,
-                                            'delta': {},
-                                            'finish_reason': 'stop'
+                                            "index": 0,
+                                            "delta": {},
+                                            "finish_reason": "stop",
                                         }
                                     ],
-                                    'usage': {
-                                        'completion_tokens': app.controllers.completion.cost_tracker.completion_tokens,
-                                        'word_count': accumulated_word_count  # Use accumulated word count
-                                    }
+                                    "usage": {
+                                        "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
+                                        "word_count": accumulated_word_count,  # Use accumulated word count
+                                    },
                                 }
                                 yield f"data: {json.dumps(final_chunk)}\n\n"
                             elif isinstance(res, str):
                                 # Handle string responses directly without streaming
-                                model = kwargs.get('model', 'unknown')
-                                
+                                model = kwargs.get("model", "unknown")
+
                                 # Get usage information from the controller
                                 usage = {
                                     "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
                                     "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
-                                    "total_tokens": app.controllers.completion.cost_tracker.get_total()
+                                    "total_tokens": app.controllers.completion.cost_tracker.get_total(),
                                 }
-                                
+
                                 # Get current token balance
                                 try:
-                                    current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
+                                    current_balance = app.db.get_account_balance(
+                                        account_id=int(app.controllers.completion.user)
+                                    )
                                     if current_balance:
-                                        total_spent_input_tokens = float(current_balance['token_balance_in'])
-                                        total_spent_output_tokens = float(current_balance['token_balance_out'])
-                                        
+                                        total_spent_input_tokens = float(
+                                            current_balance["token_balance_in"]
+                                        )
+                                        total_spent_output_tokens = float(
+                                            current_balance["token_balance_out"]
+                                        )
+
                                         # First chunk with role and usage
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
-                                        
+
                                         # Content chunk
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                        
+
                                         # Final chunk with finish reason and updated usage
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
                                 except Exception as e:
-                                    logging.error(f"Error getting token balance: {str(e)}")
+                                    logging.error(
+                                        f"Error getting token balance: {str(e)}"
+                                    )
                                     # Yield chunks without balance information
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': res}, 'finish_reason': None}], 'usage': usage})}\n\n"
@@ -982,53 +1157,75 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                             else:
                                 # Handle dictionary-like responses from non-streaming acompletion
                                 # Return the response formatted as a stream
-                                model = res.get('model', kwargs.get('model', 'unknown'))
+                                model = res.get("model", kwargs.get("model", "unknown"))
                                 content = ""
-                                if 'choices' in res and res['choices'] and 'message' in res['choices'][0]:
-                                    content = res['choices'][0]['message'].get('content', '')
-                                
+                                if (
+                                    "choices" in res
+                                    and res["choices"]
+                                    and "message" in res["choices"][0]
+                                ):
+                                    content = res["choices"][0]["message"].get(
+                                        "content", ""
+                                    )
+
                                 # Get usage information
-                                usage = res.get('usage', {
-                                    "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
-                                    "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
-                                    "total_tokens": app.controllers.completion.cost_tracker.get_total()
-                                })
-                                
+                                usage = res.get(
+                                    "usage",
+                                    {
+                                        "prompt_tokens": app.controllers.completion.cost_tracker.prompt_tokens,
+                                        "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
+                                        "total_tokens": app.controllers.completion.cost_tracker.get_total(),
+                                    },
+                                )
+
                                 # Get current token balance
                                 try:
-                                    current_balance = app.db.get_account_balance(account_id=int(app.controllers.completion.user))
+                                    current_balance = app.db.get_account_balance(
+                                        account_id=int(app.controllers.completion.user)
+                                    )
                                     if current_balance:
-                                        total_spent_input_tokens = float(current_balance['token_balance_in'])
-                                        total_spent_output_tokens = float(current_balance['token_balance_out'])
-                                        
+                                        total_spent_input_tokens = float(
+                                            current_balance["token_balance_in"]
+                                        )
+                                        total_spent_output_tokens = float(
+                                            current_balance["token_balance_out"]
+                                        )
+
                                         # First chunk with role and usage
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
-                                        
+
                                         # Content chunk
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                        
+
                                         # Final chunk with finish reason and updated usage
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
                                 except Exception as e:
-                                    logging.error(f"Error getting token balance: {str(e)}")
+                                    logging.error(
+                                        f"Error getting token balance: {str(e)}"
+                                    )
                                     # Yield chunks without balance information
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
-                            
+
                             # Update token usage in database
                             try:
                                 app.cache.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
                                     completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
-                                    word_count=accumulated_word_count
+                                    word_count=accumulated_word_count,
                                 )
                             except Exception as e:
-                                logging.error(f"Error updating token balance: {str(e)}", exc_info=True)
+                                logging.error(
+                                    f"Error updating token balance: {str(e)}",
+                                    exc_info=True,
+                                )
                                 # Important: Hard failure for database updates as per requirements
-                                raise RuntimeError(f"Critical database update failure: {str(e)}")
-                            
+                                raise RuntimeError(
+                                    f"Critical database update failure: {str(e)}"
+                                )
+
                             yield "data: [DONE]\n\n"
                         except litellm.RateLimitError as e:
                             error_msg = f"Rate limit exceeded, please try again in a moment: {str(e)}"
@@ -1047,28 +1244,35 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         logging.error(error_msg, exc_info=True)
                         yield f"data: {json.dumps({'error': {'message': error_msg, 'type': 'server_error', 'code': 500}})}\n\n"
                         yield "data: [DONE]\n\n"
-                
+
                 # Return the streaming response
-                return StreamingResponse(generate_stream(), media_type="text/event-stream")
+                return StreamingResponse(
+                    generate_stream(), media_type="text/event-stream"
+                )
         else:
             # Handle non-streaming case
             kwargs = request.model_dump(exclude_none=True)
             kwargs["user"] = str(user_id)  # Ensure user ID is set
-            
+
             # Remove original_model and router_usage from kwargs before API call
-            original_model = kwargs.pop('original_model', None)
-            kwargs.pop('router_usage', None)
-            
+            original_model = kwargs.pop("original_model", None)
+            kwargs.pop("router_usage", None)
+
             # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
-            if original_model == "kavya-m1-hyper" and kwargs.get("max_tokens", 0) > 8000:
-                logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model")
+            if (
+                original_model == "kavya-m1-hyper"
+                and kwargs.get("max_tokens", 0) > 8000
+            ):
+                logging.info(
+                    f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model"
+                )
                 kwargs["max_tokens"] = 8000
-            
+
             # Limit max_tokens for Anthropic models based on model version
             if kwargs.get("model", "").startswith("anthropic/"):
                 model_name = kwargs.get("model", "")
                 max_tokens_limit = 4096  # Default limit for Claude models
-                
+
                 # Set specific limits based on model version
                 if "claude-3-7-sonnet" in model_name:
                     max_tokens_limit = 4096  # Claude 3.7 Sonnet limit
@@ -1080,55 +1284,85 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     max_tokens_limit = 4096  # Claude 3 Sonnet limit
                 elif "claude-3-haiku" in model_name:
                     max_tokens_limit = 4096  # Claude 3 Haiku limit
-                
+
                 if kwargs.get("max_tokens", 0) > max_tokens_limit:
-                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}")
+                    logging.info(
+                        f"Limiting max_tokens from {kwargs.get('max_tokens')} to {max_tokens_limit} for Anthropic model {model_name}"
+                    )
                     kwargs["max_tokens"] = max_tokens_limit
-            
+
             # Handle max_tokens for xAI models (required parameter)
             if kwargs.get("model", "").startswith("xai/"):
                 # Ensure max_tokens is set for xAI models
                 if "max_tokens" not in kwargs or kwargs.get("max_tokens", 0) == 0:
                     max_tokens_limit = 4096  # Default value if not provided
-                    logging.info(f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}")
+                    logging.info(
+                        f"Setting required max_tokens to {max_tokens_limit} for xAI model {kwargs.get('model')}"
+                    )
                     kwargs["max_tokens"] = max_tokens_limit
                 elif kwargs.get("max_tokens", 0) > 4096:
-                    logging.info(f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}")
+                    logging.info(
+                        f"Limiting max_tokens from {kwargs.get('max_tokens')} to 4096 for xAI model {kwargs.get('model')}"
+                    )
                     kwargs["max_tokens"] = 4096
-            
-            res = await app.controllers.response(request, controller_name, "acompletion", **kwargs)
-            
-            is_predefined = isinstance(res, dict) and res.get('model') == 'predefined_prompt'
-            chosen_model = res['original_model'] if is_predefined else res.model_dump()['original_model']
+
+            res = await app.controllers.response(
+                request, controller_name, "acompletion", **kwargs
+            )
+
+            is_predefined = (
+                isinstance(res, dict) and res.get("model") == "predefined_prompt"
+            )
+            chosen_model = (
+                res["original_model"]
+                if is_predefined
+                else res.model_dump()["original_model"]
+            )
 
             # Get current token balance
             try:
                 current_balance = app.db.get_account_balance(account_id=user_id)
                 if is_predefined:
-                    content = kavya.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
-                    content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
-                    content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
-                else: 
+                    content = kavya.models.predefined_completion_response(
+                        res, controller=app.controllers.completion
+                    ).model_dump()
+                    content["total_spent_input_tokens"] = float(
+                        current_balance["token_balance_in"]
+                    )
+                    content["total_spent_output_tokens"] = float(
+                        current_balance["token_balance_out"]
+                    )
+                else:
                     content = res.model_dump()
-                    content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
-                    content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
+                    content["total_spent_input_tokens"] = float(
+                        current_balance["token_balance_in"]
+                    )
+                    content["total_spent_output_tokens"] = float(
+                        current_balance["token_balance_out"]
+                    )
             except Exception as e:
                 logging.error(f"Error getting token balance: {str(e)}")
                 if is_predefined:
-                    content = kavya.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
+                    content = kavya.models.predefined_completion_response(
+                        res, controller=app.controllers.completion
+                    ).model_dump()
                 else:
                     content = res.model_dump()
 
             print("Updating token usage...")
             # Update token usage
-            print(f"Prompt tokens: {res.usage.prompt_tokens}, Completion tokens: {res.usage.completion_tokens}")
+            print(
+                f"Prompt tokens: {res.usage.prompt_tokens}, Completion tokens: {res.usage.completion_tokens}"
+            )
             app.cache.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=res.usage.prompt_tokens,
-                completion_tokens=res.usage.completion_tokens
+                completion_tokens=res.usage.completion_tokens,
             )
-            return JSONResponse(content=content, headers={"X-Chosen-Model": chosen_model})
-            
+            return JSONResponse(
+                content=content, headers={"X-Chosen-Model": chosen_model}
+            )
+
     except Exception as e:
         error_msg = f"Error processing request: {str(e)}"
         logging.error(error_msg)
@@ -1138,11 +1372,12 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     "message": error_msg,
                     "type": "internal_error",
                     "param": None,
-                    "code": "request_failed"
+                    "code": "request_failed",
                 }
             },
-            status_code=500
+            status_code=500,
         )
+
 
 # ------------------------------------------------------------------------------
 # MAIN : APPLICATION STARTUP
@@ -1154,8 +1389,8 @@ litellm.drop_params = True
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 
 # Load environment variables from .env file
@@ -1185,10 +1420,10 @@ parser.add_argument(
     default=None,
 )
 parser.add_argument(
-    "--model", 
-    type=str, 
+    "--model",
+    type=str,
     default=None,
-    help="The model to use (can be overridden by config.yaml)"
+    help="The model to use (can be overridden by config.yaml)",
 )
 args = parser.parse_args()
 
@@ -1198,10 +1433,7 @@ if args.verbose:
 if not asyncio.get_event_loop().is_running():
     print("Launching server")
     config = uvicorn.Config(
-        "kavya.openai_server:app",
-        port=args.port,
-        host="0.0.0.0",
-        workers=args.workers
+        "kavya.openai_server:app", port=args.port, host="0.0.0.0", workers=args.workers
     )
     server = uvicorn.Server(config)
     server.run()
