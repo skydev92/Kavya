@@ -39,6 +39,7 @@ jobs:
         echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
         echo "MISTRAL_API_KEY=${{ secrets.MISTRAL_API_KEY }}" >> .env
         echo "XAI_API_KEY=${{ secrets.XAI_API_KEY }}" >> .env
+        echo "PERPLEXITYAI_API_KEY=${{ secrets.PERPLEXITYAI_API_KEY }}" >> .env
         echo "LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}" >> .env
         echo "LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}" >> .env
         echo "LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}" >> .env
@@ -136,6 +137,8 @@ jobs:
         run_test "provider fallback all test" "tests/provider-fallback-all.sh" "provider_fallback_all_output.txt" "provider_fallback_all_status"
         run_test "provider fallback mixed test" "tests/provider-fallback-mixed.sh" "provider_fallback_mixed_output.txt" "provider_fallback_mixed_status"
         run_test "provider fallback mistral gemini test" "tests/provider-fallback-mistral-gemini.sh" "provider_fallback_mg_output.txt" "provider_fallback_mg_status"
+        run_test "web search streaming test" "tests/web-search-streaming.sh" "web_search_streaming_output.txt" "web_search_streaming_status"
+        run_test "web search non-streaming test" "tests/web-search-non-streaming.sh" "web_search_non_streaming_output.txt" "web_search_non_streaming_status"
 
         # --- Build Summary ---
 
@@ -331,8 +334,52 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
+        # Test 16: Web Search Streaming
+        echo "## 🔍 Web Search Test: Streaming" >> $GITHUB_STEP_SUMMARY
+        echo "$web_search_streaming_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests web search functionality with streaming response for future events" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 90 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": "Who was president of USA in May 2025? Answer only with first name and last name and nothing else."}], "stream": true}'"'"'' >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat web_search_streaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Test 17: Web Search Non-Streaming
+        echo "## 🔍 Web Search Test: Non-Streaming" >> $GITHUB_STEP_SUMMARY
+        echo "$web_search_non_streaming_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests web search functionality with non-streaming response for future events" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Curl command:**" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+        echo 'curl -s --max-time 90 -X POST "http://localhost:8089/v1/chat/completions" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Authorization: Bearer $JWT_TEST_TOKEN" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -H "Content-Type: application/json" \' >> $GITHUB_STEP_SUMMARY
+        echo '  -d '"'"'{"model": "kavya-m1", "messages": [{"role": "user", "content": "Who was president of USA in May 2025? Answer only with first name and last name and nothing else."}]}'"'"'' >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat web_search_non_streaming_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_oa_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_mixed_status" == *"FAILED"* ]] || [[ "$provider_fallback_mg_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_oa_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_mixed_status" == *"FAILED"* ]] || [[ "$provider_fallback_mg_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
