@@ -63,7 +63,7 @@ jobs:
         export $(grep -v '^#' .env | xargs)
         
         # Start server in background and capture output
-        python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 > server.log 2>&1 &
+        python -m kavya.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089 > server.log 2>&1 &
         SERVER_PID=$!
         
         # Wait for server to be ready (max 60 seconds)
@@ -192,5 +192,5 @@ jobs:
     
     - name: Stop server and proxy
       run: |
-        pkill -f "routellm.openai_server" || true
+        pkill -f "kavya.openai_server" || true
         pkill -f "cloud-sql-proxy" || true 
