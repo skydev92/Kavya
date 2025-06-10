@@ -7,10 +7,6 @@ cursor-ai-sources
 .DS_Store
 kavya_venv
 
-
-# RouteLLM specific
-routellm/evals/**/cache.npy
-
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

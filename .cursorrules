@@ -13,4 +13,4 @@ Handle all response types explicitly (dict, str, AsyncGenerator) with proper typ
 Use proper error recovery in streaming contexts - catch errors but maintain the stream where possible
 Ensure all async generators properly yield [DONE] messages to close streams
 
-When we start the server locally for a test we always use this command: `export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server --verbose --routers mf --strong-model gpt-4o --weak-model gpt-4o-mini --config config.yaml --port 8089`
+When we start the server locally for a test we always use this command: `export $(grep -v '^#' .env.prod | xargs) && python -m kavya.openai_server --verbose --model gpt-4o --config config.yaml --port 8089`

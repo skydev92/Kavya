@@ -25,14 +25,13 @@ from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Depends, BackgroundTasks
 
-from routellm.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE, RequestCostTracker
-from routellm.routers.routers import ROUTER_CLS
-from routellm.auth import JWTBearer
-from routellm.models import InsufficientTokensError
-import routellm.models 
-from routellm.database import Database, DEFAULT_VALIDATION_INTERVAL
-from routellm.web_search import enhance_with_web_search
-from routellm.database_cache import DatabaseCache
+from kavya.controller import Controllers, RoutingError, ContentRequest, DEFAULT_CHUNK_SIZE, RequestCostTracker
+from kavya.auth import JWTBearer
+from kavya.models import InsufficientTokensError
+import kavya.models 
+from kavya.database import Database, DEFAULT_VALIDATION_INTERVAL
+from kavya.web_search import enhance_with_web_search
+from kavya.database_cache import DatabaseCache
 
 from dotenv import load_dotenv
 
@@ -43,7 +42,7 @@ os.environ["LANGFUSE_SECRET_KEY"] = os.getenv("LANGFUSE_SECRET_KEY")
 os.environ["LANGFUSE_HOST"] = os.getenv("LANGFUSE_HOST")
 
 # set langfuse as a callback, litellm will send the data to langfuse
-litellm.success_callback = ["langfuse"] 
+# litellm.success_callback = ["langfuse"] 
 # ------------------------------------------------------------------------------
 # APPLICATION INITIALIZATION
 # ------------------------------------------------------------------------------
@@ -66,46 +65,42 @@ async def lifespan(app: fastapi.FastAPI):
         # Load config
         config = yaml.safe_load(open(args.config, "r")) if args.config else None
         
-        # Get default model pair from config or command line arguments
-        default_strong_model = args.strong_model
-        default_weak_model = args.weak_model
+        # Get default model from config or command line arguments
+        default_model = args.model
         
-        # If config has model_pairs section, use it to override defaults
-        if config and "model_pairs" in config and "default" in config["model_pairs"]:
-            default_strong_model = config["model_pairs"]["default"].get("strong", default_strong_model)
-            default_weak_model = config["model_pairs"]["default"].get("weak", default_weak_model)
+        logging.info(f"Default model in arguments: {default_model}")
+
+        # If config has model_translations section, use it to override defaults
+        if config and "model_translations" in config and "default" in config["model_translations"]:
+            default_model = config["model_translations"]["default"]
+        
+        logging.info(f"Default model after checking config: {default_model}")
         
         app.controllers = Controllers(
-            routers=args.routers,
             config=config,
-            strong_model=default_strong_model,
-            weak_model=default_weak_model,
+            model=default_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         app.controllers.create_controller("completion", 
-            routers=args.routers,
             config=config,
-            strong_model=default_strong_model,
-            weak_model=default_weak_model,
+            model=default_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         app.controllers.create_controller("longwriter", 
-            routers=args.routers,
             config=config,
-            strong_model=default_strong_model,
-            weak_model=default_weak_model,
+            model=default_model,
             api_base=args.base_url,
             api_key=args.api_key,
             progress_bar=True,
         )
         logging.debug("Default controllers based on arguments, initialized successfully")
         
-        # Store model pairs from config for later use
-        app.model_pairs = config.get("model_pairs", {}) if config else {}
+        # Store model from config for later use
+        app.model_translations = config.get("model_translations", {}) if config else {}
         
         # Store provider configurations from config for later use
         app.provider_configs = config.get("provider_configs", {}) if config else {}
@@ -341,7 +336,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
 
     # First validate if it's a Kavya request
     try:
-        kavya_request = routellm.models.KavyaRequest(**request_data)
+        kavya_request = kavya.models.KavyaRequest(**request_data)
         # Store original model name before translation
         original_model = kavya_request.model
         
@@ -367,6 +362,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
         logging.info(f"DEBUG: Original model set to {original_model}")
             
         # Process providers parameter if it's valid (only for kavya-m1)
+        """
         if kavya_request.providers is not None and original_model == "kavya-m1":
             # Check for empty providers string
             if not kavya_request.providers.strip():
@@ -439,23 +435,21 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                 request_data["model"] = providers_list[0]
                 logging.info(f"DEBUG: Setting primary model to: {providers_list[0]}")
         else:
-            # If providers parameter is not used, translate the model
-            request_data["model"] = app.controllers.default.model_translations[original_model]
-            logging.info(f"DEBUG: Translated model to: {request_data['model']}")
+        """
+        # If providers parameter is not used, translate the model
+        request_data["model"] = app.controllers.default.model_translations[original_model]
+        logging.info(f"DEBUG: Translated model to: {request_data['model']}")
         
-        # Check if we have a specific model pair for this Kavya model
-        if hasattr(app, 'model_pairs') and original_model in app.model_pairs:
-            # Get the model pair for this Kavya model
-            model_pair = app.model_pairs[original_model]
-            logging.info(f"Using model pair for {original_model}: strong={model_pair.get('strong')}, weak={model_pair.get('weak')}")
+        # Check if we have a specific model for this Kavya model
+        if hasattr(app, 'model_translations') and original_model in app.model_translations:
+            # Get the model for this Kavya model
+            model_to_use = app.model_translations[original_model]
+            logging.info(f"Using model for {original_model}: {model_to_use}")
             
-            # Update the model pair in all controllers
+            # Update the model in all controllers
             for controller_name in ['default', 'completion', 'longwriter']:
                 controller = app.controllers.controllers[controller_name]
-                if 'strong' in model_pair:
-                    controller.model_pair.strong = model_pair['strong']
-                if 'weak' in model_pair:
-                    controller.model_pair.weak = model_pair['weak']
+                controller.model = model_to_use
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
         if "model" in request_data and isinstance(request_data["model"], str) and request_data["model"].startswith("kavya-"):
@@ -479,7 +473,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     # Create the ChatCompletionRequest from the validated data
     try:
         logging.info(f"DEBUG: Final request_data before creating ChatCompletionRequest: {request_data}")
-        request = routellm.models.ChatCompletionRequest(**request_data)
+        request = kavya.models.ChatCompletionRequest(**request_data)
         logging.info(f"DEBUG: Created ChatCompletionRequest with model: {request.model}")
     except Exception as e:
         logging.error(f"Error creating ChatCompletionRequest: {str(e)}")
@@ -499,7 +493,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
     # Ensure user_id is set in the request
     request_dict = request.model_dump(exclude_none=True)
     request_dict["user"] = str(user_id)  # Convert to string as that's what the API expects
-    request = routellm.models.ChatCompletionRequest(**request_dict)
+    request = kavya.models.ChatCompletionRequest(**request_dict)
     
     # Get token estimates for the request
     messages_content = " ".join([msg["content"] for msg in request.messages])
@@ -663,30 +657,30 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                         
 
                         logging.debug("Creating content strategy")
-                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
+                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating content strategy", 1, 3, "planning")) + "\n\n"
                         content_strategy = await app.controllers.longwriter.get_content_strategy(content_request, model)
                         # Disclose content strategy costs
-                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
                             prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                             completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
                             description="Content strategy generation"
                         )) + "\n\n"
                         
                         logging.debug("Creating HTML strategy")
-                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
+                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating HTML strategy", 2, 3, "planning")) + "\n\n"
                         html_strategy = await app.controllers.longwriter.get_html_strategy(content_request.allowed_html_tags, content_request.allowed_html_classes, content_strategy, model)
                         # Disclose HTML strategy costs
-                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
                             prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                             completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
                             description="HTML strategy generation"
                         )) + "\n\n"
                         
                         logging.debug("Creating Content outline")
-                        yield "data: "+json.dumps(routellm.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
+                        yield "data: "+json.dumps(kavya.models.create_status_response_dict("Creating Content outline", 3, 3, "planning")) + "\n\n"
                         content_outline = await app.controllers.longwriter.get_content_outline(content_strategy, html_strategy, model)
                         # Disclose content outline costs
-                        yield "data: "+json.dumps(routellm.models.create_cost_disclosure_dict(
+                        yield "data: "+json.dumps(kavya.models.create_cost_disclosure_dict(
                             prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                             completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
                             description="Content outline generation"
@@ -760,7 +754,7 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
                     logging.info(f"DEBUG : Model in request is {request.model}")
                 else:
                     kwargs = request.model_dump(exclude_none=True)
-                    kwargs["model"] = app.controllers.completion.model_pair.weak
+                    kwargs["model"] = app.controllers.completion.model
                 
                 logging.info("calling app.controllers.completion.completion for non-longwriter response")
                 
@@ -1111,17 +1105,17 @@ async def create_chat_completion(request_data: dict = fastapi.Body(...), user_id
             try:
                 current_balance = app.db.get_account_balance(account_id=user_id)
                 if is_predefined:
-                    content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
+                    content = kavya.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
                     content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
                     content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
-                else:
+                else: 
                     content = res.model_dump()
                     content['total_spent_input_tokens'] = float(current_balance['token_balance_in'])
                     content['total_spent_output_tokens'] = float(current_balance['token_balance_out'])
             except Exception as e:
                 logging.error(f"Error getting token balance: {str(e)}")
                 if is_predefined:
-                    content = routellm.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
+                    content = kavya.models.predefined_completion_response(res, controller=app.controllers.completion).model_dump()
                 else:
                     content = res.model_dump()
 
@@ -1179,13 +1173,6 @@ parser.add_argument("--workers", type=int, default=2)
 parser.add_argument("--config", type=str, default=None)
 parser.add_argument("--port", type=int, default=8080)
 parser.add_argument(
-    "--routers",
-    nargs="+",
-    type=str,
-    default=["random"],
-    choices=list(ROUTER_CLS.keys()),
-)
-parser.add_argument(
     "--base-url",
     help="The base URL used for all LLM requests",
     type=str,
@@ -1198,16 +1185,10 @@ parser.add_argument(
     default=None,
 )
 parser.add_argument(
-    "--strong-model", 
+    "--model", 
     type=str, 
     default=None,
-    help="The strong model to use (can be overridden by config.yaml)"
-)
-parser.add_argument(
-    "--weak-model", 
-    type=str, 
-    default=None,
-    help="The weak model to use (can be overridden by config.yaml)"
+    help="The model to use (can be overridden by config.yaml)"
 )
 args = parser.parse_args()
 
@@ -1215,9 +1196,9 @@ if args.verbose:
     logging.basicConfig(level=logging.DEBUG)
 
 if not asyncio.get_event_loop().is_running():
-    print("Launching server with routers:", args.routers)
+    print("Launching server")
     config = uvicorn.Config(
-        "routellm.openai_server:app",
+        "kavya.openai_server:app",
         port=args.port,
         host="0.0.0.0",
         workers=args.workers

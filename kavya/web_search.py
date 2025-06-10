@@ -9,7 +9,7 @@ import litellm
 from typing import List, Optional, Union
 from datetime import datetime
 
-from routellm.models import WebSearchAnalysisResponse, MultipleQueryResponse
+from kavya.models import WebSearchAnalysisResponse, MultipleQueryResponse
 
 def get_web_search_config():
     """Get web search configuration from config.yaml. Requires explicit threshold setting."""
@@ -67,7 +67,7 @@ Examples:
     try:
         # Use response_format=json_object instead of response_model
         raw_response = await litellm.acompletion(
-            model=controller.model_pair.weak,
+            model=controller.model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}, # Ask for JSON string
             temperature=0.1,
@@ -96,7 +96,7 @@ Examples:
         return None
 
 async def generate_multiple_queries(controller, user_msg: str, count: int, user_id: str) -> Optional[MultipleQueryResponse]:
-    """Generate a specified number of distinct search queries using the weak LLM."""
+    """Generate a specified number of distinct search queries using the LLM."""
 
     # Get current year for time-sensitive queries
     current_year = datetime.now().year
@@ -129,7 +129,7 @@ Examples:
     try:
         # Use response_format=json_object instead of response_model
         raw_response = await litellm.acompletion(
-            model=controller.model_pair.weak,
+            model=controller.model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}, # Ask for JSON string
             temperature=0.2,
@@ -273,7 +273,7 @@ async def enhance_with_web_search(controller, messages):
         return messages
 
 async def generate_search_query(controller, user_msg: str) -> str:
-    """Generate an optimized search query using the weak LLM."""
+    """Generate an optimized search query using the LLM."""
     # Extract text between <TASK> tags if present
     task_match = re.search(r'<TASK>(.*?)</TASK>', user_msg, re.DOTALL)
     if task_match:
@@ -313,9 +313,9 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
     user_id = getattr(controller, 'user', 'system_query_generator')
     
     try:
-        # Use the weak model to generate the query
+        # Use the model to generate the query
         response = await litellm.acompletion(
-            model=controller.model_pair.weak,
+            model=controller.model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             user=user_id

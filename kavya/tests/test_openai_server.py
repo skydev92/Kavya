@@ -6,7 +6,6 @@ from importlib import resources
 
 import openai
 
-from routellm.routers.routers import ROUTER_CLS
 
 load_dotenv()  # This will load environment variables from .env file
 
@@ -16,12 +15,6 @@ system_content: str = (
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--router",
-        type=str,
-        default="random",
-        choices=list(ROUTER_CLS.keys()),
-    )
     parser.add_argument(
         "--threshold",
         type=float,
@@ -52,7 +45,7 @@ def main() -> None:
     )
 
     chat_completion: Dict[str, Any] = client.chat.completions.create(
-        model=f"router-{args.router}-{args.threshold}",
+        model=f"threshold-{args.threshold}",
         messages=[
             {"role": "system", "content": system_content},
             {"role": "user", "content": args.prompt},

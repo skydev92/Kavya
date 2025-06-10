@@ -1,22 +1,8 @@
-mf:
-    checkpoint_path: routellm/mf_gpt4_augmented
-
 model_translations:
-    kavya-m1: router-mf-0.25
-    kavya-m1-eu: router-mf-0.1
-    kavya-m1-hyper: router-mf-0.05
-
-# Model pairs for different model types
-model_pairs:
-    default:
-        strong: anthropic/claude-sonnet-4-20250514
-        weak: anthropic/claude-sonnet-4-20250514
-    kavya-m1-eu:
-        strong: mistral/mistral-large-latest
-        weak: mistral/mistral-medium-latest
-    kavya-m1-hyper:
-        strong: groq/llama3-70b-8192
-        weak: groq/llama3-70b-8192
+    default: anthropic/claude-sonnet-4-20250514
+    kavya-m1: anthropic/claude-sonnet-4-20250514
+    kavya-m1-eu: mistral/mistral-large-latest
+    kavya-m1-hyper: groq/llama3-70b-8192
 
 # Web search configuration
 web_search:
@@ -50,7 +36,6 @@ fallback_configs:
 
 general_settings:
     basic_router_max_chars: 5000  # Maximum characters to analyze in prompt for basic router decisions
-    routellm_force_model: "strong"  # Options: null, "strong", "weak". If set, bypasses router and uses specified model type.
 
 # Provider definitions for fallback handling
 provider_configs:

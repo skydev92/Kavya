@@ -1334,7 +1334,7 @@ class Database:
 
     def get_account_balance_model(self, account_id: int) -> 'AccountTokenBalance':
         """Get current token balance for an account as a Pydantic model"""
-        from routellm.models import AccountTokenBalance
+        from kavya.models import AccountTokenBalance
         
         connection = self._get_connection()
         cursor = connection.get_cursor()
@@ -1384,7 +1384,7 @@ class Database:
 
     def get_daily_usage_model(self, account_id: int, start_date: str, end_date: str) -> list['DailyUsageSummary']:
         """Get daily usage for an account within a date range as Pydantic models"""
-        from routellm.models import DailyUsageSummary
+        from kavya.models import DailyUsageSummary
         
         connection = self._get_connection()
         cursor = connection.get_cursor()

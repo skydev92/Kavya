@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "routellm"
+name = "kavya"
 version = "0.2.0"
 description = "A framework for serving and evaluating large language model routers."
 readme = "README.md"
@@ -29,8 +29,8 @@ eval = ["matplotlib", "pandarallel", "sglang", 'tiktoken']
 dev = ["black", "isort", "pre-commit"]
 
 [project.urls]
-"Homepage" = "https://github.com/lm-sys/RouteLLM"
-"Bug Tracker" = "https://github.com/lm-sys/RouteLLM/issues"
+"Homepage" = "https://github.com/dxpr/Kavya"
+"Bug Tracker" = "https://github.com/dxpr/Kavya"
 
 [tool.isort]
 profile = "black"
@@ -42,7 +42,7 @@ exclude = ["assets*", "benchmarks*"]
 exclude = ["assets*", "benchmarks*"]
 
 [tool.setuptools.package-data]
-"routellm" = ["docs/litellm/**/*", "docs/pydantic/**/*", "docs/google-cloud-sql/**/*"]
+"kavya" = ["docs/litellm/**/*", "docs/pydantic/**/*", "docs/google-cloud-sql/**/*"]
 
 [tool.setuptools]
 script-files = ["scripts/download_docs.py"]

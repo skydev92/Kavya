@@ -33,7 +33,7 @@
 ## Features
 
 - **AI-Assisted Writing**: Generate drafts, suggestions, and complete articles.
-- **Advanced Prompt Optimization**: Utilize RouteLLM and LangChain to optimize prompts and create advanced multi-model, multi-prompt sequences.
+- **Advanced Prompt Optimization**: Utilize Kavya to optimize prompts and create advanced multi-model, multi-prompt sequences.
 - **Content Enhancement**: Automatically improve content quality, style, and coherence.
 - **Content Optimization**: Improve SEO and readability.
 - **Multi-language Support**: Write and translate content in multiple languages.
@@ -112,7 +112,7 @@
    docker run --rm -it \
      --name kavya-dev \
      -p 8089:${PORT:-8080} \
-     -v $(pwd)/routellm:/app/routellm \
+     -v $(pwd)/Kavya:/app/Kavya \
      --env-file .env \
      -e ENVIRONMENT=dev \
      kavya
@@ -135,7 +135,7 @@
    ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
 
    # Then load production environment variables and start server
-   export $(grep -v '^#' .env.prod | xargs) && python -m routellm.openai_server --verbose --routers mf --config config.yaml --port 8089
+   export $(grep -v '^#' .env.prod | xargs) && python -m kavya.openai_server --verbose --config config.yaml --port 8089
 
 
    # Required environment variables in .env.prod:
@@ -183,7 +183,7 @@
    **When to Rebuild Docker Image**
    - Changes to `requirements.txt`
    - Changes to `Dockerfile`
-   - Changes to files outside `routellm/` directory
+   - Changes to files outside `kavya/` directory
 
 4. **Access Kavya**
    - Development: `http://localhost:8089`
@@ -211,7 +211,7 @@ If you prefer not to use Docker, you can set up a virtual environment and run Ka
 
 4. **Run Kavya**
    ```bash
-   python -m routellm.openai_server --verbose --routers mf --config config.yaml --port 8089
+   python -m kavya.openai_server --verbose --config config.yaml --port 8089
    ```
 
 5. **Access Kavya**
@@ -244,7 +244,7 @@ If you encounter database issues:
 
 ### Multi-Model Multi-Prompt Sequences
 
-Kavya leverages **RouteLLM** and **LangChain** to create advanced multi-model, multi-prompt sequences. This allows for:
+Kavya leverages models together to create advanced multi-model, multi-prompt sequences. This allows for:
 
 - **Dynamic Prompt Routing**: Automatically select the most suitable AI model based on the task.
 - **Chained Prompts**: Break down complex tasks into manageable steps, improving output quality.
@@ -451,12 +451,7 @@ If you encounter database issues:
 
 ### Configuration File
 
-The configuration file is located at `config.yaml`. You can customize the following settings:
-
-- **routers**: The router to use for content generation.
-- **strong-model**: The powerful model for complex tasks.
-- **weak-model**: The faster model for simpler tasks.
-- **config**: Additional router-specific configuration.
+The configuration file is located at `config.yaml`. 
 
 ---
 

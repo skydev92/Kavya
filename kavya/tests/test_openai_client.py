@@ -1,8 +1,7 @@
 import argparse
 import os
 
-from routellm.controller import Controller
-from routellm.routers.routers import ROUTER_CLS
+from kavya.controller import Controller
 
 from dotenv import load_dotenv
 os.environ["OPENAI_API_KEY"] = "dummy_key_for_testing"
@@ -16,12 +15,6 @@ system_content = (
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--router",
-        type=str,
-        default="random",
-        choices=ROUTER_CLS.keys(),
-    )
     parser.add_argument(
         "--threshold",
         type=float,
@@ -37,9 +30,7 @@ if __name__ == "__main__":
     print(args)
 
     client = Controller(
-        routers=[args.router],
-        strong_model="gpt-4-1106-preview",
-        weak_model="anyscale/mistralai/Mixtral-8x7B-Instruct-v0.1",
+        model="gpt-4-1106-preview",
         api_key=os.environ.get("OPENAI_API_KEY") or args.api_key,
     )
 

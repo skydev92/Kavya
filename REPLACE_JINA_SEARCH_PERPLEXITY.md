@@ -1,6 +1,6 @@
 # MVP Migration Plan: Jina Search to Perplexity AI (using LiteLLM)
 
-This document outlines the minimum viable steps to replace the Jina Search API with the Perplexity AI API for the web search feature in `routellm/web_search.py`, utilizing LiteLLM for the API interaction. Functional changes beyond adapting to the new API and integration method are out of scope for this MVP.
+This document outlines the minimum viable steps to replace the Jina Search API with the Perplexity AI API for the web search feature in `kavya/web_search.py`, utilizing LiteLLM for the API interaction. Functional changes beyond adapting to the new API and integration method are out of scope for this MVP.
 
 **Assumptions:**
 
@@ -14,7 +14,7 @@ This document outlines the minimum viable steps to replace the Jina Search API w
     *   Add `PERPLEXITYAI_API_KEY=<your_perplexity_api_key>` to your environment variable sources (e.g., `.env.prod`, `.env.dev`). **Note:** Use the `PERPLEXITYAI_API_KEY` name convention as shown in the LiteLLM docs.
     *   Update any template files (e.g., `.env.example`) to include `PERPLEXITYAI_API_KEY`.
 
-2.  **Modify `routellm/web_search.py`:**
+2.  **Modify `kavya/web_search.py`:**
 
     *   **Import LiteLLM in `search_web`:** Ensure `import litellm` is present if not already file-scoped.
     *   **Update API Key Check in `enhance_with_web_search`:**

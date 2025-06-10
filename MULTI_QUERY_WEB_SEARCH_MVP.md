@@ -6,27 +6,27 @@ This plan outlines the steps to implement dynamic multi-query web search, replac
 
 *   LiteLLM is integrated and configured.
 *   `PERPLEXITYAI_API_KEY` is managed via environment variables.
-*   Base Pydantic models exist in `routellm/models.py`.
+*   Base Pydantic models exist in `kavya/models.py`.
 
 **Steps:**
 
-1.  **Define Pydantic Models (`routellm/models.py`):**
+1.  **Define Pydantic Models (`kavya/models.py`):**
     *   Create `WebSearchAnalysisResponse(BaseModel)` with fields `need_web_search: int` (0-100) and `web_search_count: int` (1-5).
     *   Create `MultipleQueryResponse(BaseModel)` with field `queries: List[str]`.
 
-2.  **Implement Combined Analysis Function (`routellm/web_search.py`):**
+2.  **Implement Combined Analysis Function (`kavya/web_search.py`):**
     *   Create `async def analyze_web_search_request(controller, messages) -> WebSearchAnalysisResponse:`.
-    *   Use weak LLM, prompt for JSON with `need_web_search` and `web_search_count`.
+    *   Use LLM, prompt for JSON with `need_web_search` and `web_search_count`.
     *   Use `response_model=WebSearchAnalysisResponse` in `litellm.acompletion`.
     *   Include `user` ID parameter and robust error handling.
 
-3.  **Implement Multi-Query Generation (`routellm/web_search.py`):**
+3.  **Implement Multi-Query Generation (`kavya/web_search.py`):**
     *   Create `async def generate_multiple_queries(controller, user_msg: str, count: int) -> MultipleQueryResponse:`.
-    *   Use weak LLM, prompt for JSON list of `count` distinct queries.
+    *   Use LLM, prompt for JSON list of `count` distinct queries.
     *   Use `response_model=MultipleQueryResponse` in `litellm.acompletion`.
     *   Include `user` ID parameter and robust error handling.
 
-4.  **Update `search_web` Function (`routellm/web_search.py`):**
+4.  **Update `search_web` Function (`kavya/web_search.py`):**
     *   Add `user: str` parameter to the function signature.
     *   Pass the `user=user` argument to the `litellm.acompletion` call inside.
 

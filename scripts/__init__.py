@@ -1,3 +1,3 @@
 """
-Scripts package for routellm project utilities.
+Scripts package for Kavya project utilities.
 """ 

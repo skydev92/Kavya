@@ -1,5 +1,4 @@
 import warnings
-from collections import defaultdict
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Optional, AsyncGenerator, List, Tuple
@@ -13,7 +12,6 @@ from litellm import (
     supports_response_schema,
 )
 from textwrap import dedent
-from tqdm import tqdm
 
 import os
 import json
@@ -26,14 +24,13 @@ import asyncio
 import random
 import re
 
-from routellm.models import (
+from kavya.models import (
     ChatCompletionRequest, ContentRequest, ContentStrategy, 
     HTMLTagStrategy, OutlineSection, ContentOutline, 
     RoutingAnalysis
 )
-from routellm.routers.routers import ROUTER_CLS
 from pydantic import BaseModel
-from routellm.web_search import enhance_with_web_search
+from kavya.web_search import enhance_with_web_search
 
 
 DEFAULT_CHUNK_SIZE = 10
@@ -47,11 +44,6 @@ logging.basicConfig(
 
 class RoutingError(Exception):
     pass
-
-@dataclass
-class ModelPair:
-    strong: str
-    weak: str
 
 class RequestCostTracker:
     def __init__(self):
@@ -80,9 +72,7 @@ class RequestCostTracker:
 class Controller:
     def __init__(
         self,
-        routers: list[str],
-        strong_model: str,
-        weak_model: str,
+        model: str,
         config: Optional[dict[str, dict[str, Any]]] = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
@@ -93,7 +83,7 @@ class Controller:
         if not config:
             raise ValueError("Config is required")
         self.config = config # Store the config dictionary
-            
+        
         # Validate all required config sections
         if "model_translations" not in self.config:
             raise ValueError("Config must include model_translations")
@@ -102,9 +92,10 @@ class Controller:
         if "basic_router_max_chars" not in self.config["general_settings"]:
             raise ValueError("general_settings must include basic_router_max_chars")
 
-        # Initialize model pair
-        self.model_pair = ModelPair(strong=strong_model, weak=weak_model)
-        self.routers = {}
+        # Initialize model 
+        self.model = model
+        logging.info(f"DEBUG: Controller creation using model: {self.model}")
+
         self.api_base = api_base
         self.api_key = api_key
         self.progress_bar = progress_bar
@@ -118,16 +109,6 @@ class Controller:
         
         # Load fallback configurations if available
         self.fallback_configs = self.config.get("fallback_configs", {})
-        
-        router_pbar = None
-        if progress_bar:
-            router_pbar = tqdm(routers)
-            tqdm.pandas()
-
-        for router in routers:
-            if router_pbar is not None:
-                router_pbar.set_description(f"Loading {router}")
-            self.routers[router] = ROUTER_CLS[router](**self.config.get(router, {}))
 
         # Some Python magic to match the OpenAI Python SDK
         self.chat = SimpleNamespace(
@@ -159,79 +140,8 @@ class Controller:
         
         return None
 
-    def _validate_router_threshold(
-        self, router: Optional[str], threshold: Optional[float]
-    ):
-        if router not in self.routers:
-            raise RoutingError(f"Router {router} not found.")
-        if threshold is None or threshold < 0 or threshold > 1:
-            raise RoutingError(f"Threshold {threshold} must be between 0 and 1.")
-
-    def _parse_model_name(self, model: str):
-        if model.startswith("router-"):
-            parts = model.split("-")
-            if len(parts) != 3:
-                raise RoutingError(
-                    f"Invalid model name {model}. Expected format: router-<router>-<threshold>"
-                )
-            router = parts[1]
-            try:
-                threshold = float(parts[2])
-            except ValueError as e:
-                raise RoutingError(f"Threshold {threshold} must be a float.") from e
-            return router, threshold
-        else:
-            return None, None
-
-    def _get_routed_model_for_completion(
-        self, messages: list, router: str, threshold: float
-    ):
-        # Check for forced model routing
-        routellm_force_model_setting = self.config.get("general_settings", {}).get("routellm_force_model")
-        
-        if routellm_force_model_setting == "strong":
-            logging.info(f"DEBUG: Forced routing to strong model: {self.model_pair.strong}")
-            return self.model_pair.strong
-        elif routellm_force_model_setting == "weak":
-            logging.info(f"DEBUG: Forced routing to weak model: {self.model_pair.weak}")
-            return self.model_pair.weak
-        elif routellm_force_model_setting is not None:
-            # Invalid setting: Hard fail
-            error_msg = f"Invalid value for 'routellm_force_model' in config: '{routellm_force_model_setting}'. Must be 'strong', 'weak', or null."
-            logging.error(error_msg)
-            raise ValueError(error_msg)
-
-        # If not forced, proceed with normal routing
-        prompt = messages[-1]["content"]
-        routed_model = self.routers[router].route(prompt, threshold, self.model_pair)
-
-        # Commented because variable is never used and can cause bugs, the dict is not initialized properly.
-        # self.model_counts[routed_model] += 1
-        logging.info(f"DEBUG : current model for _get_routed_model_for_completion is: {routed_model}")
-
-        return routed_model
-
-    def batch_calculate_win_rate(
-        self,
-        prompts: pd.Series,
-        router: str,
-        threshold: float,
-    ):
-        return self.routers[router].batch_calculate_win_rate(
-            prompts, threshold, self.model_pair
-        )
-
-    # Unused
-    def route(self, prompt: str, router: str, threshold: float):
-        self._validate_router_threshold(router, threshold)
-
-        return self.routers[router].route(prompt, threshold, self.model_pair)
-
     def completion(
         self,
-        *,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
         **kwargs,
     ):
         # Ensure user ID is present and valid
@@ -447,8 +357,6 @@ class Controller:
 
     async def acompletion(
         self,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
         fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
@@ -492,7 +400,8 @@ class Controller:
             logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
             kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
 
-        model = self.get_model(router=router, threshold=threshold, **kwargs)
+        logging.info("DEBUG : Getting model")
+        model = self.get_model(**kwargs)
         kwargs["model"] = model
 
         # Handle structured output configuration
@@ -660,9 +569,6 @@ class Controller:
 
     def get_model(
         self,
-        *,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
         **kwargs
     ):
         if "messages" in kwargs:
@@ -670,20 +576,7 @@ class Controller:
             predefined_answer = self.check_predefined_prompt(last_message)
             if predefined_answer:
                 return "predefined_prompt"
-
-        if "model" in kwargs:
-            parsed_router, parsed_threshold = self._parse_model_name(kwargs["model"])
-            router = router or parsed_router
-            threshold = threshold or parsed_threshold
-
-        if router and threshold:
-            self._validate_router_threshold(router, threshold)
-            kwargs["model"] = self._get_routed_model_for_completion(
-                kwargs["messages"], router, threshold
-            )
-        elif "model" not in kwargs:
-            raise RoutingError("No model specified and router/threshold not provided.")
-
+            
         return kwargs["model"]
 
     def get_fallback_chain(self, model_name):
@@ -789,7 +682,7 @@ class Longwriter(Controller):
             response = await acompletion(
                 api_base=self.api_base,
                 api_key=self.api_key,
-                model=model,  # Direct model use after routing decision
+                model=model,  # Direct model use
                 messages=llm_messages, # Use the combined messages list
                 response_format=ContentStrategy,
                 user=request.user,  # Propagate user ID
@@ -831,7 +724,7 @@ class Longwriter(Controller):
         
         try:
             response = await acompletion(
-                model=model,  # Direct model use after routing decision
+                model=model,  # Direct model use
                 api_base=self.api_base,
                 api_key=self.api_key,
                 messages=[
@@ -880,7 +773,7 @@ class Longwriter(Controller):
         
         try:
             response = await acompletion(
-                model=model,  # Direct model use after routing decision
+                model=model,  # Direct model use after
                 api_base=self.api_base,
                 api_key=self.api_key,
                 messages=[
@@ -1035,7 +928,7 @@ class Longwriter(Controller):
 
         # --- Rest of the function (LLM call, streaming, history update) unchanged --- 
         response = await acompletion(
-            model=model,  # Direct model use after routing decision
+            model=model,  # Direct model use
             messages=self.content_writer_messages,  # Use the maintained message history
             stream=True,
             api_base=self.api_base,
@@ -1092,7 +985,7 @@ class Longwriter(Controller):
         
         # Instead of yielding formatted strings, yield tuples with special message type
         # Create a JSON string for the disclosure
-        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
+        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='Content strategy generation'
@@ -1103,7 +996,7 @@ class Longwriter(Controller):
         html_strategy = await self.get_html_strategy(request.allowed_html_tags, request.allowed_html_classes, content_strategy, model)
         
         # Disclose HTML strategy costs - using tuple format
-        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
+        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='HTML strategy generation'
@@ -1113,7 +1006,7 @@ class Longwriter(Controller):
         content_outline = await self.get_content_outline(content_strategy, html_strategy, model)
         
         # Disclose content outline costs - using tuple format
-        disclosure_json = json.dumps(routellm.models.create_cost_disclosure_dict(
+        disclosure_json = json.dumps(kavya.models.create_cost_disclosure_dict(
             prompt_tokens=self.cost_tracker.prompt_tokens,
             completion_tokens=self.cost_tracker.completion_tokens,
             description='Content outline generation'
@@ -1132,9 +1025,6 @@ class Longwriter(Controller):
 
     async def acompletion_stream(
         self,
-        *,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
         **kwargs,
     ):
         raise NotImplementedError
@@ -1142,9 +1032,6 @@ class Longwriter(Controller):
             
     async def acompletion(
         self,
-        router: Optional[str] = None,
-        threshold: Optional[float] = None,
-        fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
         raise NotImplementedError
@@ -1167,10 +1054,8 @@ class Controllers:
 
     def create_controller(self, id, **kwargs):
         # getting kwargs
-        routers=kwargs.get('routers', None)
         config=kwargs.get('config', None)
-        strong_model=kwargs.get('strong_model', None)
-        weak_model=kwargs.get('weak_model', None)
+        model=kwargs.get('model', None)
         api_base=kwargs.get('api_base', None)
         api_key=kwargs.get('api_key', None)
         progress_bar=kwargs.get('progress_bar', None)
@@ -1178,10 +1063,8 @@ class Controllers:
         if id.startswith("longwriter") :
             # initializing longwriter
             controller = Longwriter(
-                routers=routers,
                 config=config,
-                strong_model=strong_model,
-                weak_model=weak_model,
+                model=model,
                 api_base=api_base,
                 api_key=api_key,
                 progress_bar=progress_bar
@@ -1189,10 +1072,8 @@ class Controllers:
         else :
             # initializing controller
             controller = Controller(
-                routers=routers,
                 config=config,
-                strong_model=strong_model,
-                weak_model=weak_model,
+                model=model,
                 api_base=api_base,
                 api_key=api_key,
                 progress_bar=progress_bar
@@ -1239,7 +1120,7 @@ class Controllers:
             logging.info("Non-streaming request detected, skipping routing analysis and using completion controller")
             return "completion"
             
-        logging.info("Making completion call for routing analysis using weak model")
+        logging.info("Making completion call for routing analysis")
         
         # Check if original_model is kavya-m1-hyper and skip routing if so
         request_data = request.model_dump()
@@ -1255,19 +1136,12 @@ class Controllers:
             raise ValueError(error_msg)
             
         # Get the default controller to use its methods
-        default_controller = self.controllers["default"]
+        default_controller = self.controllers["completion"]
         
-        # First determine which model to use based on router if specified
-        routed_model = None
-        if "model" in request_data:
-            parsed_router, parsed_threshold = default_controller._parse_model_name(request_data["model"])
-            if parsed_router and parsed_threshold:
-                default_controller._validate_router_threshold(parsed_router, parsed_threshold)
-                routed_model = default_controller._get_routed_model_for_completion(
-                    request_data["messages"], parsed_router, parsed_threshold
-                )
-                # Store the routed model in the request for later use
-                request.model = routed_model
+        # First determine which model to use 
+        routed_model = default_controller.get_model(**request_data)
+        # Store the model in the request for later use
+        request.model = routed_model
 
         # Trim long prompts for basic router analysis
         prompt = request_data["messages"][-1]["content"]
@@ -1285,9 +1159,9 @@ analyze only "write a one-line bio" - ignore both context length and complexity.
 Focus on whether the requested task itself needs structure and organization,
 not the structure of the provided context or reference materials.
 """
-        logging.info(f"DEBUG : Weak model used by default controller {default_controller.model_pair.weak}")
+        logging.info(f"DEBUG : Model used by default controller {default_controller.model}")
         routing_request = ChatCompletionRequest(
-            model=default_controller.model_pair.weak,  # Always use weak model for checks
+            model=default_controller.model, 
             messages=[
                 {
                     "role": "system",
@@ -1339,7 +1213,7 @@ For the needs_structure field specifically:
 
         # Use regular completion for routing decision
         response = await acompletion(
-            model=default_controller.model_pair.weak,  # Use weak model for routing decision
+            model=default_controller.model,  # Use model for routing decision
             messages=routing_request.messages,
             api_base=default_controller.api_base,
             api_key=default_controller.api_key,
@@ -1454,7 +1328,7 @@ def update_token_usage(user_id: Optional[int], prompt_tokens: Optional[int], com
     """Update token usage in the database. Raises RuntimeError if update fails."""
     if user_id is not None and prompt_tokens is not None and completion_tokens is not None:
         try:
-            from routellm.openai_server import app
+            from kavya.openai_server import app
             if not hasattr(app, 'db') or not app.db:
                 error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
                 logging.error(error_msg)
