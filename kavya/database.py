@@ -333,31 +333,48 @@ class PostgreSQLConnection(DatabaseConnection):
 
     def begin_transaction(self):
         """Begin a new transaction if not already in one"""
+        thread_id = threading.get_ident()
         if not self._in_transaction:
             cursor = self.get_cursor()
             cursor.execute("BEGIN TRANSACTION")
             self._in_transaction = True
-            logging.debug("Transaction started")
+            self._transaction_start_time = time.time()
+            logging.info(f"🟢 DB_TXN_START: Thread-{thread_id} started transaction")
+        else:
+            import traceback
+            stack_trace = ''.join(traceback.format_stack()[-3:-1])  # Get calling context
+            logging.warning(f"⚠️ DB_TXN_ALREADY_ACTIVE: Thread-{thread_id} tried to start transaction but one already active!\n{stack_trace}")
 
     def commit(self):
         """Commit the current transaction if one exists"""
+        thread_id = threading.get_ident()
         if self._in_transaction:
+            duration = time.time() - getattr(self, '_transaction_start_time', time.time())
             self.connection.commit()
             self._in_transaction = False
-            logging.debug("Transaction committed")
+            if duration > 5.0:  # Log slow transactions
+                logging.warning(f"🐌 DB_TXN_SLOW: Thread-{thread_id} SLOW commit after {duration:.2f}s")
+            else:
+                logging.info(f"✅ DB_TXN_COMMIT: Thread-{thread_id} committed in {duration:.2f}s")
+        else:
+            logging.warning(f"⚠️ DB_TXN_NO_ACTIVE: Thread-{thread_id} tried to commit but no active transaction")
 
     def rollback(self):
         """Rollback the current transaction if one exists"""
+        thread_id = threading.get_ident()
         if self._in_transaction:
             try:
+                duration = time.time() - getattr(self, '_transaction_start_time', time.time())
                 self.connection.rollback()
-                logging.debug("Transaction rolled back")
+                logging.warning(f"🔄 DB_TXN_ROLLBACK: Thread-{thread_id} rolled back after {duration:.2f}s")
             except Exception as e:
-                logging.error(f"Error during rollback: {type(e).__name__}: {str(e)}")
+                logging.error(f"💥 DB_TXN_ROLLBACK_FAILED: Thread-{thread_id} rollback error: {type(e).__name__}: {str(e)}")
                 # If rollback fails, the connection is likely in a bad state
                 self.invalidate()
             finally:
                 self._in_transaction = False
+        else:
+            logging.warning(f"⚠️ DB_TXN_NO_ROLLBACK: Thread-{thread_id} tried to rollback but no active transaction")
 
     def close(self):
         """Close the connection and release resources"""
@@ -564,10 +581,11 @@ class Database:
             force_new: If True, force creation of a new connection
             recursion_depth: Current recursion depth to prevent stack overflow
         """
+        thread_id = threading.get_ident()
         # Prevent excessive recursion
         max_recursion = 3
         if recursion_depth >= max_recursion:
-            logging.error(f"Maximum recursion depth ({max_recursion}) reached in _get_connection")
+            logging.error(f"💥 DB_CONN_MAX_RECURSION: Thread-{thread_id} failed after {max_recursion} attempts")
             raise RuntimeError(f"Failed to establish a valid database connection after {max_recursion} attempts")
             
         # If force_new is True or we don't have a connection yet, create a new one
@@ -588,7 +606,7 @@ class Database:
                     logging.warning(f"Error closing existing connection: {str(e)}")
 
             try:
-                logging.info("Creating new database connection")
+                logging.info(f"🔌 DB_CONN_NEW: Thread-{thread_id} creating new database connection")
                 self._local.db = PostgreSQLConnection(
                     database_url=database_url,
                     instance_connection_name=instance_connection_name,
@@ -597,6 +615,7 @@ class Database:
                 self._local.db.connect()
                 self._ensure_tables_exist(self._local.db)
                 self._local.last_validation = time.time()
+                logging.info(f"✅ DB_CONN_READY: Thread-{thread_id} connection established")
             except Exception as e:
                 error_msg = f"Failed to initialize database connection: {type(e).__name__}: {str(e)}"
                 logging.error(error_msg)
@@ -727,15 +746,23 @@ class Database:
         """Get a transaction context manager for safe database operations with improved error handling"""
         db = self.get_validated_connection()
         transaction_id = f"txn-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
-        logging.debug(f"Starting transaction {transaction_id}")
+        thread_id = threading.get_ident()
+        start_time = time.time()
+        logging.info(f"🚀 DB_CTX_START: Thread-{thread_id} starting context {transaction_id}")
         
         try:
             db.begin_transaction()
             yield db
             # If we got here without exception, attempt to commit
             try:
+                duration = time.time() - start_time
                 db.commit()
-                logging.debug(f"Transaction {transaction_id} committed successfully")
+                if duration > 10.0:  # Log very slow contexts
+                    logging.warning(f"🐌 DB_CTX_VERY_SLOW: Thread-{thread_id} context {transaction_id} took {duration:.2f}s!")
+                elif duration > 5.0:  # Log slow contexts
+                    logging.warning(f"🐌 DB_CTX_SLOW: Thread-{thread_id} context {transaction_id} took {duration:.2f}s")
+                else:
+                    logging.info(f"✅ DB_CTX_SUCCESS: Thread-{thread_id} context {transaction_id} completed in {duration:.2f}s")
             except Exception as commit_error:
                 error_type = type(commit_error).__name__
                 error_msg = str(commit_error)
@@ -764,7 +791,8 @@ class Database:
                 raise
                 
         except Exception as e:
-            logging.error(f"Transaction {transaction_id} failed: {type(e).__name__}: {str(e)}")
+            duration = time.time() - start_time
+            logging.error(f"💥 DB_CTX_FAILED: Thread-{thread_id} context {transaction_id} failed after {duration:.2f}s: {type(e).__name__}: {str(e)}")
             
             # Examine the error to see if it's related to an aborted transaction
             error_type = type(e).__name__
@@ -1019,11 +1047,9 @@ class Database:
             word_count: The number of words generated (optional)
         """
         transaction_id = f"txn-{int(time.time() * 1000)}-{random.randint(1000, 9999)}"
-        logging.info(f"=== DATABASE UPDATE START [ID: {transaction_id}] ===")
-        logging.info(f"Account ID: {account_id}")
-        logging.info(f"Prompt Tokens: {prompt_tokens}")
-        logging.info(f"Completion Tokens: {completion_tokens}")
-        logging.info(f"Word Count: {word_count}")
+        thread_id = threading.get_ident()
+        start_time = time.time()
+        logging.info(f"🎯 DB_UPDATE_START: Thread-{thread_id} [ID: {transaction_id}] account={account_id}, prompt={prompt_tokens}, completion={completion_tokens}, words={word_count}")
         
         # Get connection-specific parameters for this critical operation
         connection = None 
@@ -1043,13 +1069,13 @@ class Database:
                     final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
                     db.commit()
 
-                    balance_msg = f"\n====== DATABASE UPDATE SUCCEEDED [ID: {transaction_id}] ======\n"
-                    balance_msg += f"Account: {account_id}\n"
-                    balance_msg += f"Final Balance: {final_balance}\n"
-                    balance_msg += f"================================================================"
-                    logging.info(f"\033[32m{balance_msg}\033[0m")  # Using \033[32m for bright green
-                    
-
+                    duration = time.time() - start_time
+                    if duration > 10.0:
+                        logging.warning(f"🐌 DB_UPDATE_VERY_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s! Final balance: {final_balance}")
+                    elif duration > 5.0:
+                        logging.warning(f"🐌 DB_UPDATE_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
+                    else:
+                        logging.info(f"✅ DB_UPDATE_SUCCESS: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
                     
                     return final_balance
                     
