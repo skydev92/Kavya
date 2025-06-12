@@ -1,4 +1,5 @@
 import os
+import traceback
 from datetime import datetime
 import logging
 import threading
@@ -60,7 +61,7 @@ DEFAULT_IDLE_IN_TRANSACTION_TIMEOUT = 20000  # milliseconds (20 seconds)
 class DatabaseConnection:
     def __init__(self):
         self.connection = None
-        self.cursor = None
+        self.cursors = list()
         self.engine = None
         self.isolation_level = "READ COMMITTED"
         self._in_transaction = False
@@ -72,6 +73,7 @@ class DatabaseConnection:
     def connect(self):
         raise NotImplementedError
 
+    @contextmanager
     def get_cursor(self):
         raise NotImplementedError
 
@@ -323,21 +325,35 @@ class PostgreSQLConnection(DatabaseConnection):
         except Exception as e:
             logging.error(f"Error during connection diagnostics: {str(e)}")
 
+    @contextmanager
     def get_cursor(self):
         """Get a cursor from the current connection"""
         if not self.connection:
             raise RuntimeError("No connection established. Call connect() first.")
-        if not self.cursor:
-            self.cursor = self.connection.cursor()
-        return self.cursor
+
+        cursor = self.connection.cursor()
+        self.cursors.append(cursor)
+        try:
+            yield cursor
+        finally:
+            try:
+                cursor.close()
+            except Exception as e:
+                logging.warning(f"Error closing cursor: {str(e)}")
+            self.cursors.remove(cursor)
+
+            if not self._in_transaction:
+                # If we are not in a transaction, call rollback to prevent
+                # the connection from becoming stuck "idle in transaction"
+                self.connection.rollback()
 
     def begin_transaction(self):
         """Begin a new transaction if not already in one"""
         thread_id = threading.get_ident()
         if not self._in_transaction:
-            cursor = self.get_cursor()
-            cursor.execute("BEGIN TRANSACTION")
-            self._in_transaction = True
+            with self.get_cursor() as cursor:
+                cursor.execute("BEGIN TRANSACTION")
+                self._in_transaction = True
             self._transaction_start_time = time.time()
             logging.info(f"🟢 DB_TXN_START: Thread-{thread_id} started transaction")
         else:
@@ -358,6 +374,7 @@ class PostgreSQLConnection(DatabaseConnection):
                 logging.info(f"✅ DB_TXN_COMMIT: Thread-{thread_id} committed in {duration:.2f}s")
         else:
             logging.warning(f"⚠️ DB_TXN_NO_ACTIVE: Thread-{thread_id} tried to commit but no active transaction")
+            # traceback.print_stack()
 
     def rollback(self):
         """Rollback the current transaction if one exists"""
@@ -379,12 +396,12 @@ class PostgreSQLConnection(DatabaseConnection):
     def close(self):
         """Close the connection and release resources"""
         logging.info("Closing database connection")
-        if self.cursor:
+        for cursor in self.cursors:
             try:
-                self.cursor.close()
+                cursor.close()
             except Exception as e:
                 logging.warning(f"Error closing cursor: {str(e)}")
-            self.cursor = None
+        self.cursors.clear()
             
         if self.connection:
             try:
@@ -427,17 +444,17 @@ class PostgreSQLConnection(DatabaseConnection):
             
         try:
             # Execute a simple query to check connection
-            cursor = self.get_cursor()
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()
-            
-            is_valid = result is not None and result[0] == 1
-            if is_valid:
-                self._set_last_validation_time(current_time)
-                return True
-            else:
-                logging.warning("Connection validation failed: unexpected result")
-                return False
+            with self.get_cursor() as cursor:
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+                
+                is_valid = result is not None and result[0] == 1
+                if is_valid:
+                    self._set_last_validation_time(current_time)
+                    return True
+                else:
+                    logging.warning("Connection validation failed: unexpected result")
+                    return False
         except Exception as e:
             logging.warning(f"Connection validation failed: {str(e)}")
             self._is_connected = False
@@ -451,70 +468,69 @@ class PostgreSQLConnection(DatabaseConnection):
     def _ensure_tables_exist(self, connection):
         """Ensure all required tables exist in the database"""
         logging.info("Ensuring required tables exist")
-        cursor = connection.get_cursor()
-        
-        # Skip setting timeouts as they're already configured as needed
-        
-        # Create account_totals table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_totals (
-            account_id INTEGER PRIMARY KEY,
-            token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
-            token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
-            word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
-            total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
-            total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
-            total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
-            transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        # Create account_daily_summary table if it doesn't exist
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS account_daily_summary (
-            account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
-            date DATE NOT NULL,
-            transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-            daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
-            daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
-            daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
-            PRIMARY KEY (account_id, date)
-        )
-        """)
-        
-        # Create or update indices for better performance
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
-        ON account_totals(token_balance_in, token_balance_out, word_balance)
-        """)
-        
-        cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
-        ON account_daily_summary(date)
-        """)
-        
-        # Update the account_totals table to include the last_updated column if it doesn't exist
-        try:
-            cursor.execute("""
-            SELECT column_name FROM information_schema.columns 
-            WHERE table_name='account_totals' AND column_name='last_updated'
-            """)
-            has_last_updated = cursor.fetchone() is not None
+        with connection.get_cursor() as cursor:
             
-            if not has_last_updated:
+            # Skip setting timeouts as they're already configured as needed
+            
+            # Create account_totals table if it doesn't exist
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS account_totals (
+                account_id INTEGER PRIMARY KEY,
+                token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
+                token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
+                word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
+                total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
+                total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
+                total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
+                transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
+                last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+
+            # Create account_daily_summary table if it doesn't exist
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS account_daily_summary (
+                account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
+                date DATE NOT NULL,
+                transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
+                daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
+                daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
+                daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
+                PRIMARY KEY (account_id, date)
+            )
+            """)
+            
+            # Create or update indices for better performance
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
+            ON account_totals(token_balance_in, token_balance_out, word_balance)
+            """)
+            
+            cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
+            ON account_daily_summary(date)
+            """)
+            
+            # Update the account_totals table to include the last_updated column if it doesn't exist
+            try:
                 cursor.execute("""
-                ALTER TABLE account_totals ADD COLUMN last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name='account_totals' AND column_name='last_updated'
                 """)
-                logging.info("Added last_updated column to account_totals table")
-        except Exception as e:
-            logging.warning(f"Error checking for last_updated column: {str(e)}")
-        
-        # Apply VACUUM optimizations
-        self._optimize_table_storage(cursor)
-        
-        connection.commit()
-        logging.info("Tables and indices verified")
+                has_last_updated = cursor.fetchone() is not None
+                
+                if not has_last_updated:
+                    cursor.execute("""
+                    ALTER TABLE account_totals ADD COLUMN last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    """)
+                    logging.info("Added last_updated column to account_totals table")
+            except Exception as e:
+                logging.warning(f"Error checking for last_updated column: {str(e)}")
+            
+            # Apply VACUUM optimizations
+            self._optimize_table_storage(cursor)
+
+            logging.info("Tables and indices verified")
         
     def _optimize_table_storage(self, cursor):
         """Apply VACUUM optimizations to tables"""
@@ -613,6 +629,7 @@ class Database:
                     private_ip=private_ip
                 )
                 self._local.db.connect()
+                self._local.db.begin_transaction()
                 self._ensure_tables_exist(self._local.db)
                 self._local.last_validation = time.time()
                 logging.info(f"✅ DB_CONN_READY: Thread-{thread_id} connection established")
@@ -676,42 +693,42 @@ class Database:
             # Test that we can actually write to the database
             # Use a more resilient approach with shorter timeouts
             with self.get_transaction() as db:
-                cursor = db.get_cursor()
+                with db.get_cursor() as cursor:
                 
-                # First try a simple read query to verify basic connectivity
-                cursor.execute("SELECT 1 as test")
-                if cursor.fetchone()[0] != 1:
-                    raise Exception("Failed to verify database read access")
-                
-                logging.info("Successfully verified database read access")
-                
-                # Try to insert a test record with a more resilient approach
-                try:
-                    self._ensure_account_exists(cursor, "-999")
+                    # First try a simple read query to verify basic connectivity
+                    cursor.execute("SELECT 1 as test")
+                    if cursor.fetchone()[0] != 1:
+                        raise Exception("Failed to verify database read access")
                     
-                    # Verify the account exists with a simple read
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM account_totals WHERE account_id = -999
-                    """)
+                    logging.info("Successfully verified database read access")
                     
-                    count = cursor.fetchone()[0]
-                    if count == 0:
-                        logging.warning("Test account does not exist, but database is accessible")
-                    else:
-                        logging.info("Successfully verified test account exists")
-                    
-                    # Removed database health check
-                    
-                    # Apply VACUUM optimizations if needed
-                    self._apply_vacuum_optimizations(connection)
+                    # Try to insert a test record with a more resilient approach
+                    try:
+                        self._ensure_account_exists(cursor, "-999")
                         
-                    logging.info("Successfully verified database access")
-                    return
-                except Exception as write_error:
-                    # If write fails but read succeeded, log warning but continue
-                    logging.warning(f"Database write test failed, but read succeeded: {str(write_error)}")
-                    logging.info("Continuing with read-only verification")
-                    return
+                        # Verify the account exists with a simple read
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM account_totals WHERE account_id = -999
+                        """)
+                        
+                        count = cursor.fetchone()[0]
+                        if count == 0:
+                            logging.warning("Test account does not exist, but database is accessible")
+                        else:
+                            logging.info("Successfully verified test account exists")
+                        
+                        # Removed database health check
+                        
+                        # Apply VACUUM optimizations if needed
+                        self._apply_vacuum_optimizations(connection)
+                            
+                        logging.info("Successfully verified database access")
+                        return
+                    except Exception as write_error:
+                        # If write fails but read succeeded, log warning but continue
+                        logging.warning(f"Database write test failed, but read succeeded: {str(write_error)}")
+                        logging.info("Continuing with read-only verification")
+                        return
                 
         except Exception as e:
             logging.error(f"Failed to verify database access: {type(e).__name__}: {str(e)}")
@@ -731,9 +748,8 @@ class Database:
                 logging.info("Applying VACUUM optimizations")
                 
                 if hasattr(connection, '_optimize_table_storage'):
-                    cursor = connection.get_cursor()
-                    connection._optimize_table_storage(cursor)
-                    connection.commit()
+                    with connection.get_cursor() as cursor:
+                        connection._optimize_table_storage(cursor)
                 
                 self._last_optimize_time = current_time
                 logging.info("VACUUM optimizations applied")
@@ -863,9 +879,6 @@ class Database:
             connection._ensure_tables_exist(connection)
         except Exception as e:
             logging.warning(f"Error checking/updating last_updated column: {str(e)}")
-        
-        if self.env == "dev":
-            connection.commit()
     
     def _ensure_account_exists(self, cursor, account_id):
         cursor.execute("""
@@ -1066,18 +1079,18 @@ class Database:
                 
                 # Use a simpler, more direct transaction
                 with self.get_transaction() as db:
-                    final_balance = self._update_balance(db.get_cursor(), account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
-                    db.commit()
+                    with db.get_cursor() as cursor:
+                        final_balance = self._update_balance(cursor, account_id, prompt_tokens, completion_tokens, word_count, transaction_id)
 
-                    duration = time.time() - start_time
-                    if duration > 10.0:
-                        logging.warning(f"🐌 DB_UPDATE_VERY_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s! Final balance: {final_balance}")
-                    elif duration > 5.0:
-                        logging.warning(f"🐌 DB_UPDATE_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
-                    else:
-                        logging.info(f"✅ DB_UPDATE_SUCCESS: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
-                    
-                    return final_balance
+                duration = time.time() - start_time
+                if duration > 10.0:
+                    logging.warning(f"🐌 DB_UPDATE_VERY_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s! Final balance: {final_balance}")
+                elif duration > 5.0:
+                    logging.warning(f"🐌 DB_UPDATE_SLOW: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
+                else:
+                    logging.info(f"✅ DB_UPDATE_SUCCESS: Thread-{thread_id} [ID: {transaction_id}] completed in {duration:.2f}s. Final balance: {final_balance}")
+
+                return final_balance
                     
             except Exception as e:
                 retry_count += 1
@@ -1119,81 +1132,81 @@ class Database:
     def get_account_balance(self, account_id: int):
         """Get current token balance for an account"""
         connection = self._get_connection()
-        cursor = connection.get_cursor()
-        cursor.execute("""
-        SELECT token_balance_in, token_balance_out, transactions 
-        FROM account_totals 
-        WHERE account_id = %s
-        """, (account_id,))
-        result = cursor.fetchone()
-        if result:
-            return {
-                "token_balance_in": result[0],
-                "token_balance_out": result[1],
-                "transactions": result[2]
-            }
-        return None
+        with connection.get_cursor() as cursor:
+            cursor.execute("""
+            SELECT token_balance_in, token_balance_out, transactions 
+            FROM account_totals 
+            WHERE account_id = %s
+            """, (account_id,))
+            result = cursor.fetchone()
+            if result:
+                return {
+                    "token_balance_in": result[0],
+                    "token_balance_out": result[1],
+                    "transactions": result[2]
+                }
+            return None
 
     def get_daily_usage(self, account_id: int, start_date: str, end_date: str):
         """Get daily usage for an account within a date range"""
         connection = self._get_connection()
-        cursor = connection.get_cursor()
-        cursor.execute("""
-        SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage 
-        FROM account_daily_summary 
-        WHERE account_id = %s AND date BETWEEN %s AND %s
-        ORDER BY date
-        """, (account_id, start_date, end_date))
-        return cursor.fetchall()
+        with connection.get_cursor() as cursor:
+            cursor.execute("""
+            SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage 
+            FROM account_daily_summary 
+            WHERE account_id = %s AND date BETWEEN %s AND %s
+            ORDER BY date
+            """, (account_id, start_date, end_date))
+            return cursor.fetchall()
 
     def create_tables(self):
         """Create the necessary tables if they don't exist"""
         try:
             with self.get_transaction() as connection:
-                cursor = connection.get_cursor()
-                
-                # Drop existing tables to ensure clean schema
-                cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
-                cursor.execute("DROP TABLE IF EXISTS account_totals")
-                
-                # Create account_totals table
-                cursor.execute("""
-                CREATE TABLE account_totals (
-                    account_id INTEGER PRIMARY KEY,
-                    token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
-                    token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
-                    word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
-                    total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
-                    total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
-                    total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
-                    transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
-                    last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
+                with connection.get_cursor() as cursor:
+                    
+                    # Drop existing tables to ensure clean schema
+                    cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
+                    cursor.execute("DROP TABLE IF EXISTS account_totals")
+                    
+                    # Create account_totals table
+                    cursor.execute("""
+                    CREATE TABLE account_totals (
+                        account_id INTEGER PRIMARY KEY,
+                        token_balance_in NUMERIC(18,6) NOT NULL DEFAULT 3000000 CHECK (token_balance_in >= 0),
+                        token_balance_out NUMERIC(18,6) NOT NULL DEFAULT 1000000 CHECK (token_balance_out >= 0),
+                        word_balance INTEGER NOT NULL DEFAULT 10000 CHECK (word_balance >= 0),
+                        total_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_in >= 0),
+                        total_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (total_token_usage_out >= 0),
+                        total_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (total_word_usage >= 0),
+                        transactions INTEGER NOT NULL DEFAULT 0 CHECK (transactions >= 0),
+                        last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """)
 
-                # Create account_daily_summary table if it doesn't exist
-                cursor.execute("""
-                CREATE TABLE account_daily_summary (
-                    account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
-                    date DATE NOT NULL,
-                    transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
-                    daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
-                    daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
-                    daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
-                    PRIMARY KEY (account_id, date)
-                )
-                """)
-                
-                # Create or update indices for better performance
-                cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
-                ON account_totals(token_balance_in, token_balance_out, word_balance)
-                """)
-                
-                cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
-                ON account_daily_summary(date)
-                """)
+                    # Create account_daily_summary table if it doesn't exist
+                    cursor.execute("""
+                    CREATE TABLE account_daily_summary (
+                        account_id INTEGER NOT NULL REFERENCES account_totals(account_id),
+                        date DATE NOT NULL,
+                        transaction_count INTEGER NOT NULL DEFAULT 0 CHECK (transaction_count >= 0),
+                        daily_token_usage_in NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_in >= 0),
+                        daily_token_usage_out NUMERIC(18,6) NOT NULL DEFAULT 0 CHECK (daily_token_usage_out >= 0),
+                        daily_word_usage INTEGER NOT NULL DEFAULT 0 CHECK (daily_word_usage >= 0),
+                        PRIMARY KEY (account_id, date)
+                    )
+                    """)
+                    
+                    # Create or update indices for better performance
+                    cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_account_totals_usage 
+                    ON account_totals(token_balance_in, token_balance_out, word_balance)
+                    """)
+                    
+                    cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_daily_summary_date 
+                    ON account_daily_summary(date)
+                    """)
 
         except Exception as e:
             logging.error(f"Error creating tables: {str(e)}")
@@ -1208,69 +1221,72 @@ class Database:
         
         while retry_count < max_retries:
             try:
+                try:
+                    # First ensure the account exists with a non-blocking insert
+                    # Use a separate connection for the insert to avoid transaction conflicts
+                    with self.get_transaction() as db:
+                        with db.get_cursor() as cursor:
+                            self._ensure_account_exists(cursor, account_id)
+                except Exception as e:
+                    # Log but continue - if account exists this will fail harmlessly
+                    logging.debug(f"[ID: {transaction_id}] Account creation attempt (non-critical): {str(e)}")
+                
                 # Get a fresh connection for each retry attempt
                 connection = self._get_connection(force_new=(retry_count > 0))
                 
                 # Use a completely non-locking approach for balance checks
                 # This is safe because we're only reading, and we'll do a proper check with locks during the actual update
-                cursor = connection.get_cursor()
+                with connection.get_cursor() as cursor:
                 
-                # Skip setting timeouts as they're already configured as needed
-                
-                try:
-                    # First ensure the account exists with a non-blocking insert
-                    # Use a separate connection for the insert to avoid transaction conflicts
-                    with self.get_transaction() as db:
-                        self._ensure_account_exists(db.get_cursor(), account_id)
-                except Exception as e:
-                    # Log but continue - if account exists this will fail harmlessly
-                    logging.debug(f"[ID: {transaction_id}] Account creation attempt (non-critical): {str(e)}")
-                
-                # Simple direct query with NO LOCK - absolute fastest approach
-                # We explicitly avoid any locking here since this is just a check
-                cursor.execute("""
-                    SELECT 
-                        token_balance_in, 
-                        token_balance_out, 
-                        word_balance, 
-                        transactions
-                    FROM account_totals
-                    WHERE account_id = %s
-                """, (account_id,))
-                
-                result = cursor.fetchone()
-                if not result:
-                    # If account doesn't exist after our insert attempt, something is wrong
-                    # But let's return a default balance instead of failing
-                    logging.warning(f"[ID: {transaction_id}] Account {account_id} not found, using default values")
-                    return True, {
-                        "token_balance_in": self.DEFAULT_TOKEN_BALANCE_IN,
-                        "token_balance_out": self.DEFAULT_TOKEN_BALANCE_OUT,
-                        "word_balance": self.DEFAULT_WORD_BALANCE,
-                        "transactions": 0
+                    # Skip setting timeouts as they're already configured as needed
+                    
+                    
+                    
+                    # Simple direct query with NO LOCK - absolute fastest approach
+                    # We explicitly avoid any locking here since this is just a check
+                    cursor.execute("""
+                        SELECT 
+                            token_balance_in, 
+                            token_balance_out, 
+                            word_balance, 
+                            transactions
+                        FROM account_totals
+                        WHERE account_id = %s
+                    """, (account_id,))
+                    
+                    result = cursor.fetchone()
+                    if not result:
+                        # If account doesn't exist after our insert attempt, something is wrong
+                        # But let's return a default balance instead of failing
+                        logging.warning(f"[ID: {transaction_id}] Account {account_id} not found, using default values")
+                        return True, {
+                            "token_balance_in": self.DEFAULT_TOKEN_BALANCE_IN,
+                            "token_balance_out": self.DEFAULT_TOKEN_BALANCE_OUT,
+                            "word_balance": self.DEFAULT_WORD_BALANCE,
+                            "transactions": 0
+                        }
+                    
+                    # Calculate sufficient balance directly
+                    # For balance checks, it's better to assume sufficient balance than to fail the request
+                    token_balance_in = float(result[0]) if result[0] is not None else self.DEFAULT_TOKEN_BALANCE_IN
+                    token_balance_out = float(result[1]) if result[1] is not None else self.DEFAULT_TOKEN_BALANCE_OUT
+                    word_balance = int(result[2]) if result[2] is not None else self.DEFAULT_WORD_BALANCE
+                    transactions = int(result[3]) if result[3] is not None else 0
+                    
+                    has_sufficient_balance = (
+                        token_balance_in >= prompt_tokens and 
+                        token_balance_out >= completion_tokens and 
+                        word_balance >= word_count
+                    )
+                    
+                    current_balance = {
+                        "token_balance_in": token_balance_in,
+                        "token_balance_out": token_balance_out,
+                        "word_balance": word_balance,
+                        "transactions": transactions
                     }
-                
-                # Calculate sufficient balance directly
-                # For balance checks, it's better to assume sufficient balance than to fail the request
-                token_balance_in = float(result[0]) if result[0] is not None else self.DEFAULT_TOKEN_BALANCE_IN
-                token_balance_out = float(result[1]) if result[1] is not None else self.DEFAULT_TOKEN_BALANCE_OUT
-                word_balance = int(result[2]) if result[2] is not None else self.DEFAULT_WORD_BALANCE
-                transactions = int(result[3]) if result[3] is not None else 0
-                
-                has_sufficient_balance = (
-                    token_balance_in >= prompt_tokens and 
-                    token_balance_out >= completion_tokens and 
-                    word_balance >= word_count
-                )
-                
-                current_balance = {
-                    "token_balance_in": token_balance_in,
-                    "token_balance_out": token_balance_out,
-                    "word_balance": word_balance,
-                    "transactions": transactions
-                }
-                
-                return has_sufficient_balance, current_balance
+                    
+                    return has_sufficient_balance, current_balance
                     
             except Exception as e:
                 retry_count += 1
@@ -1316,25 +1332,25 @@ class Database:
         
         try:
             with self.get_transaction() as connection:
-                cursor = connection.get_cursor()
-                
-                for account_id in account_ids:
-                    cursor.execute(
-                        """
-                        INSERT INTO account_totals (account_id, token_balance_in, token_balance_out, transactions)
-                        VALUES (?, 3000000, 1000000, 0)
-                        ON CONFLICT(account_id) DO UPDATE SET
-                            token_balance_in = 3000000,
-                            token_balance_out = 1000000,
-                            transactions = 0
-                        """,
-                        (account_id,)
-                    )
-                
-                if self.env == "dev":
-                    connection.commit()
-                
-                logging.info(f"Initialized {len(account_ids)} test accounts with default balances")
+                with connection.get_cursor() as cursor:
+                    
+                    for account_id in account_ids:
+                        cursor.execute(
+                            """
+                            INSERT INTO account_totals (account_id, token_balance_in, token_balance_out, transactions)
+                            VALUES (?, 3000000, 1000000, 0)
+                            ON CONFLICT(account_id) DO UPDATE SET
+                                token_balance_in = 3000000,
+                                token_balance_out = 1000000,
+                                transactions = 0
+                            """,
+                            (account_id,)
+                        )
+                    
+                    # if self.env == "dev":
+                    #     connection.commit()
+                    
+                    logging.info(f"Initialized {len(account_ids)} test accounts with default balances")
         
         except Exception as e:
             logging.error(f"Error initializing test accounts: {str(e)}")
@@ -1346,33 +1362,57 @@ class Database:
             raise RuntimeError("Database reset is only allowed in development environment")
         
         with self.get_transaction() as connection:
-            cursor = connection.get_cursor()
-            
-            # Drop existing tables
-            cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
-            cursor.execute("DROP TABLE IF EXISTS account_totals")
-            
-            # Recreate tables
-            self._ensure_tables_exist(connection)
-            
-            # Initialize some test accounts
-            self.initialize_test_accounts([20026, 20027, 20028])
+            with connection.get_cursor() as cursor:
+                
+                # Drop existing tables
+                cursor.execute("DROP TABLE IF EXISTS account_daily_summary")
+                cursor.execute("DROP TABLE IF EXISTS account_totals")
+                
+                # Recreate tables
+                self._ensure_tables_exist(connection)
+                
+                # Initialize some test accounts
+                self.initialize_test_accounts([20026, 20027, 20028])
 
     def get_account_balance_model(self, account_id: int) -> 'AccountTokenBalance':
         """Get current token balance for an account as a Pydantic model"""
         from kavya.models import AccountTokenBalance
         
         connection = self._get_connection()
-        cursor = connection.get_cursor()
-        cursor.execute("""
-        SELECT token_balance_in, token_balance_out, word_balance, transactions, 
-               total_token_usage_in, total_token_usage_out, total_word_usage
-        FROM account_totals 
-        WHERE account_id = %s
-        """, (account_id,))
-        result = cursor.fetchone()
-        
-        if result:
+        with connection.get_cursor() as cursor:
+            cursor.execute("""
+            SELECT token_balance_in, token_balance_out, word_balance, transactions, 
+                   total_token_usage_in, total_token_usage_out, total_word_usage
+            FROM account_totals 
+            WHERE account_id = %s
+            """, (account_id,))
+            result = cursor.fetchone()
+            
+            if result:
+                return AccountTokenBalance(
+                    account_id=account_id,
+                    token_balance_in=float(result[0]),
+                    token_balance_out=float(result[1]),
+                    word_balance=int(result[2]),
+                    transactions=int(result[3]),
+                    total_token_usage_in=float(result[4]),
+                    total_token_usage_out=float(result[5]),
+                    total_word_usage=int(result[6])
+            )
+            
+            # If no result, create a new account with default values
+            cursor.execute("""
+                INSERT INTO account_totals (account_id)
+                VALUES (%s)
+                ON CONFLICT (account_id) DO UPDATE SET
+                    account_id = account_totals.account_id
+                RETURNING token_balance_in, token_balance_out, word_balance, transactions,
+                          total_token_usage_in, total_token_usage_out, total_word_usage
+            """, (account_id,))
+            result = cursor.fetchone()
+            if not result:
+                raise RuntimeError("Failed to get or create account balance")
+                
             return AccountTokenBalance(
                 account_id=account_id,
                 token_balance_in=float(result[0]),
@@ -1382,56 +1422,32 @@ class Database:
                 total_token_usage_in=float(result[4]),
                 total_token_usage_out=float(result[5]),
                 total_word_usage=int(result[6])
-        )
-        
-        # If no result, create a new account with default values
-        cursor.execute("""
-            INSERT INTO account_totals (account_id)
-            VALUES (%s)
-            ON CONFLICT (account_id) DO UPDATE SET
-                account_id = account_totals.account_id
-            RETURNING token_balance_in, token_balance_out, word_balance, transactions,
-                      total_token_usage_in, total_token_usage_out, total_word_usage
-        """, (account_id,))
-        result = cursor.fetchone()
-        if not result:
-            raise RuntimeError("Failed to get or create account balance")
-            
-        return AccountTokenBalance(
-            account_id=account_id,
-            token_balance_in=float(result[0]),
-            token_balance_out=float(result[1]),
-            word_balance=int(result[2]),
-            transactions=int(result[3]),
-            total_token_usage_in=float(result[4]),
-            total_token_usage_out=float(result[5]),
-            total_word_usage=int(result[6])
-        )
+            )
 
     def get_daily_usage_model(self, account_id: int, start_date: str, end_date: str) -> list['DailyUsageSummary']:
         """Get daily usage for an account within a date range as Pydantic models"""
         from kavya.models import DailyUsageSummary
         
         connection = self._get_connection()
-        cursor = connection.get_cursor()
-        cursor.execute("""
-        SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage 
-        FROM account_daily_summary 
-        WHERE account_id = %s AND date BETWEEN %s AND %s
-        ORDER BY date
-        """, (account_id, start_date, end_date))
-        
-        results = []
-        for row in cursor.fetchall():
-            # Convert date to string in YYYY-MM-DD format
-            date_str = row[0].strftime("%Y-%m-%d") if hasattr(row[0], 'strftime') else str(row[0])
+        with connection.get_cursor() as cursor:
+            cursor.execute("""
+            SELECT date, transaction_count, daily_token_usage_in, daily_token_usage_out, daily_word_usage 
+            FROM account_daily_summary 
+            WHERE account_id = %s AND date BETWEEN %s AND %s
+            ORDER BY date
+            """, (account_id, start_date, end_date))
             
-            results.append(DailyUsageSummary(
-                account_id=account_id,
-                date=date_str,
-                transaction_count=int(row[1]),
-                daily_token_usage_in=float(row[2]),
-                daily_token_usage_out=float(row[3]),
-                daily_word_usage=int(row[4])
-            ))
-        return results
+            results = []
+            for row in cursor.fetchall():
+                # Convert date to string in YYYY-MM-DD format
+                date_str = row[0].strftime("%Y-%m-%d") if hasattr(row[0], 'strftime') else str(row[0])
+                
+                results.append(DailyUsageSummary(
+                    account_id=account_id,
+                    date=date_str,
+                    transaction_count=int(row[1]),
+                    daily_token_usage_in=float(row[2]),
+                    daily_token_usage_out=float(row[3]),
+                    daily_word_usage=int(row[4])
+                ))
+            return results
