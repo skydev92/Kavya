@@ -32,16 +32,24 @@ from kavya.models import (
     OutlineSection,
     RoutingAnalysis,
 )
+from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
 DEFAULT_CHUNK_SIZE = 10
 LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
+# Reduce noise from external libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 class RoutingError(Exception):
@@ -281,141 +289,26 @@ class Controller:
                     "content"
                 ] = enum_response.model_dump()
 
-        # If we have an original_model stored, use it in the response
-        if hasattr(self, "original_model"):
-            if isinstance(response, dict):
-                response["model"] = self.original_model
-            else:
-                response.model = self.original_model
+                # If we have an original_model stored, set the response correctly
+                if hasattr(self, "original_model"):
+                    if isinstance(response, dict):
+                        response["model"] = model  # Actual model used (e.g., gpt-4o)
+                        response["original_model"] = (
+                            self.original_model
+                        )  # Virtual model requested (e.g., kavya-m1)
+                    else:
+                        response.model = model  # Actual model used (e.g., gpt-4o)
+                        response.original_model = (
+                            self.original_model
+                        )  # Virtual model requested (e.g., kavya-m1)
 
         return response
 
-    async def acompletion_with_fallbacks(
-        self,
-        messages,
-        model,
-        original_model=None,
-        max_retries=2,
-        cooldown_seconds=60,
-        **kwargs,
-    ):
-        """Complete with fallbacks, for the acompletion method."""
-        cooling_down_models = set()  # Track models we're cooling down from rate limits
-        tried_models = []
-        current_attempt = 0
-        total_attempts = 5  # Increase total attempts for more resilience
-
-        # Get the fallback chain for the model, if it exists
-        model_to_use = original_model if original_model else model
-        fallback_chain = self.get_fallback_chain(model_to_use)
-
-        # By this point, fallback_chain should already be filtered to start after the failed model
-        if not fallback_chain:
-            logging.warning(
-                f"No fallback models available for {model_to_use} or all models have been tried"
-            )
-            raise Exception(f"No fallback models available for {model_to_use}")
-
-        logging.info(f"Attempting fallbacks with chain: {fallback_chain}")
-
-        # Add exponential backoff for retry attempts
-        base_delay = 0.5  # Start with a small delay
-
-        while current_attempt < total_attempts and fallback_chain:
-            for fallback_model in fallback_chain:
-                # Skip models that are cooling down from rate limits
-                if fallback_model in cooling_down_models:
-                    logging.info(f"Skipping cooled-down model: {fallback_model}")
-                    continue
-
-                tried_models.append(fallback_model)
-                logging.info(
-                    f"Attempting completion with fallback model: {fallback_model}"
-                )
-
-                for attempt in range(max_retries):
-                    try:
-                        # Apply jitter to avoid thundering herd problem
-                        jitter = random.uniform(0.8, 1.2)
-                        delay = base_delay * (2**current_attempt) * jitter
-
-                        if attempt > 0:
-                            # Add increasing delay between retry attempts
-                            logging.info(
-                                f"Retry attempt {attempt+1}/{max_retries} for {fallback_model} after {delay:.2f}s delay"
-                            )
-                            await asyncio.sleep(delay)
-
-                        # Create a new kwargs dict with the current fallback model
-                        current_kwargs = kwargs.copy()
-                        current_kwargs["model"] = fallback_model
-                        current_kwargs["messages"] = messages
-
-                        # Use litellm's acompletion directly instead of going through provider
-                        logging.info(
-                            f"DEBUG : current model for acompletion_with_fallbacks is: {current_kwargs['model']}"
-                        )
-                        result = await acompletion(
-                            api_base=self.api_base,
-                            api_key=self.api_key,
-                            metadata={"trace_user_id": kwargs["user"]},
-                            **current_kwargs,
-                        )
-
-                        # Convert Usage objects to dictionaries to ensure JSON serialization works
-                        if (
-                            result
-                            and hasattr(result, "usage")
-                            and not isinstance(result.usage, dict)
-                        ):
-                            # For Pydantic models (preferred approach)
-                            if hasattr(result.usage, "model_dump"):
-                                result.usage = result.usage.model_dump()
-                            # Fallback for non-Pydantic objects
-                            elif hasattr(result.usage, "__dict__"):
-                                result.usage = vars(result.usage)
-
-                        logging.info(
-                            f"Successful completion with fallback model: {fallback_model}"
-                        )
-                        return result
-
-                    except litellm.RateLimitError as e:
-                        logging.warning(
-                            f"Rate limit hit for fallback model {fallback_model}, cooling down for {cooldown_seconds}s: {e}"
-                        )
-                        cooling_down_models.add(fallback_model)
-                        break  # Break and try next model in fallback chain
-
-                    except Exception as e:
-                        logging.warning(
-                            f"Error with fallback model {fallback_model} (attempt {attempt+1}/{max_retries}): {e}"
-                        )
-
-                        if attempt == max_retries - 1:
-                            if (
-                                attempt > 0
-                            ):  # Only log error for final attempt if we've tried more than once
-                                logging.error(
-                                    f"All attempts failed for fallback model {fallback_model}: {e}"
-                                )
-
-            # If we've tried all models in the fallback chain, wait before trying again
-            await asyncio.sleep(1.0)  # Add pause between cycles
-            current_attempt += 1
-            logging.info(
-                f"Tried all fallback models and failed. Starting cycle {current_attempt+1}/{total_attempts}"
-            )
-
-        # If we've exhausted all attempts with all models, raise an exception
-        raise Exception(f"All fallback models failed. Tried: {', '.join(tried_models)}")
-
     async def acompletion(
         self,
-        fallbacks: Optional[List[str]] = None,
         **kwargs,
     ):
-        """Async completion method with support for fallbacks."""
+        """Async completion method with unified ProviderChain-based fallbacks."""
         # Ensure user ID is present and valid
         if "user" not in kwargs or not kwargs["user"]:
             error_msg = "CRITICAL: No user ID provided in acompletion request. Every request must be associated with a user."
@@ -431,18 +324,30 @@ class Controller:
             logging.error(error_msg)
             raise ValueError(error_msg)
 
-        model = kwargs.get("model", "unspecified")
-        logging.info(f"DEBUG: acompletion called with model: {model}")
-        logging.info(
-            f"DEBUG: providers_list in kwargs: {kwargs.get('providers_list', 'None')}"
-        )
-        logging.info(
-            f"Making async {'streaming' if kwargs.get('stream') else 'non-streaming'} completion call using model: {model}"
-        )
-
         # Store original_model if provided, before any model selection logic
         if "original_model" in kwargs:
             self.original_model = kwargs.pop("original_model")
+
+        # Get the ProviderChain from the request, which should have been set by openai_server.py
+        provider_chain = kwargs.pop("provider_chain", None)
+
+        if not provider_chain:
+            # Fallback: create a simple chain with the current model
+            current_model = kwargs.get("model", self.model)
+            provider_chain = ProviderChain(providers=[current_model])
+            logging.warning(
+                f"FALLBACK: No ProviderChain found in request, created simple chain: {provider_chain}"
+            )
+        else:
+            logging.debug(
+                f"FALLBACK: Received ProviderChain from request: {provider_chain}"
+            )
+
+        # Log chain status
+        logging.info(f"FALLBACK: Starting with chain: {provider_chain}")
+        logging.debug(
+            f"FALLBACK: Initial ProviderChain details - providers: {provider_chain.providers}, failed: {provider_chain.failed}, current_index: {provider_chain.current_index}"
+        )
 
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
@@ -458,10 +363,6 @@ class Controller:
             # Add web search results
             logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
             kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
-
-        logging.info("DEBUG : Getting model")
-        model = self.get_model(**kwargs)
-        kwargs["model"] = model
 
         # Handle structured output configuration
         if "config" in kwargs and kwargs["config"]:
@@ -514,165 +415,127 @@ class Controller:
             if key in kwargs:
                 del kwargs[key]
 
-        # First try with the model selected by the router or provided directly
-        try:
-            # Keep the existing warning suppression logic
+        # Remove longwriter_word_threshold from kwargs before API call
+        kwargs.pop("longwriter_word_threshold", None)
+
+        # Main fallback loop using ProviderChain
+        max_retries = self.config["general_settings"].get("provider_max_retries", 3)
+        loop_count = 0
+        while (current_model := provider_chain.next()) is not None:
+            loop_count += 1
+            kwargs["model"] = current_model
             logging.info(
-                f"DEBUG : current model for Controller.acompletion is: {kwargs['model']}"
+                f"FALLBACK: Loop #{loop_count} - Attempting completion with model: {current_model}"
             )
-            if self.suppress_warnings:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=UserWarning)
-                    response = await acompletion(
-                        api_base=self.api_base,
-                        api_key=self.api_key,
-                        metadata={"trace_user_id": kwargs["user"]},
-                        **kwargs,
-                    )
-            else:
-                response = await acompletion(
-                    api_base=self.api_base,
-                    api_key=self.api_key,
-                    metadata={"trace_user_id": kwargs["user"]},
-                    **kwargs,
-                )
+            logging.debug(
+                f"FALLBACK: ProviderChain state before attempt: {provider_chain}"
+            )
 
-            # Handle enum responses
-            if (
-                "config" in kwargs
-                and kwargs["config"]
-                and kwargs["config"].get("response_mime_type") == "text/x.enum"
-                and hasattr(response, "choices")
-                and response.choices
-                and hasattr(response.choices[0], "message")
-            ):
-                enum_value = response.choices[0].message.content.strip()
-                enum_class = kwargs["config"]["response_schema"]
-                if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
-                    enum_response = EnumResponse.from_enum(enum_class, enum_value)
-                    response.choices[0].message.content = enum_response.model_dump()
+            for retry in range(max_retries):
+                try:
+                    if retry > 0:
+                        delay = 0.5 * (2**retry)  # Exponential backoff
+                        logging.info(
+                            f"FALLBACK: Retry {retry + 1}/{max_retries} for {current_model} after {delay}s delay"
+                        )
+                        await asyncio.sleep(delay)
 
-            # If we have an original_model stored, use it in the response
-            # Problematic ?
-            if hasattr(self, "original_model"):
-                if isinstance(response, dict):
-                    response["original_model"] = self.original_model
-                else:
-                    response.original_model = self.original_model
-
-            return response
-
-        except Exception as e:
-            # If the primary model fails and we have fallbacks available, try them
-            if fallbacks or (
-                hasattr(self, "original_model")
-                and self.original_model in self.fallback_configs
-            ):
-                logging.warning(
-                    f"Primary model {kwargs['model']} failed: {str(e)}. Activating fallback chain."
-                )
-
-                # If explicit fallbacks were provided, use those
-                if fallbacks:
-                    logging.info(
-                        f"Using explicitly provided fallback chain: {fallbacks}"
-                    )
-                    # Try the fallback chain, skipping the current model if it's in the chain
-                    if kwargs["model"] in fallbacks:
-                        idx = fallbacks.index(kwargs["model"]) + 1
-                        if idx < len(fallbacks):
-                            fallbacks = fallbacks[idx:]
-                        else:
-                            fallbacks = []
-                # Check for providers_list in the request data (from providers parameter)
-                elif "providers_list" in kwargs:
-                    providers_list = kwargs.pop("providers_list")
-                    logging.info(f"Using custom providers list: {providers_list}")
-
-                    # If the current model is the first in the providers list, use the rest as fallbacks
-                    if providers_list and kwargs["model"] == providers_list[0]:
-                        if len(providers_list) > 1:
-                            fallbacks = providers_list[
-                                1:
-                            ]  # Skip the first model (current one)
-                            logging.info(
-                                f"Using remaining models from providers list as fallbacks: {fallbacks}"
-                            )
-                        else:
-                            fallbacks = []
-                            logging.warning(
-                                f"No fallbacks available in providers list after {kwargs['model']}"
-                            )
-                    # If the current model is elsewhere in the providers list, use the rest as fallbacks
-                    elif kwargs["model"] in providers_list:
-                        idx = providers_list.index(kwargs["model"]) + 1
-                        if idx < len(providers_list):
-                            fallbacks = providers_list[idx:]
-                            logging.info(
-                                f"Starting fallback chain from next model after {kwargs['model']}"
-                            )
-                        else:
-                            fallbacks = []
-                            logging.warning(
-                                f"No more fallbacks available after {kwargs['model']}"
+                    # Make the completion request
+                    if self.suppress_warnings:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", category=UserWarning)
+                            response = await acompletion(
+                                api_base=self.api_base,
+                                api_key=self.api_key,
+                                metadata={"trace_user_id": kwargs["user"]},
+                                **kwargs,
                             )
                     else:
-                        # If the current model isn't in the providers list, use the entire list as fallbacks
-                        fallbacks = providers_list
-                        logging.info(
-                            f"Using entire providers list as fallbacks: {fallbacks}"
-                        )
-                # Otherwise check for fallbacks in the config
-                elif (
-                    hasattr(self, "original_model")
-                    and self.original_model in self.fallback_configs
-                ):
-                    # Get fallback models from config
-                    fallback_config = self.fallback_configs[self.original_model]
-                    fallbacks = fallback_config.get("models", [])
-                    max_retries = fallback_config.get("max_retries", 3)
-                    retry_delay = fallback_config.get("retry_delay", 1.0)
-
-                    # Skip the failed model if it's in the fallback chain
-                    if kwargs["model"] in fallbacks:
-                        idx = fallbacks.index(kwargs["model"]) + 1
-                        if idx < len(fallbacks):
-                            fallbacks = fallbacks[idx:]
-                            logging.info(
-                                f"Starting fallback chain from next model after {kwargs['model']}"
-                            )
-                        else:
-                            fallbacks = []
-                            logging.warning(
-                                f"No more fallbacks available after {kwargs['model']}"
-                            )
-
-                # Use fallbacks if available
-                if fallbacks:
-                    logging.info(f"Using fallback chain: {fallbacks}")
-                    try:
-                        return await self.acompletion_with_fallbacks(
-                            messages=kwargs["messages"],
-                            model=kwargs["model"],
-                            original_model=getattr(self, "original_model", None),
-                            max_retries=max_retries if "max_retries" in locals() else 2,
-                            cooldown_seconds=(
-                                retry_delay if "retry_delay" in locals() else 60
-                            ),
+                        response = await acompletion(
+                            api_base=self.api_base,
+                            api_key=self.api_key,
+                            metadata={"trace_user_id": kwargs["user"]},
                             **kwargs,
                         )
-                    except Exception as fallback_error:
-                        logging.error(f"All fallbacks failed: {str(fallback_error)}")
-                        # Re-raise the original error to maintain the original failure context
-                        raise e
-                else:
-                    logging.warning("No fallback models left to try")
 
-            # If no fallbacks or all fallbacks failed, re-raise the exception
-            logging.error(
-                f"No fallbacks configured or all fallbacks exhausted for {kwargs['model']}: {str(e)}"
-            )
-            raise
+                    # Handle enum responses
+                    if (
+                        "config" in kwargs
+                        and kwargs["config"]
+                        and kwargs["config"].get("response_mime_type") == "text/x.enum"
+                        and hasattr(response, "choices")
+                        and response.choices
+                        and hasattr(response.choices[0], "message")
+                    ):
+                        enum_value = response.choices[0].message.content.strip()
+                        enum_class = kwargs["config"]["response_schema"]
+                        if isinstance(enum_class, type) and issubclass(
+                            enum_class, enum.Enum
+                        ):
+                            from kavya.models import EnumResponse
+
+                            enum_response = EnumResponse.from_enum(
+                                enum_class, enum_value
+                            )
+                            response.choices[0].message.content = (
+                                enum_response.model_dump()
+                            )
+
+                    # If we have an original_model stored, set the response correctly
+                    if hasattr(self, "original_model"):
+                        if isinstance(response, dict):
+                            response["model"] = (
+                                current_model  # Actual model used (e.g., gpt-4o)
+                            )
+                            response["original_model"] = (
+                                self.original_model
+                            )  # Virtual model requested (e.g., kavya-m1)
+                        else:
+                            response.model = (
+                                current_model  # Actual model used (e.g., gpt-4o)
+                            )
+                            response.original_model = (
+                                self.original_model
+                            )  # Virtual model requested (e.g., kavya-m1)
+
+                    # Store the successful model for streaming access
+                    self.last_successful_model = current_model
+                    
+                    logging.info(f"FALLBACK: Success with model: {current_model}")
+                    logging.debug(
+                        f"FALLBACK: Final ProviderChain state after success: {provider_chain}"
+                    )
+                    return response
+
+                except litellm.RateLimitError as e:
+                    logging.warning(
+                        f"FALLBACK: Rate limit hit for {current_model}: {e}"
+                    )
+                    provider_chain.mark_failed(current_model)
+                    break  # Skip remaining retries for this model
+                except Exception as e:
+                    logging.warning(
+                        f"FALLBACK: Error with {current_model} (attempt {retry + 1}/{max_retries}): {e}"
+                    )
+                    if retry == max_retries - 1:
+                        # All retries failed for this model
+                        provider_chain.mark_failed(current_model)
+                        logging.error(
+                            f"FALLBACK: All retries failed for {current_model}"
+                        )
+                        logging.debug(
+                            f"FALLBACK: ProviderChain state after marking failed: {provider_chain}"
+                        )
+                        break
+
+        # If we get here, all providers have failed
+        failed_models = provider_chain.failed
+        logging.error(f"FALLBACK: All providers failed. Tried: {failed_models}")
+        logging.debug(
+            f"FALLBACK: Final ProviderChain state when exiting loop: {provider_chain}"
+        )
+        logging.debug(f"FALLBACK: Total loop iterations: {loop_count}")
+        raise Exception(f"All fallback providers failed. Tried: {failed_models}")
 
     def get_model(self, **kwargs):
         if "messages" in kwargs:
@@ -756,11 +619,19 @@ class Longwriter(Controller):
         self.cost_tracker = RequestCostTracker()
 
     async def get_content_strategy(
-        self, request: ContentRequest, model: str
+        self, request: ContentRequest, model: str, provider_chain: ProviderChain = None
     ) -> ContentStrategy:
         logging.info(
             f"Making completion call for content strategy using model: {model}"
         )
+
+        # Use original provider chain to preserve failed state from routing
+        if provider_chain:
+            logging.debug(f"CONTENT_STRATEGY: Received ProviderChain: {provider_chain}")
+            logging.debug(f"CONTENT_STRATEGY: Using original chain to preserve failed state from routing")
+            # Reset current_index to allow trying all non-failed providers for this method
+            provider_chain.current_index = 0
+            logging.debug(f"CONTENT_STRATEGY: Reset current_index to 0 for fresh method attempt")
         # Reset cost tracker for new request
         self.cost_tracker = RequestCostTracker()
         self.user = request.user
@@ -795,14 +666,13 @@ class Longwriter(Controller):
             llm_messages.append({"role": "user", "content": str(request.prompt)})
 
         try:
-            response = await acompletion(
-                api_base=self.api_base,
-                api_key=self.api_key,
-                model=model,  # Direct model use
-                messages=llm_messages,  # Use the combined messages list
+            # Use unified fallback system through self.acompletion
+            response = await self.acompletion(
+                model=model,
+                messages=llm_messages,
                 response_format=ContentStrategy,
-                user=request.user,  # Propagate user ID
-                metadata={"trace_user_id": request.user},
+                user=request.user,
+                provider_chain=provider_chain,
             )
 
             # Update cost tracker with response usage
@@ -832,7 +702,15 @@ class Longwriter(Controller):
         allowed_html_classes: str = "",
         content_strategy: ContentStrategy = None,
         model: str = None,
+        provider_chain: ProviderChain = None,
     ) -> HTMLTagStrategy:
+        # Use original provider chain to preserve failed state from routing
+        if provider_chain:
+            logging.debug(f"HTML_STRATEGY: Using ProviderChain: {provider_chain}")
+            logging.debug(f"HTML_STRATEGY: Using original chain to preserve failed state from routing")
+            # Reset current_index to allow trying all non-failed providers for this method
+            provider_chain.current_index = 0
+            logging.debug(f"HTML_STRATEGY: Reset current_index to 0 for fresh method attempt")
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
@@ -845,10 +723,9 @@ class Longwriter(Controller):
         """
 
         try:
-            response = await acompletion(
-                model=model,  # Direct model use
-                api_base=self.api_base,
-                api_key=self.api_key,
+            # Use unified fallback system through self.acompletion
+            response = await self.acompletion(
+                model=model,
                 messages=[
                     {"role": "system", "content": dedent(html_strategist_prompt)},
                     {
@@ -857,8 +734,8 @@ class Longwriter(Controller):
                     },
                 ],
                 response_format=HTMLTagStrategy,
-                user=content_strategy.user,  # Get user ID directly from content_strategy,
-                metadata={"trace_user_id": content_strategy.user},
+                user=content_strategy.user,
+                provider_chain=provider_chain,
             )
 
             # Update cost tracker with response usage
@@ -883,7 +760,15 @@ class Longwriter(Controller):
         content_strategy: ContentStrategy,
         html_strategy: HTMLTagStrategy,
         model: str,
+        provider_chain: ProviderChain = None,
     ) -> ContentOutline:
+        # Use original provider chain to preserve failed state from routing
+        if provider_chain:
+            logging.debug(f"CONTENT_OUTLINE: Using ProviderChain: {provider_chain}")
+            logging.debug(f"CONTENT_OUTLINE: Using original chain to preserve failed state from routing")
+            # Reset current_index to allow trying all non-failed providers for this method
+            provider_chain.current_index = 0
+            logging.debug(f"CONTENT_OUTLINE: Reset current_index to 0 for fresh method attempt")
         logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
@@ -902,10 +787,9 @@ class Longwriter(Controller):
         """
 
         try:
-            response = await acompletion(
-                model=model,  # Direct model use after
-                api_base=self.api_base,
-                api_key=self.api_key,
+            # Use unified fallback system through self.acompletion
+            response = await self.acompletion(
+                model=model,
                 messages=[
                     {"role": "system", "content": dedent(content_outliner_prompt)},
                     {
@@ -914,8 +798,8 @@ class Longwriter(Controller):
                     },
                 ],
                 response_format=ContentOutline,
-                user=content_strategy.user,  # Get user ID from content strategy
-                metadata={"trace_user_id": content_strategy.user},
+                user=content_strategy.user,
+                provider_chain=provider_chain,
             )
 
             # Update cost tracker with response usage
@@ -943,7 +827,15 @@ class Longwriter(Controller):
         outline: ContentOutline,
         model: str,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        provider_chain: ProviderChain = None,
     ) -> AsyncGenerator:
+        # Use original provider chain to preserve failed state from routing
+        if provider_chain:
+            logging.debug(f"CONTENT_DRAFT: Received ProviderChain: {provider_chain}")
+            logging.debug(f"CONTENT_DRAFT: Using original chain to preserve failed state from routing")
+            # Reset current_index to allow trying all non-failed providers for this method
+            provider_chain.current_index = 0
+            logging.debug(f"CONTENT_DRAFT: Reset current_index to 0 for fresh method attempt")
         logging.info(
             f"Making streaming completion call for content draft section '{section.title}' using model: {model}"
         )
@@ -1091,15 +983,14 @@ class Longwriter(Controller):
                 }
             )
 
-        # --- Rest of the function (LLM call, streaming, history update) unchanged ---
-        response = await acompletion(
-            model=model,  # Direct model use
-            messages=self.content_writer_messages,  # Use the maintained message history
+        # --- Rest of the function (LLM call, streaming, history update) updated for unified fallback ---
+        # Use unified fallback system through self.acompletion with streaming
+        response = await self.acompletion(
+            model=model,
+            messages=self.content_writer_messages,
             stream=True,
-            api_base=self.api_base,
-            api_key=self.api_key,
-            user=content_strategy.user,  # Get user ID from content strategy
-            metadata={"trace_user_id": content_strategy.user},
+            user=content_strategy.user,
+            provider_chain=provider_chain,
         )
 
         # Use provided chunk_size or default
@@ -1124,7 +1015,9 @@ class Longwriter(Controller):
         if final_chunk:
             yield final_chunk, final_count
 
-    async def content_creation_agent(self, request: ContentRequest, model: str):
+    async def content_creation_agent(
+        self, request: ContentRequest, model: str, provider_chain: ProviderChain = None
+    ):
         """Main content generation method that coordinates the content creation process."""
         # Ensure user ID is present in the request
         logging.info("CONTENT_CREATION_AGENT: Starting content creation agent")
@@ -1145,7 +1038,9 @@ class Longwriter(Controller):
         # Reset content writer messages for new content
         self.content_writer_messages = None
 
-        content_strategy = await self.get_content_strategy(request, model)
+        content_strategy = await self.get_content_strategy(
+            request, model, provider_chain
+        )
 
         # Instead of yielding formatted strings, yield tuples with special message type
         # Create a JSON string for the disclosure
@@ -1164,6 +1059,7 @@ class Longwriter(Controller):
             request.allowed_html_classes,
             content_strategy,
             model,
+            provider_chain,
         )
 
         # Disclose HTML strategy costs - using tuple format
@@ -1177,7 +1073,7 @@ class Longwriter(Controller):
         yield disclosure_json, 0
 
         content_outline = await self.get_content_outline(
-            content_strategy, html_strategy, model
+            content_strategy, html_strategy, model, provider_chain
         )
 
         # Disclose content outline costs - using tuple format
@@ -1192,21 +1088,15 @@ class Longwriter(Controller):
 
         for section in content_outline.sections:
             async for token, token_count in self.get_content_draft(
-                section, content_strategy, html_strategy, content_outline, model
+                section,
+                content_strategy,
+                html_strategy,
+                content_outline,
+                model,
+                DEFAULT_CHUNK_SIZE,
+                provider_chain,
             ):
                 yield token, token_count
-
-    async def acompletion_stream(
-        self,
-        **kwargs,
-    ):
-        raise NotImplementedError
-
-    async def acompletion(
-        self,
-        **kwargs,
-    ):
-        raise NotImplementedError
 
 
 class Controllers:
@@ -1307,6 +1197,7 @@ class Controllers:
         self,
         request: ChatCompletionRequest,
         cost_tracker: Optional[RequestCostTracker] = None,
+        provider_chain: Optional[ProviderChain] = None,
     ):
         # Longwriter only supports streaming requests, so force non-streaming to use completion
         if not request.stream:
@@ -1340,6 +1231,9 @@ class Controllers:
         # Store the model in the request for later use
         request.model = routed_model
 
+        # Get longwriter word threshold from request or use default
+        word_threshold = getattr(request, "longwriter_word_threshold", None) or 1000
+
         # Trim long prompts for basic router analysis
         prompt = request_data["messages"][-1]["content"]
         if len(prompt) > self.basic_router_max_chars:
@@ -1372,7 +1266,7 @@ Analyze the prompt and return a JSON object that exactly matches this Pydantic m
 
 When analyzing the prompt, set these fields accurately:
 
-1. length_score: Estimate the probability (0.0-1.0) that the response will exceed 1000 words based on the prompt's requirements.
+1. length_score: Estimate the probability (0.0-1.0) that the response will exceed {word_threshold} words based on the prompt's requirements.
 
 2. needs_structure: Set to true if the content would benefit from organization into sections with headings.
 
@@ -1407,16 +1301,40 @@ For the needs_structure field specifically:
             user=request_data.get("user"),  # Pass through the user ID
         )
 
-        # Use regular completion for routing decision
-        response = await acompletion(
-            model=default_controller.model,  # Use model for routing decision
-            messages=routing_request.messages,
-            api_base=default_controller.api_base,
-            api_key=default_controller.api_key,
-            response_format=RoutingAnalysis,
-            user=routing_request.user,  # Pass through the user ID
-            metadata={"trace_user_id": routing_request.user},
-        )
+        # Use the ProviderChain system for routing decision to maintain failed state
+        if provider_chain:
+            logging.debug(f"ROUTING: Using ProviderChain for routing: {provider_chain}")
+            # Create fresh copy of provider chain to avoid consumption issues during routing
+            routing_provider_chain = provider_chain.create_fresh_copy()
+            # Use controller's acompletion method which respects ProviderChain
+            response = await default_controller.acompletion(
+                model=default_controller.model,  # Use model for routing decision
+                messages=routing_request.messages,
+                response_format=RoutingAnalysis,
+                user=routing_request.user,  # Pass through the user ID
+                provider_chain=routing_provider_chain,
+            )
+            
+            # After routing analysis, update the original provider_chain with any failures from routing
+            # This ensures longwriter methods inherit the failed state from routing
+            if routing_provider_chain.failed:
+                logging.debug(f"ROUTING: Updating original chain with routing failures: {routing_provider_chain.failed}")
+                for failed_provider in routing_provider_chain.failed:
+                    if failed_provider not in provider_chain.failed:
+                        provider_chain.failed.append(failed_provider)
+                        logging.debug(f"ROUTING: Added {failed_provider} to original chain failed list")
+        else:
+            # Fallback to direct acompletion if no ProviderChain
+            logging.warning("ROUTING: No ProviderChain found, using direct acompletion")
+            response = await acompletion(
+                model=default_controller.model,  # Use model for routing decision
+                messages=routing_request.messages,
+                api_base=default_controller.api_base,
+                api_key=default_controller.api_key,
+                response_format=RoutingAnalysis,
+                user=routing_request.user,  # Pass through the user ID
+                metadata={"trace_user_id": routing_request.user},
+            )
 
         # Add logging for routing analysis response and usage
         prompt_preview = format_prompt_preview(routing_request.messages[-1]["content"])
@@ -1467,7 +1385,7 @@ For the needs_structure field specifically:
             logging.debug(f"\033[94mIs Data Dump: {analysis.is_data_dump}\033[0m")
 
             # Route to longwriter if:
-            # 1. Content will be long (> 1000 words)
+            # 1. Content will be long (> {word_threshold} words)
             # 2. Content benefits from structure
             # 3. Not just a data dump
             use_longwriter = (

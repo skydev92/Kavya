@@ -12,10 +12,17 @@ from pydantic import BaseModel, Field, field_validator
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
+# Reduce noise from external libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 # create status response https://spec.modelcontextprotocol.io/specification/basic/utilities/progress/
@@ -469,6 +476,11 @@ class ChatCompletionRequest(BaseModel):
     router_usage: Optional[Dict[str, int]] = Field(
         None, description="Token usage information from the router analysis"
     )
+    longwriter_word_threshold: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Word count threshold above which longwriter mode is activated (default: 1000)",
+    )
 
 
 # ######################
@@ -856,4 +868,9 @@ class KavyaRequest(BaseModel):
     providers: Optional[str] = Field(
         None,
         description="Comma-separated list of provider names to use as fallbacks (only valid with kavya-m1 model)",
+    )
+    longwriter_word_threshold: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Word count threshold above which longwriter mode is activated (default: 1000)",
     )

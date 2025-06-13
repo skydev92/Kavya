@@ -37,6 +37,7 @@ from kavya.controller import (
 from kavya.database import DEFAULT_VALIDATION_INTERVAL, Database
 from kavya.database_cache import DatabaseCache
 from kavya.models import InsufficientTokensError
+from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
 load_dotenv()
@@ -459,36 +460,71 @@ async def create_chat_completion(
                 # All providers are now guaranteed to be supported
                 providers_list.extend(provider_configs[provider.lower()]["models"])
 
-            # Store the translated providers list in the request data
+            # Create ProviderChain instance for this request
+            provider_chain = ProviderChain(providers=providers_list)
             logging.info(
-                f"DEBUG: Using custom providers list (translated): {providers_list}"
+                f"FALLBACK: Created ProviderChain with {len(providers_list)} providers: {providers_list}"
             )
-            request_data["providers_list"] = providers_list
 
-            # Use the first model from the providers list as the primary model
+            # Store the ProviderChain in the request data
+            request_data["provider_chain"] = provider_chain
+
+            # Use the first model from the chain as the primary model WITHOUT consuming it
             if providers_list:
-                request_data["model"] = providers_list[0]
-                logging.info(f"DEBUG: Setting primary model to: {providers_list[0]}")
+                primary_model = providers_list[0]
+                request_data["model"] = primary_model
+                logging.info(
+                    f"DEBUG: Setting primary model from chain: {primary_model}"
+                )
         else:
-            # If providers parameter is not used, translate the model
-            request_data["model"] = app.controllers.default.model_translations[
-                original_model
-            ]
-            logging.info(f"DEBUG: Translated model to: {request_data['model']}")
+            # If providers parameter is not used, create a default ProviderChain
+            # based on fallback_configs or single model
+            default_providers = []
+
+            # Check if we have fallback config for this model
+            if (
+                hasattr(app.controllers.default, "fallback_configs")
+                and original_model in app.controllers.default.fallback_configs
+            ):
+                default_providers = app.controllers.default.fallback_configs[
+                    original_model
+                ].get("models", [])
+                logging.info(
+                    f"FALLBACK: Using fallback config for {original_model}: {default_providers}"
+                )
+            else:
+                # Use the translated model as a single-item chain
+                translated_model = app.controllers.default.model_translations[
+                    original_model
+                ]
+                default_providers = [translated_model]
+                logging.info(f"FALLBACK: Using single model chain: {default_providers}")
+
+            # Create ProviderChain for default case
+            provider_chain = ProviderChain(providers=default_providers)
+            request_data["provider_chain"] = provider_chain
+
+            # Use the first model from the chain WITHOUT consuming it
+            if default_providers:
+                primary_model = default_providers[0]
+                request_data["model"] = primary_model
+                logging.info(
+                    f"DEBUG: Setting primary model from default chain: {primary_model}"
+                )
 
             # Check if we have a specific model for this Kavya model
             if (
                 hasattr(app, "model_translations")
                 and original_model in app.model_translations
             ):
-                # Get the model for this Kavya model
-                model_to_use = app.model_translations[original_model]
-                logging.info(f"Using model for {original_model}: {model_to_use}")
-
                 # Update the model in all controllers
                 for controller_name in ["default", "completion", "longwriter"]:
                     controller = app.controllers.controllers[controller_name]
-                    controller.model = model_to_use
+                    controller.model = (
+                        primary_model
+                        if primary_model
+                        else default_providers[0] if default_providers else None
+                    )
     except Exception as e:
         # Only return Kavya validation error if it's a Kavya model
         if (
@@ -496,6 +532,7 @@ async def create_chat_completion(
             and isinstance(request_data["model"], str)
             and request_data["model"].startswith("kavya-")
         ):
+            logging.error(f"DEBUG: Returning Kavya validation error")
             return JSONResponse(
                 content={
                     "error": {
@@ -506,6 +543,10 @@ async def create_chat_completion(
                     }
                 },
                 status_code=400,
+            )
+        else:
+            logging.info(
+                f"DEBUG: Continuing with regular flow after KavyaRequest exception"
             )
 
     # Add thinking=False globally to all requests (will be dropped by litellm for unsupported models)
@@ -624,7 +665,11 @@ async def create_chat_completion(
 
     try:
         # First determine routing - this will use some tokens
-        controller_name = await app.controllers.basic_routing(request, cost_tracker)
+        # Pass the provider_chain to routing so it can maintain failed state
+        provider_chain = request_data.get("provider_chain", None)
+        controller_name = await app.controllers.basic_routing(
+            request, cost_tracker, provider_chain
+        )
         logging.debug("controller_name: " + controller_name)
 
         # After routing, check remaining balance without updating
@@ -745,9 +790,11 @@ async def create_chat_completion(
                                 "Creating content strategy", 1, 3, "planning"
                             )
                         ) + "\n\n"
+                        # Get provider_chain from the request_data for unified fallback
+                        provider_chain = request_data.get("provider_chain", None)
                         content_strategy = (
                             await app.controllers.longwriter.get_content_strategy(
-                                content_request, model
+                                content_request, model, provider_chain
                             )
                         )
                         # Disclose content strategy costs
@@ -771,6 +818,7 @@ async def create_chat_completion(
                                 content_request.allowed_html_classes,
                                 content_strategy,
                                 model,
+                                provider_chain,
                             )
                         )
                         # Disclose HTML strategy costs
@@ -790,7 +838,7 @@ async def create_chat_completion(
                         ) + "\n\n"
                         content_outline = (
                             await app.controllers.longwriter.get_content_outline(
-                                content_strategy, html_strategy, model
+                                content_strategy, html_strategy, model, provider_chain
                             )
                         )
                         # Disclose content outline costs
@@ -808,8 +856,11 @@ async def create_chat_completion(
                         initial_usage = {
                             "prompt_tokens": app.controllers.longwriter.cost_tracker.prompt_tokens
                         }
+                        # Get the actual successful model from the longwriter controller
+                        actual_model = getattr(app.controllers.longwriter, 'last_successful_model', model)
+                        
                         # Send initial assistant role
-                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
 
                         # Initialize word buffer for tracking total words
                         word_buffer = ""
@@ -836,6 +887,8 @@ async def create_chat_completion(
                                 html_strategy,
                                 content_outline,
                                 model,
+                                10,  # DEFAULT_CHUNK_SIZE
+                                provider_chain,
                             ):
                                 # Accumulate content for word counting
                                 word_buffer += token
@@ -846,7 +899,7 @@ async def create_chat_completion(
                                     "completion_tokens": token_count,
                                     "word_count": current_word_count,
                                 }
-                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
+                                yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
 
                         # Update database with final word count
                         try:
@@ -865,7 +918,7 @@ async def create_chat_completion(
                             )
 
                         # Send final stop message
-                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
                         yield "data: [DONE]\n\n"
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
@@ -894,14 +947,18 @@ async def create_chat_completion(
                 # Ensure user ID is set
                 kwargs["user"] = str(user_id)
 
-                # Remove original_model from kwargs before API call
-                original_model = kwargs.pop("original_model", None)
+                # Get original_model from request_data (not kwargs)
+                original_model = request_data.get("original_model", None)
 
                 # Get router usage from the request object where it was stored during basic_routing
                 router_usage = getattr(request, "router_usage", None)
 
                 # Remove router_usage from kwargs if present
                 kwargs.pop("router_usage", None)
+
+                # Pass the ProviderChain to the controller if available
+                if "provider_chain" in request_data:
+                    kwargs["provider_chain"] = request_data["provider_chain"]
 
                 # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
                 if (
@@ -989,19 +1046,26 @@ async def create_chat_completion(
                             messages_content.split()
                         )
 
+                        # Pass the ProviderChain to the controller if available (CRITICAL FIX)
+                        if "provider_chain" in request_data:
+                            kwargs["provider_chain"] = request_data["provider_chain"]
+
                         try:
                             # Call acompletion and handle the response differently based on its type
                             res = await app.controllers.completion.acompletion(**kwargs)
 
                             # Check if the result is an async generator (streaming)
                             if hasattr(res, "__aiter__"):
+                                # Get the actual successful model from the controller
+                                actual_model = getattr(app.controllers.completion, 'last_successful_model', kwargs.get("model", "unknown"))
+                                
                                 # First yield role assistant
                                 role_chunk = {
                                     "id": response_id,
                                     "object": "chat.completion.chunk",
                                     "created": created_time,
-                                    "model": original_model
-                                    or kwargs.get("model", "unknown"),
+                                    "model": actual_model,  # Actual model used (after fallback)
+                                    "original_model": original_model,  # Virtual model requested
                                     "choices": [
                                         {
                                             "index": 0,
@@ -1084,8 +1148,8 @@ async def create_chat_completion(
                                         "id": response_id,
                                         "object": "chat.completion.chunk",
                                         "created": created_time,
-                                        "model": original_model
-                                        or kwargs.get("model", "unknown"),
+                                        "model": actual_model,  # Actual model used (after fallback)
+                                        "original_model": original_model,  # Virtual model requested
                                         "choices": [
                                             {
                                                 "index": 0,
@@ -1105,8 +1169,8 @@ async def create_chat_completion(
                                     "id": response_id,
                                     "object": "chat.completion.chunk",
                                     "created": created_time,
-                                    "model": original_model
-                                    or kwargs.get("model", "unknown"),
+                                    "model": actual_model,  # Actual model used (after fallback)
+                                    "original_model": original_model,  # Virtual model requested
                                     "choices": [
                                         {
                                             "index": 0,
@@ -1260,9 +1324,13 @@ async def create_chat_completion(
             kwargs = request.model_dump(exclude_none=True)
             kwargs["user"] = str(user_id)  # Ensure user ID is set
 
-            # Remove original_model and router_usage from kwargs before API call
-            original_model = kwargs.pop("original_model", None)
+            # Get original_model from request_data (not kwargs) and remove router_usage
+            original_model = request_data.get("original_model", None)
             kwargs.pop("router_usage", None)
+
+            # Pass the ProviderChain to the controller if available
+            if "provider_chain" in request_data:
+                kwargs["provider_chain"] = request_data["provider_chain"]
 
             # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
             if (
@@ -1392,12 +1460,22 @@ async def create_chat_completion(
 # Configure litellm to drop unsupported parameters
 litellm.drop_params = True
 
-# Configure logging
+# Configure logging with reduced noise from external libraries
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
+# Reduce noise from external libraries
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
+
+# Keep our custom logs visible
+logging.getLogger("root").setLevel(logging.DEBUG)
 
 # Load environment variables from .env file
 
@@ -1434,7 +1512,8 @@ parser.add_argument(
 args = parser.parse_args()
 
 if args.verbose:
-    logging.basicConfig(level=logging.DEBUG)
+    # Verbose mode already handled above with reduced noise
+    pass
 
 if not asyncio.get_event_loop().is_running():
     print("Launching server")

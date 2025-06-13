@@ -12,7 +12,8 @@ response=$(curl -s --max-time 30 -w "HTTPSTATUS:%{http_code}" -X POST "http://lo
   -d '{
     "model": "kavya-m1",
     "messages": [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
-    "providers": "openai,anthropic"
+    "stream": true,
+    "providers": "groq,openai"
   }')
 
 # Check if curl failed
@@ -32,18 +33,18 @@ if [ "$http_status" != "200" ]; then
     exit 1
 fi
 
-# Check the model type
-model_name=$(echo "$response_body" | jq -r '.model' 2>/dev/null)
-if [ $? -ne 0 ] || [ -z "$model_name" ] || [ "$model_name" = "null" ]; then
-    echo "❌ Test failed: Could not parse model from response"
+# Extract model from streaming chunks (similar to streaming-completion.sh approach)
+model_name=$(echo "$response_body" | grep '"model":' | head -1 | sed 's/.*"model": *"\([^"]*\)".*/\1/')
+if [ -z "$model_name" ]; then
+    echo "❌ Test failed: Could not extract model from streaming response"
     echo "Response: $response_body"
     exit 1
 fi
 
-if echo "$model_name" | grep -qE "(gpt|davinci|curie|babbage|ada)"; then
-    echo "✅ Test passed: Got OpenAI model ($model_name) from fallback"
+if echo "$model_name" | grep -qE "(o1|o3|o4|o5|gpt)"; then
+    echo "✅ Test passed: Got model ($model_name) from openai fallback chain"
     exit 0
 else
-    echo "❌ Test failed: Expected OpenAI model, got $model_name"
+    echo "❌ Test failed: Expected mistral or gpt-4o model, got $model_name"
     exit 1
 fi 

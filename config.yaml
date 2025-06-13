@@ -19,29 +19,29 @@ fallback_configs:
             - gemini/gemini-2.5-flash-preview-04-17
             - mistral/mistral-large-latest
             - xai/grok-3
-        max_retries: 6
-        retry_delay: 2.0
+        max_retries: 1
+        retry_delay: 1
     kavya-m1-eu:
         models:
             - mistral/mistral-large-latest   # Primary model
             - mistral/mistral-medium-latest  # First fallback
             - mistral/mistral-small-latest   # Second fallback
-        max_retries: 6
-        retry_delay: 3
+        max_retries: 1
+        retry_delay: 1
     kavya-m1-hyper:
         models:
             - groq/llama3-70b-8192
-        max_retries: 3
+        max_retries: 1
         retry_delay: 1.0
 
 general_settings:
     basic_router_max_chars: 5000  # Maximum characters to analyze in prompt for basic router decisions
+    provider_max_retries: 1  # Maximum retries per provider in the fallback chain
 
 # Provider definitions for fallback handling
 provider_configs:
     openai:
         models:
-            - gpt-4o
             - gpt-4o
     anthropic:
         models:

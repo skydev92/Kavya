@@ -132,17 +132,17 @@ jobs:
         run_test "provider mistral test" "tests/provider-mistral.sh" "provider_mistral_output.txt" "provider_mistral_status"
         run_test "provider gemini test" "tests/provider-gemini.sh" "provider_gemini_output.txt" "provider_gemini_status"
         run_test "provider xai test" "tests/provider-xai.sh" "provider_xai_output.txt" "provider_xai_status"
-        run_test "provider fallback openai anthropic test" "tests/provider-fallback-openai-anthropic.sh" "provider_fallback_oa_output.txt" "provider_fallback_oa_status"
-        run_test "provider fallback anthropic openai test" "tests/provider-fallback-anthropic-openai.sh" "provider_fallback_ao_output.txt" "provider_fallback_ao_status"
-        run_test "provider fallback all test" "tests/provider-fallback-all.sh" "provider_fallback_all_output.txt" "provider_fallback_all_status"
-        run_test "provider fallback mixed test" "tests/provider-fallback-mixed.sh" "provider_fallback_mixed_output.txt" "provider_fallback_mixed_status"
-        run_test "provider fallback mistral gemini test" "tests/provider-fallback-mistral-gemini.sh" "provider_fallback_mg_output.txt" "provider_fallback_mg_status"
+        run_test "provider fallback anthropic openai test" "tests/fallback-anthropic-openai.sh" "provider_fallback_ao_output.txt" "provider_fallback_ao_status"
+        run_test "provider fallback all test" "tests/fallback-all.sh" "provider_fallback_all_output.txt" "provider_fallback_all_status"
+        run_test "provider fallback groq openai test" "tests/fallback-groq-openai.sh" "provider_fallback_go_output.txt" "provider_fallback_go_status"
+        run_test "provider fallback streaming groq openai test" "tests/fallback-streaming-groq-openai.sh" "provider_fallback_sgo_output.txt" "provider_fallback_sgo_status"
+        run_test "provider fallback longwriter groq openai test" "tests/fallback-longwriter-groq-openai.sh" "provider_fallback_lgo_output.txt" "provider_fallback_lgo_status"
         run_test "web search streaming test" "tests/web-search-streaming.sh" "web_search_streaming_output.txt" "web_search_streaming_status"
         run_test "web search non-streaming test" "tests/web-search-non-streaming.sh" "web_search_non_streaming_output.txt" "web_search_non_streaming_status"
 
         # --- Build Summary ---
 
-        # Test 1: Streaming Completion
+        # Streaming Completion
         echo "## 🌊 Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
         echo "$streaming_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -162,7 +162,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Test 2: Non-Streaming Completion  
+        # Non-Streaming Completion  
         echo "## 💬 Non-Streaming Completion Test" >> $GITHUB_STEP_SUMMARY
         echo "$nonstreaming_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -182,7 +182,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Test 3: Structured Completion
+        # Structured Completion
         echo "## 📊 Structured Completion Test" >> $GITHUB_STEP_SUMMARY
         echo "$structured_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -202,7 +202,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Test 4: Image Analysis
+        # Image Analysis
         echo "## 🖼️ Image Analysis Test" >> $GITHUB_STEP_SUMMARY
         echo "$image_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -224,7 +224,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
-        # Test 5: Provider OpenAI
+        # Provider OpenAI
         echo "## ⚙️ Provider Test: OpenAI" >> $GITHUB_STEP_SUMMARY
         echo "$provider_openai_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -234,7 +234,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 6: Provider Anthropic
+        # Provider Anthropic
         echo "## ⚙️ Provider Test: Anthropic" >> $GITHUB_STEP_SUMMARY
         echo "$provider_anthropic_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -244,7 +244,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 7: Provider Default
+        # Provider Default
         echo "## ⚙️ Provider Test: Default" >> $GITHUB_STEP_SUMMARY
         echo "$provider_default_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -254,7 +254,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 8: Provider Mistral
+        # Provider Mistral
         echo "## ⚙️ Provider Test: Mistral" >> $GITHUB_STEP_SUMMARY
         echo "$provider_mistral_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -264,7 +264,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 9: Provider Gemini
+        # Provider Gemini
         echo "## ⚙️ Provider Test: Gemini" >> $GITHUB_STEP_SUMMARY
         echo "$provider_gemini_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -274,7 +274,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 10: Provider XAI
+        # Provider XAI
         echo "## ⚙️ Provider Test: XAI" >> $GITHUB_STEP_SUMMARY
         echo "$provider_xai_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -284,17 +284,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 11: Provider Fallback OpenAI/Anthropic
-        echo "## ⚙️ Provider Test: Fallback OpenAI/Anthropic" >> $GITHUB_STEP_SUMMARY
-        echo "$provider_fallback_oa_status" >> $GITHUB_STEP_SUMMARY
-        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        cat provider_fallback_oa_output.txt >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "</details>" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-
-        # Test 12: Provider Fallback Anthropic/OpenAI
+        # Provider Fallback Anthropic/OpenAI
         echo "## ⚙️ Provider Test: Fallback Anthropic/OpenAI" >> $GITHUB_STEP_SUMMARY
         echo "$provider_fallback_ao_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -304,7 +294,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 13: Provider Fallback All
+        # Provider Fallback All
         echo "## ⚙️ Provider Test: Fallback All" >> $GITHUB_STEP_SUMMARY
         echo "$provider_fallback_all_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
@@ -314,27 +304,37 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 14: Provider Fallback Mixed
-        echo "## ⚙️ Provider Test: Fallback Mixed" >> $GITHUB_STEP_SUMMARY
-        echo "$provider_fallback_mixed_status" >> $GITHUB_STEP_SUMMARY
+        # Provider Fallback Groq/OpenAI
+        echo "## ⚙️ Provider Test: Fallback Groq/OpenAI" >> $GITHUB_STEP_SUMMARY
+        echo "$provider_fallback_go_status" >> $GITHUB_STEP_SUMMARY
         echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        cat provider_fallback_mixed_output.txt >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        echo "</details>" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        # Test 15: Provider Fallback Mistral/Gemini
-        echo "## ⚙️ Provider Test: Fallback Mistral/Gemini" >> $GITHUB_STEP_SUMMARY
-        echo "$provider_fallback_mg_status" >> $GITHUB_STEP_SUMMARY
-        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
-        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-        cat provider_fallback_mg_output.txt >> $GITHUB_STEP_SUMMARY
+        cat provider_fallback_go_output.txt >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 16: Web Search Streaming
+        # Provider Fallback Streaming Groq/OpenAI
+        echo "## ⚙️ Provider Test: Fallback Streaming Groq/OpenAI" >> $GITHUB_STEP_SUMMARY
+        echo "$provider_fallback_sgo_status" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat provider_fallback_sgo_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Provider Fallback Longwriter Groq/OpenAI
+        echo "## ⚙️ Provider Test: Fallback Longwriter Groq/OpenAI" >> $GITHUB_STEP_SUMMARY
+        echo "$provider_fallback_lgo_status" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat provider_fallback_lgo_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        # Web Search Streaming
         echo "## 🔍 Web Search Test: Streaming" >> $GITHUB_STEP_SUMMARY
         echo "$web_search_streaming_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -356,7 +356,7 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Test 17: Web Search Non-Streaming
+        # Web Search Non-Streaming
         echo "## 🔍 Web Search Test: Non-Streaming" >> $GITHUB_STEP_SUMMARY
         echo "$web_search_non_streaming_status" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
@@ -379,7 +379,7 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
 
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_oa_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_mixed_status" == *"FAILED"* ]] || [[ "$provider_fallback_mg_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_go_status" == *"FAILED"* ]] || [[ "$provider_fallback_sgo_status" == *"FAILED"* ]] || [[ "$provider_fallback_lgo_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

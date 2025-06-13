@@ -167,7 +167,6 @@ async def enhance_with_web_search(controller, messages):
     May perform multiple searches concurrently for complex requests."""
     # Check if the Perplexity API key is set for LiteLLM to use
     perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
-    logging.info(f"WEB_SEARCH: Perplexity API key present for LiteLLM: {perplexity_api_key_present}")
     if not perplexity_api_key_present:
         return messages # Skip if key is missing
 

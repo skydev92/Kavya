@@ -12,7 +12,7 @@ response=$(curl -s --max-time 30 -w "HTTPSTATUS:%{http_code}" -X POST "http://lo
   -d '{
     "model": "kavya-m1",
     "messages": [{"role": "user", "content": "What is 2+2? Answer with just the number."}],
-    "providers": "mistral,gemini,xai"
+    "providers": "groq,openai"
   }')
 
 # Check if curl failed
@@ -40,10 +40,10 @@ if [ $? -ne 0 ] || [ -z "$model_name" ] || [ "$model_name" = "null" ]; then
     exit 1
 fi
 
-if echo "$model_name" | grep -qE "(mistral)"; then
-    echo "✅ Test passed: Got Mistral model ($model_name) from mixed fallback"
+if echo "$model_name" | grep -qE "(o1|o3|o4|o5|gpt)"; then
+    echo "✅ Test passed: Got model ($model_name) from openai fallback chain"
     exit 0
 else
-    echo "❌ Test failed: Expected Mistral model, got $model_name"
+    echo "❌ Test failed: Expected mistral or gpt-4o model, got $model_name"
     exit 1
 fi 
