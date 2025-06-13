@@ -94,6 +94,11 @@ jobs:
         echo "# 🧪 API Test Results" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         
+        # Check balance before tests
+        echo "🔍 Checking account balance before tests..."
+        chmod +x tests/balance-check.sh
+        tests/balance-check.sh before
+        
         # Function to run a test and capture its output/status
         run_test() {
           local test_name="$1"
@@ -378,8 +383,28 @@ jobs:
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
+        # Check balance after tests
+        echo "🔍 Checking account balance after tests..."
+        set +e  # Don't exit on balance check failure, we want to report it properly
+        tests/balance-check.sh after
+        balance_check_status=$?
+        set -e
+        
+        if [ $balance_check_status -eq 0 ]; then
+          balance_status="✅ **PASSED**"
+        else
+          balance_status="❌ **FAILED**"
+        fi
+        
+        # Add balance check to summary
+        echo "## 💰 Account Balance Administration Test" >> $GITHUB_STEP_SUMMARY
+        echo "$balance_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Verifies that account balance tracking works correctly by comparing values before and after all API tests" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_go_status" == *"FAILED"* ]] || [[ "$provider_fallback_sgo_status" == *"FAILED"* ]] || [[ "$provider_fallback_lgo_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_go_status" == *"FAILED"* ]] || [[ "$provider_fallback_sgo_status" == *"FAILED"* ]] || [[ "$provider_fallback_lgo_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]] || [[ "$balance_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
