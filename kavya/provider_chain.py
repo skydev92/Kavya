@@ -13,14 +13,18 @@ class ProviderChain:
 
     def next(self) -> Optional[str]:
         """Returns the next available provider that has not failed."""
-        logging.debug(f"FALLBACK: ProviderChain.next() called. Current state: index={self.current_index}, failed={self.failed}")
-        
+        logging.debug(
+            f"FALLBACK: ProviderChain.next() called. Current state: index={self.current_index}, failed={self.failed}"
+        )
+
         while self.current_index < len(self.providers):
             provider = self.providers[self.current_index]
             self.current_index += 1
 
             if provider not in self.failed:
-                logging.info(f"FALLBACK: Next provider in chain: {provider} (index was {self.current_index-1})")
+                logging.info(
+                    f"FALLBACK: Next provider in chain: {provider} (index was {self.current_index-1})"
+                )
                 return provider
             else:
                 logging.debug(f"FALLBACK: Skipping failed provider: {provider}")
@@ -56,7 +60,13 @@ class ProviderChain:
         fresh_copy = ProviderChain(providers=self.providers.copy())
         fresh_copy.failed = self.failed.copy()  # Preserve failed providers
         fresh_copy.current_index = 0  # Reset to start from beginning
-        logging.debug(f"FALLBACK: Created fresh copy. Original failed state: {self.failed}, Original index: {self.current_index}")
-        logging.debug(f"FALLBACK: Fresh copy failed state: {fresh_copy.failed}, Fresh copy index: {fresh_copy.current_index}")
-        logging.debug(f"FALLBACK: Created fresh copy. Original: {self}, Fresh copy: {fresh_copy}")
+        logging.debug(
+            f"FALLBACK: Created fresh copy. Original failed state: {self.failed}, Original index: {self.current_index}"
+        )
+        logging.debug(
+            f"FALLBACK: Fresh copy failed state: {fresh_copy.failed}, Fresh copy index: {fresh_copy.current_index}"
+        )
+        logging.debug(
+            f"FALLBACK: Created fresh copy. Original: {self}, Fresh copy: {fresh_copy}"
+        )
         return fresh_copy

@@ -500,7 +500,7 @@ class Controller:
 
                     # Store the successful model for streaming access
                     self.last_successful_model = current_model
-                    
+
                     logging.info(f"FALLBACK: Success with model: {current_model}")
                     logging.debug(
                         f"FALLBACK: Final ProviderChain state after success: {provider_chain}"
@@ -628,10 +628,14 @@ class Longwriter(Controller):
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
             logging.debug(f"CONTENT_STRATEGY: Received ProviderChain: {provider_chain}")
-            logging.debug(f"CONTENT_STRATEGY: Using original chain to preserve failed state from routing")
+            logging.debug(
+                f"CONTENT_STRATEGY: Using original chain to preserve failed state from routing"
+            )
             # Reset current_index to allow trying all non-failed providers for this method
             provider_chain.current_index = 0
-            logging.debug(f"CONTENT_STRATEGY: Reset current_index to 0 for fresh method attempt")
+            logging.debug(
+                f"CONTENT_STRATEGY: Reset current_index to 0 for fresh method attempt"
+            )
         # Reset cost tracker for new request
         self.cost_tracker = RequestCostTracker()
         self.user = request.user
@@ -707,10 +711,14 @@ class Longwriter(Controller):
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
             logging.debug(f"HTML_STRATEGY: Using ProviderChain: {provider_chain}")
-            logging.debug(f"HTML_STRATEGY: Using original chain to preserve failed state from routing")
+            logging.debug(
+                f"HTML_STRATEGY: Using original chain to preserve failed state from routing"
+            )
             # Reset current_index to allow trying all non-failed providers for this method
             provider_chain.current_index = 0
-            logging.debug(f"HTML_STRATEGY: Reset current_index to 0 for fresh method attempt")
+            logging.debug(
+                f"HTML_STRATEGY: Reset current_index to 0 for fresh method attempt"
+            )
         logging.info(f"Making completion call for HTML strategy using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
@@ -765,10 +773,14 @@ class Longwriter(Controller):
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
             logging.debug(f"CONTENT_OUTLINE: Using ProviderChain: {provider_chain}")
-            logging.debug(f"CONTENT_OUTLINE: Using original chain to preserve failed state from routing")
+            logging.debug(
+                f"CONTENT_OUTLINE: Using original chain to preserve failed state from routing"
+            )
             # Reset current_index to allow trying all non-failed providers for this method
             provider_chain.current_index = 0
-            logging.debug(f"CONTENT_OUTLINE: Reset current_index to 0 for fresh method attempt")
+            logging.debug(
+                f"CONTENT_OUTLINE: Reset current_index to 0 for fresh method attempt"
+            )
         logging.info(f"Making completion call for content outline using model: {model}")
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
@@ -832,10 +844,14 @@ class Longwriter(Controller):
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
             logging.debug(f"CONTENT_DRAFT: Received ProviderChain: {provider_chain}")
-            logging.debug(f"CONTENT_DRAFT: Using original chain to preserve failed state from routing")
+            logging.debug(
+                f"CONTENT_DRAFT: Using original chain to preserve failed state from routing"
+            )
             # Reset current_index to allow trying all non-failed providers for this method
             provider_chain.current_index = 0
-            logging.debug(f"CONTENT_DRAFT: Reset current_index to 0 for fresh method attempt")
+            logging.debug(
+                f"CONTENT_DRAFT: Reset current_index to 0 for fresh method attempt"
+            )
         logging.info(
             f"Making streaming completion call for content draft section '{section.title}' using model: {model}"
         )
@@ -1314,15 +1330,19 @@ For the needs_structure field specifically:
                 user=routing_request.user,  # Pass through the user ID
                 provider_chain=routing_provider_chain,
             )
-            
+
             # After routing analysis, update the original provider_chain with any failures from routing
             # This ensures longwriter methods inherit the failed state from routing
             if routing_provider_chain.failed:
-                logging.debug(f"ROUTING: Updating original chain with routing failures: {routing_provider_chain.failed}")
+                logging.debug(
+                    f"ROUTING: Updating original chain with routing failures: {routing_provider_chain.failed}"
+                )
                 for failed_provider in routing_provider_chain.failed:
                     if failed_provider not in provider_chain.failed:
                         provider_chain.failed.append(failed_provider)
-                        logging.debug(f"ROUTING: Added {failed_provider} to original chain failed list")
+                        logging.debug(
+                            f"ROUTING: Added {failed_provider} to original chain failed list"
+                        )
         else:
             # Fallback to direct acompletion if no ProviderChain
             logging.warning("ROUTING: No ProviderChain found, using direct acompletion")

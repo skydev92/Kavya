@@ -857,8 +857,10 @@ async def create_chat_completion(
                             "prompt_tokens": app.controllers.longwriter.cost_tracker.prompt_tokens
                         }
                         # Get the actual successful model from the longwriter controller
-                        actual_model = getattr(app.controllers.longwriter, 'last_successful_model', model)
-                        
+                        actual_model = getattr(
+                            app.controllers.longwriter, "last_successful_model", model
+                        )
+
                         # Send initial assistant role
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
 
@@ -1057,8 +1059,12 @@ async def create_chat_completion(
                             # Check if the result is an async generator (streaming)
                             if hasattr(res, "__aiter__"):
                                 # Get the actual successful model from the controller
-                                actual_model = getattr(app.controllers.completion, 'last_successful_model', kwargs.get("model", "unknown"))
-                                
+                                actual_model = getattr(
+                                    app.controllers.completion,
+                                    "last_successful_model",
+                                    kwargs.get("model", "unknown"),
+                                )
+
                                 # First yield role assistant
                                 role_chunk = {
                                     "id": response_id,

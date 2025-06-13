@@ -1,0 +1,32 @@
+name: Lint Code
+
+on:
+  push:
+    branches: [ 1.x ]
+  pull_request:
+    branches: [ 1.x ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install linting dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.4.2 isort==5.13.2
+    
+    - name: Run Black formatter
+      run: |
+        black --check --diff kavya/ scripts/
+    
+    - name: Run isort import sorter
+      run: |
+        isort --check-only --diff kavya/ scripts/ 
