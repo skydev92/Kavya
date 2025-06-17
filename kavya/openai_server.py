@@ -342,6 +342,53 @@ async def list_models(user_id: int = Depends(JWTBearer())):
         )
 
 
+@app.post("/v1/moderations")
+async def moderations(
+    request_data: dict = fastapi.Body(...), user_id: int = Depends(JWTBearer())
+):
+    """OpenAI-compatible moderation endpoint that routes to OpenAI moderation API."""
+    logging.info(f"Moderation request from user {user_id}")
+
+    try:
+        # Extract input from request
+        input_content = request_data.get("input")
+        if not input_content:
+            return JSONResponse(
+                content={
+                    "error": {
+                        "message": "Missing required field: input",
+                        "type": "invalid_request_error",
+                        "param": "input",
+                        "code": "missing_field",
+                    }
+                },
+                status_code=400,
+            )
+
+        # Make request to OpenAI moderation API via litellm
+        response = await litellm.amoderation(
+            input=input_content,
+        )
+
+        return JSONResponse(content=response.model_dump(), status_code=200)
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logging.error(f"Error during moderation: {error_type}: {error_msg}")
+
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"Failed to process moderation request: {error_msg}",
+                    "type": error_type,
+                    "code": "moderation_failed",
+                }
+            },
+            status_code=500,
+        )
+
+
 @app.get("/v1/account/balance")
 async def get_account_balance(user_id: int = Depends(JWTBearer())):
     """Get account balance for the authenticated user."""

@@ -144,6 +144,7 @@ jobs:
         run_test "provider fallback longwriter groq openai test" "tests/fallback-longwriter-groq-openai.sh" "provider_fallback_lgo_output.txt" "provider_fallback_lgo_status"
         run_test "web search streaming test" "tests/web-search-streaming.sh" "web_search_streaming_output.txt" "web_search_streaming_status"
         run_test "web search non-streaming test" "tests/web-search-non-streaming.sh" "web_search_non_streaming_output.txt" "web_search_non_streaming_status"
+        run_test "moderation test" "tests/moderation.sh" "moderation_output.txt" "moderation_status"
 
         # --- Build Summary ---
 
@@ -225,6 +226,20 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         cat image_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Moderation
+        echo "## 🛡️ Moderation Test" >> $GITHUB_STEP_SUMMARY
+        echo "$moderation_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests the content moderation endpoint with safe and harmful content." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat moderation_output.txt >> $GITHUB_STEP_SUMMARY
         echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         echo "</details>" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
