@@ -268,6 +268,80 @@ async def health_check():
     return HTMLResponse(content=html_content, status_code=200)
 
 
+@app.get("/v1/models")
+async def list_models(user_id: int = Depends(JWTBearer())):
+    """List available Kavya models - OpenAI compatible endpoint."""
+    logging.info(f"Models list request from user {user_id}")
+
+    try:
+        # Get the current timestamp for model creation time
+        current_time = int(time.time())
+
+        # Define the supported Kavya models with their descriptions
+        kavya_models = [
+            {
+                "id": "kavya-m1",
+                "object": "model",
+                "created": current_time,
+                "owned_by": "kavya",
+                "description": "Kavya M1 - Advanced multi-provider AI model with intelligent fallback",
+                "max_tokens": 32768,
+                "supports_streaming": True,
+                "supports_function_calling": True,
+                "supports_providers_parameter": True,
+            },
+            {
+                "id": "kavya-m1-eu",
+                "object": "model",
+                "created": current_time,
+                "owned_by": "kavya",
+                "description": "Kavya M1 EU - European-focused AI model optimized for EU compliance",
+                "max_tokens": 32768,
+                "supports_streaming": True,
+                "supports_function_calling": True,
+                "supports_providers_parameter": False,
+            },
+        ]
+
+        # Add additional models from config if available
+        if hasattr(app, "model_translations") and app.model_translations:
+            for model_name in app.model_translations.keys():
+                if model_name not in ["kavya-m1", "kavya-m1-eu", "default"]:
+                    kavya_models.append(
+                        {
+                            "id": model_name,
+                            "object": "model",
+                            "created": current_time,
+                            "owned_by": "kavya",
+                            "description": f"Custom Kavya model: {model_name}",
+                            "max_tokens": 16384,
+                            "supports_streaming": True,
+                            "supports_function_calling": True,
+                            "supports_providers_parameter": False,
+                        }
+                    )
+
+        return JSONResponse(
+            content={"object": "list", "data": kavya_models}, status_code=200
+        )
+
+    except Exception as e:
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logging.error(f"Error listing models: {error_type}: {error_msg}")
+
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"Failed to retrieve models: {error_msg}",
+                    "type": error_type,
+                    "code": "models_retrieval_failed",
+                }
+            },
+            status_code=500,
+        )
+
+
 @app.get("/v1/account/balance")
 async def get_account_balance(user_id: int = Depends(JWTBearer())):
     """Get account balance for the authenticated user."""
@@ -955,16 +1029,6 @@ async def create_chat_completion(
                 if "provider_chain" in request_data:
                     kwargs["provider_chain"] = request_data["provider_chain"]
 
-                # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
-                if (
-                    original_model == "kavya-m1-hyper"
-                    and kwargs.get("max_tokens", 0) > 8000
-                ):
-                    logging.info(
-                        f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model"
-                    )
-                    kwargs["max_tokens"] = 8000
-
                 # Limit max_tokens for Anthropic models based on model version
                 if kwargs.get("model", "").startswith("anthropic/"):
                     model_name = kwargs.get("model", "")
@@ -1330,16 +1394,6 @@ async def create_chat_completion(
             # Pass the ProviderChain to the controller if available
             if "provider_chain" in request_data:
                 kwargs["provider_chain"] = request_data["provider_chain"]
-
-            # Limit max_tokens for kavya-m1-hyper to avoid sequence length errors
-            if (
-                original_model == "kavya-m1-hyper"
-                and kwargs.get("max_tokens", 0) > 8000
-            ):
-                logging.info(
-                    f"Limiting max_tokens from {kwargs.get('max_tokens')} to 8000 for kavya-m1-hyper model"
-                )
-                kwargs["max_tokens"] = 8000
 
             # Limit max_tokens for Anthropic models based on model version
             if kwargs.get("model", "").startswith("anthropic/"):

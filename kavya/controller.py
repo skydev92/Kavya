@@ -1224,13 +1224,8 @@ class Controllers:
 
         logging.info("Making completion call for routing analysis")
 
-        # Check if original_model is kavya-m1-hyper and skip routing if so
+        # Get request data for processing
         request_data = request.model_dump()
-        if request_data.get("original_model") == "kavya-m1-hyper":
-            logging.info(
-                "Detected kavya-m1-hyper model, skipping routing and using simple completion"
-            )
-            return "completion"
 
         # Ensure user ID is present in the request
         user_id = request_data.get("user")

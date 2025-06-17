@@ -2,7 +2,6 @@ model_translations:
     default: anthropic/claude-sonnet-4-20250514
     kavya-m1: anthropic/claude-sonnet-4-20250514
     kavya-m1-eu: mistral/mistral-large-latest
-    kavya-m1-hyper: groq/llama3-70b-8192
 
 # Web search configuration
 web_search:
@@ -28,11 +27,6 @@ fallback_configs:
             - mistral/mistral-small-latest   # Second fallback
         max_retries: 1
         retry_delay: 1
-    kavya-m1-hyper:
-        models:
-            - groq/llama3-70b-8192
-        max_retries: 1
-        retry_delay: 1.0
 
 general_settings:
     basic_router_max_chars: 5000  # Maximum characters to analyze in prompt for basic router decisions
