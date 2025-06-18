@@ -15,15 +15,22 @@ from .utils import generate_transaction_id
 
 _ENV = os.getenv("ENVIRONMENT", "dev")
 
-# Default balance values
-_DEFAULT_TOKEN_BALANCE_IN = 3000000
-_DEFAULT_TOKEN_BALANCE_OUT = 1000000
-_DEFAULT_WORD_BALANCE = 10000
-
 
 class Database:
-    def __init__(self) -> None:
+    def __init__(self, config: dict = None) -> None:
         global _ENV
+        if config is None:
+            raise ValueError(
+                "config is required for Database – no in-code defaults allowed"
+            )
+
+        self.config = config
+
+        balance_config = config["database"]["default_balances"]
+        self.default_token_balance_in = balance_config["token_balance_in"]
+        self.default_token_balance_out = balance_config["token_balance_out"]
+        self.default_word_balance = balance_config["word_balance"]
+
         logging.info(
             f"Initializing database in {'development' if _ENV == 'dev' else 'production'} environment"
         )
@@ -42,6 +49,7 @@ class Database:
                 database_url=database_url,
                 instance_connection_name=instance_connection_name,
                 private_ip=private_ip,
+                config=self.config,
             )
         except Exception as e:
             error_msg = f"Failed to initialize database connection: {type(e).__name__}: {str(e)}"
@@ -66,7 +74,13 @@ class Database:
 
                 # Try to insert a test record with a more resilient approach
                 try:
-                    _ensure_account_exists(cursor, "-999")
+                    _ensure_account_exists(
+                        cursor,
+                        "-999",
+                        self.default_token_balance_in,
+                        self.default_token_balance_out,
+                        self.default_word_balance,
+                    )
 
                     # Verify the account exists with a simple read
                     cursor.execute(
@@ -137,7 +151,13 @@ class Database:
         )
 
         with self.pool.open_session(True, transaction_id=transaction_id) as cursor:
-            _ensure_account_exists(cursor, account_id)
+            _ensure_account_exists(
+                cursor,
+                account_id,
+                self.default_token_balance_in,
+                self.default_token_balance_out,
+                self.default_word_balance,
+            )
 
             cursor.execute(
                 """
@@ -283,11 +303,16 @@ class Database:
         word_count: int = 0,
     ) -> tuple[bool, dict]:
         """Check if account has sufficient balance for the requested operation without updating the balance."""
-        global _DEFAULT_TOKEN_BALANCE_IN, _DEFAULT_TOKEN_BALANCE_OUT, _DEFAULT_WORD_BALANCE
         transaction_id = generate_transaction_id()
 
         with self.pool.open_session(True, transaction_id=transaction_id) as cursor:
-            _ensure_account_exists(cursor, account_id)
+            _ensure_account_exists(
+                cursor,
+                account_id,
+                self.default_token_balance_in,
+                self.default_token_balance_out,
+                self.default_word_balance,
+            )
 
             cursor.execute(
                 """
@@ -310,24 +335,26 @@ class Database:
                     f"[ID: {transaction_id}] Account {account_id} not found, using default values"
                 )
                 return True, {
-                    "token_balance_in": _DEFAULT_TOKEN_BALANCE_IN,
-                    "token_balance_out": _DEFAULT_TOKEN_BALANCE_OUT,
-                    "word_balance": _DEFAULT_WORD_BALANCE,
+                    "token_balance_in": self.default_token_balance_in,
+                    "token_balance_out": self.default_token_balance_out,
+                    "word_balance": self.default_word_balance,
                     "transactions": 0,
                 }
 
             # Calculate sufficient balance directly
             # For balance checks, it's better to assume sufficient balance than to fail the request
             token_balance_in = (
-                float(result[0]) if result[0] is not None else _DEFAULT_TOKEN_BALANCE_IN
+                float(result[0])
+                if result[0] is not None
+                else self.default_token_balance_in
             )
             token_balance_out = (
                 float(result[1])
                 if result[1] is not None
-                else _DEFAULT_TOKEN_BALANCE_OUT
+                else self.default_token_balance_out
             )
             word_balance = (
-                int(result[2]) if result[2] is not None else _DEFAULT_WORD_BALANCE
+                int(result[2]) if result[2] is not None else self.default_word_balance
             )
             transactions = int(result[3]) if result[3] is not None else 0
 
@@ -349,7 +376,13 @@ class Database:
     def get_account_balance_model(self, account_id: int) -> "AccountTokenBalance":
         """Get current token balance for an account as a Pydantic model"""
         with self.pool.open_session(True) as cursor:
-            _ensure_account_exists(cursor, account_id)
+            _ensure_account_exists(
+                cursor,
+                account_id,
+                self.default_token_balance_in,
+                self.default_token_balance_out,
+                self.default_word_balance,
+            )
 
             cursor.execute(
                 """
@@ -373,9 +406,9 @@ class Database:
                 logging.error(f"Account {account_id} not found, using default values")
                 return AccountTokenBalance(
                     account_id=account_id,
-                    token_balance_in=_DEFAULT_TOKEN_BALANCE_IN,
-                    token_balance_out=_DEFAULT_TOKEN_BALANCE_OUT,
-                    word_balance=_DEFAULT_WORD_BALANCE,
+                    token_balance_in=self.default_token_balance_in,
+                    token_balance_out=self.default_token_balance_out,
+                    word_balance=self.default_word_balance,
                     transactions=0,
                     total_token_usage_in=0.0,
                     total_token_usage_out=0.0,
@@ -398,7 +431,13 @@ class Database:
     ) -> list["DailyUsageSummary"]:
         """Get daily usage for an account within a date range as Pydantic models"""
         with self.pool.open_session(False) as cursor:
-            _ensure_account_exists(cursor, account_id)
+            _ensure_account_exists(
+                cursor,
+                account_id,
+                self.default_token_balance_in,
+                self.default_token_balance_out,
+                self.default_word_balance,
+            )
 
             cursor.execute(
                 """
@@ -436,8 +475,13 @@ class Database:
             return results
 
 
-def _ensure_account_exists(cursor, account_id) -> None:
-    global _DEFAULT_TOKEN_BALANCE_IN, _DEFAULT_TOKEN_BALANCE_OUT, _DEFAULT_WORD_BALANCE
+def _ensure_account_exists(
+    cursor,
+    account_id,
+    default_token_balance_in,
+    default_token_balance_out,
+    default_word_balance,
+) -> None:
     cursor.execute(
         """
         INSERT INTO account_totals
@@ -447,9 +491,9 @@ def _ensure_account_exists(cursor, account_id) -> None:
         """,
         (
             account_id,
-            _DEFAULT_TOKEN_BALANCE_IN,
-            _DEFAULT_TOKEN_BALANCE_OUT,
-            _DEFAULT_WORD_BALANCE,
+            default_token_balance_in,
+            default_token_balance_out,
+            default_word_balance,
         ),
     )
 

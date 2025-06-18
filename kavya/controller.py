@@ -4,16 +4,14 @@ import inspect
 import json
 import logging
 import os
-import random
 import re
 import sys
 import time
 import warnings
-from dataclasses import dataclass
 from textwrap import dedent
 from threading import Lock
 from types import SimpleNamespace
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import litellm
 from litellm import (
@@ -35,9 +33,6 @@ from kavya.models import (
 )
 from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
-
-DEFAULT_CHUNK_SIZE = 10
-LONGWRITER_ONLY_ARGS = ["allowed_html_tags", "allowed_html_classes"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -125,6 +120,11 @@ class Controller:
         # Load fallback configurations if available
         self.fallback_configs = self.config.get("fallback_configs", {})
 
+        # Load controller configuration
+        controller_config = self.config["controller"]  # hard fail if missing
+        self.default_chunk_size = controller_config["default_chunk_size"]
+        self.longwriter_only_args = controller_config["longwriter_only_args"]
+
         # Some Python magic to match the OpenAI Python SDK
         self.chat = SimpleNamespace(
             completions=SimpleNamespace(
@@ -143,7 +143,7 @@ class Controller:
             with open(file_path, "r") as f:
                 self.predefined_prompts = json.load(f)
                 return self.predefined_prompts
-        except:
+        except (FileNotFoundError, json.JSONDecodeError):
             self.predefined_prompts = {}
             return {}
 
@@ -252,7 +252,7 @@ class Controller:
                         config["response_schema"] = schema
 
         # Only necessary for the longwriter
-        for key in LONGWRITER_ONLY_ARGS:
+        for key in self.longwriter_only_args:
             if key in kwargs:
                 del kwargs[key]
 
@@ -285,6 +285,8 @@ class Controller:
             enum_value = response["choices"][0]["message"]["content"].strip()
             enum_class = kwargs["config"]["response_schema"]
             if isinstance(enum_class, type) and issubclass(enum_class, enum.Enum):
+                from kavya.models import EnumResponse
+
                 enum_response = EnumResponse.from_enum(enum_class, enum_value)
                 response["choices"][0]["message"][
                     "content"
@@ -412,7 +414,7 @@ class Controller:
                         config["response_schema"] = schema
 
         # Only necessary for the longwriter
-        for key in LONGWRITER_ONLY_ARGS:
+        for key in self.longwriter_only_args:
             if key in kwargs:
                 del kwargs[key]
 
@@ -583,7 +585,7 @@ class Controller:
 
 
 class TokenAccumulator:
-    def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE):
+    def __init__(self, chunk_size: int):
         self.chunk_size = max(1, chunk_size)
         self.buffer: List[str] = []
         self.token_count = 0
@@ -864,7 +866,7 @@ class Longwriter(Controller):
         html_strategy: HTMLTagStrategy,
         outline: ContentOutline,
         model: str,
-        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_size: int | None = None,
         provider_chain: ProviderChain = None,
         conversation_ctx: ConversationContext = None,
     ) -> AsyncGenerator:
@@ -1040,8 +1042,9 @@ class Longwriter(Controller):
             provider_chain=provider_chain,
         )
 
-        # Use provided chunk_size or default
-        accumulator = TokenAccumulator(chunk_size=chunk_size)
+        # Use provided chunk_size or default from config
+        effective_chunk_size = chunk_size or self.default_chunk_size
+        accumulator = TokenAccumulator(chunk_size=effective_chunk_size)
         full_response = ""
 
         async for chunk in response:
@@ -1094,8 +1097,10 @@ class Longwriter(Controller):
 
         # Instead of yielding formatted strings, yield tuples with special message type
         # Create a JSON string for the disclosure
+        from kavya.models import create_cost_disclosure_dict
+
         disclosure_json = json.dumps(
-            kavya.models.create_cost_disclosure_dict(
+            create_cost_disclosure_dict(
                 prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
                 completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="Content strategy generation",
@@ -1115,7 +1120,7 @@ class Longwriter(Controller):
 
         # Disclose HTML strategy costs - using tuple format
         disclosure_json = json.dumps(
-            kavya.models.create_cost_disclosure_dict(
+            create_cost_disclosure_dict(
                 prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
                 completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="HTML strategy generation",
@@ -1129,7 +1134,7 @@ class Longwriter(Controller):
 
         # Disclose content outline costs - using tuple format
         disclosure_json = json.dumps(
-            kavya.models.create_cost_disclosure_dict(
+            create_cost_disclosure_dict(
                 prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
                 completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="Content outline generation",
@@ -1144,7 +1149,7 @@ class Longwriter(Controller):
                 html_strategy,
                 content_outline,
                 model,
-                DEFAULT_CHUNK_SIZE,
+                self.default_chunk_size,
                 provider_chain,
                 conversation_ctx,
             ):
@@ -1168,6 +1173,11 @@ class Controllers:
         self.basic_router_max_chars = config["general_settings"][
             "basic_router_max_chars"
         ]
+
+        # Load controller configuration
+        controller_config = config["controller"]  # hard fail if missing
+        self.longwriter_only_args = controller_config["longwriter_only_args"]
+
         self.create_controller("default", **kwargs)
 
     def create_controller(self, id, **kwargs):
@@ -1230,7 +1240,7 @@ class Controllers:
 
         # Dump request to see all parameters
         request_dump = request.model_dump(
-            exclude=LONGWRITER_ONLY_ARGS, exclude_none=True
+            exclude=self.longwriter_only_args, exclude_none=True
         )
         logging.info(f"DEBUG: request dump: {request_dump}")
 
@@ -1238,7 +1248,7 @@ class Controllers:
             **{
                 k: v
                 for k, v in request.model_dump(
-                    exclude=LONGWRITER_ONLY_ARGS, exclude_none=True
+                    exclude=self.longwriter_only_args, exclude_none=True
                 ).items()
                 if k not in kwargs and k not in ["router_usage"]
             },

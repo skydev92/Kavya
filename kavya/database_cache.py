@@ -1,18 +1,21 @@
 import logging
 import time
 
-MAXIMUM_DATA_AGE = 60  # in seconds
-
 
 class DatabaseCache:
-    def __init__(self, app=None):
-        if app:
-            self.app = app
-            self.cache = {}
-            self.cache["usage_updates"] = {}
-            self.cache["sufficient_balance"] = {}
-        else:
-            raise ValueError("app must be specified.")
+    def __init__(self, app, config):
+        if app is None or config is None:
+            raise ValueError(
+                "Both app and config are required for DatabaseCache – no in-code defaults allowed"
+            )
+
+        self.app = app
+        self.config = config
+
+        # Required cache settings
+        self.maximum_data_age = config["cache"]["maximum_data_age"]
+
+        self.cache = {"usage_updates": {}, "sufficient_balance": {}}
 
     def check_sufficient_balance(
         self,
@@ -27,7 +30,7 @@ class DatabaseCache:
 
         if (
             current_balance is None
-            or current_balance["creation"] < time.time() - MAXIMUM_DATA_AGE
+            or current_balance["creation"] < time.time() - self.maximum_data_age
         ):
             logging.info(f"=== CHECKS DB FOR BALANCE === account_id: {account_id}")
             result = self.app.db.check_sufficient_balance(
@@ -104,7 +107,7 @@ class DatabaseCache:
         logging.info(f"New cache: {current_usage_updates}")
         if (
             self.cache["usage_updates"][account_id]["creation"]
-            < time.time() - MAXIMUM_DATA_AGE
+            < time.time() - self.maximum_data_age
         ):
             # Flush using self.app.db.update_usage_with_response
             logging.info("Flushing cache...")

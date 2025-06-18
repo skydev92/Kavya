@@ -55,3 +55,35 @@ provider_configs:
     xai:
         models:
             - xai/grok-3
+            - xai/grok-3-mini-beta
+
+# Server configuration
+server:
+    port: 8080
+    workers: 2
+
+# Database configuration
+database:
+    pool_size: 5
+    max_overflow: 10
+    pool_timeout: 20000  # milliseconds (20 seconds)
+    pool_recycle: 1800000  # milliseconds (30 minutes)
+    max_retries: 5
+    retry_backoff: 500  # milliseconds (0.5 seconds)
+    connect_timeout: 10000  # milliseconds (10 seconds)
+    validation_interval: 180000  # milliseconds (3 minutes)
+    default_balances:
+        token_balance_in: 3000000
+        token_balance_out: 1000000
+        word_balance: 10000
+
+# Cache configuration
+cache:
+    maximum_data_age: 60  # seconds
+
+# Controller configuration
+controller:
+    default_chunk_size: 10
+    longwriter_only_args:
+        - "allowed_html_tags"
+        - "allowed_html_classes"

@@ -4,9 +4,8 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import List, Optional
 
-import httpx
 import litellm
 import yaml
 

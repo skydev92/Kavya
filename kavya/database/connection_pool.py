@@ -16,14 +16,6 @@ from sqlalchemy.engine.base import ExceptionContextImpl
 from kavya.database.utils import generate_transaction_id
 
 _ENV = os.getenv("ENVIRONMENT", "dev")
-_DEFAULT_POOL_SIZE = 5
-_DEFAULT_MAX_OVERFLOW = 10
-_DEFAULT_POOL_TIMEOUT = 20000  # milliseconds (20 seconds)
-_DEFAULT_POOL_RECYCLE = 1800000  # milliseconds (30 minutes)
-_DEFAULT_MAX_RETRIES = 5
-_DEFAULT_RETRY_BACKOFF = 500  # milliseconds (0.5 seconds)
-_DEFAULT_CONNECT_TIMEOUT = 10000  # milliseconds (10 seconds)
-_DEFAULT_VALIDATION_INTERVAL = 180000  # milliseconds (60 seconds)
 
 
 class DatabaseConnectionPool:
@@ -61,10 +53,28 @@ class PostgreSQLConnectionPool(DatabaseConnectionPool):
     """
 
     def __init__(
-        self, database_url, instance_connection_name=None, private_ip=False
+        self,
+        database_url,
+        instance_connection_name=None,
+        private_ip=False,
+        config: dict = None,
     ) -> None:
-        global _DEFAULT_POOL_SIZE, _DEFAULT_MAX_OVERFLOW, _DEFAULT_POOL_TIMEOUT, _DEFAULT_POOL_RECYCLE, _DEFAULT_MAX_RETRIES, _DEFAULT_RETRY_BACKOFF
         super().__init__()
+        if config is None:
+            raise ValueError(
+                "config is required for PostgreSQLConnectionPool – no in-code defaults allowed"
+            )
+
+        db_config = config["database"]
+
+        self.pool_size = db_config["pool_size"]
+        self.max_overflow = db_config["max_overflow"]
+        self.pool_timeout = db_config["pool_timeout"]
+        self.pool_recycle = db_config["pool_recycle"]
+        self.max_retries = db_config["max_retries"]
+        self.retry_backoff = db_config["retry_backoff"]
+        self.connect_timeout = db_config["connect_timeout"]
+        self.validation_interval = db_config["validation_interval"]
 
         self.database_url = database_url
         self.instance_connection_name = instance_connection_name
@@ -396,7 +406,7 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
     This method initializes the connection pool and sets up the necessary configurations.
     :raises RuntimeError: If the connection cannot be established
     """
-    global _ENV, _DEFAULT_CONNECT_TIMEOUT, _DEFAULT_POOL_RECYCLE, _DEFAULT_POOL_TIMEOUT, _DEFAULT_MAX_OVERFLOW, _DEFAULT_POOL_SIZE
+    global _ENV
     start_time = time.time()
     logging.info(f"🚀 Creating new database pool in {_ENV} environment")
 
@@ -420,7 +430,7 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
                     password=db.db_pass,
                     db=db.db_name,
                     ip_type=IPTypes.PRIVATE if db.private_ip else IPTypes.PUBLIC,
-                    timeout=_DEFAULT_CONNECT_TIMEOUT
+                    timeout=db.connect_timeout
                     / 1000,  # Convert from ms to seconds for pg8000
                 )
 
@@ -446,10 +456,10 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
         db.engine = create_engine(
             "postgresql+pg8000://",
             creator=getconn,
-            pool_size=_DEFAULT_POOL_SIZE,
-            max_overflow=_DEFAULT_MAX_OVERFLOW,
-            pool_timeout=_DEFAULT_POOL_TIMEOUT / 1000,  # Convert from ms to seconds
-            pool_recycle=_DEFAULT_POOL_RECYCLE / 1000,  # Convert from ms to seconds
+            pool_size=db.pool_size,
+            max_overflow=db.max_overflow,
+            pool_timeout=db.pool_timeout / 1000,  # Convert from ms to seconds
+            pool_recycle=db.pool_recycle / 1000,  # Convert from ms to seconds
             pool_pre_ping=True,
             isolation_level=db.isolation_level,
             echo=os.getenv("SQL_DEBUG", "").lower() in ("true", "1", "yes"),
@@ -459,16 +469,16 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
 
         # Define common connection options for local PostgreSQL
         connect_args = {
-            "timeout": _DEFAULT_CONNECT_TIMEOUT
+            "timeout": db.connect_timeout
             / 1000,  # Convert from ms to seconds for pg8000
         }
 
         db.engine = create_engine(
             db.database_url,
-            pool_size=_DEFAULT_POOL_SIZE,
-            max_overflow=_DEFAULT_MAX_OVERFLOW,
-            pool_timeout=_DEFAULT_POOL_TIMEOUT / 1000,  # Convert from ms to seconds
-            pool_recycle=_DEFAULT_POOL_RECYCLE / 1000,  # Convert from ms to seconds
+            pool_size=db.pool_size,
+            max_overflow=db.max_overflow,
+            pool_timeout=db.pool_timeout / 1000,  # Convert from ms to seconds
+            pool_recycle=db.pool_recycle / 1000,  # Convert from ms to seconds
             pool_pre_ping=True,
             isolation_level=db.isolation_level,
             connect_args=connect_args,
@@ -491,7 +501,6 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
     # Configure retry handling using event listeners
     @event.listens_for(db.engine, "handle_error")
     def handle_error(context: ExceptionContextImpl) -> bool:
-        global _DEFAULT_RETRY_BACKOFF, _DEFAULT_MAX_RETRIES
         error = context.original_exception
         conn = context.connection
 
@@ -524,16 +533,16 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
         if is_deadlock:
             # Add exponential backoff for deadlocks
             retries = getattr(context, "_retry_count", 0)
-            if retries < _DEFAULT_MAX_RETRIES:
+            if retries < db.max_retries:
                 setattr(context, "_retry_count", retries + 1)
                 # Exponential backoff with jitter
-                delay = _DEFAULT_RETRY_BACKOFF * (2**retries) + random.uniform(0, 0.1)
+                delay = db.retry_backoff * (2**retries) + random.uniform(0, 0.1)
                 time.sleep(delay)
                 logging.warning(
-                    f"⚠️ Deadlock detected, retrying (attempt {retries + 1}/{_DEFAULT_MAX_RETRIES})"
+                    f"⚠️ Deadlock detected, retrying (attempt {retries + 1}/{db.max_retries})"
                 )
                 return True
-            logging.error(f"Max retries ({_DEFAULT_MAX_RETRIES}) exceeded for deadlock")
+            logging.error(f"Max retries ({db.max_retries}) exceeded for deadlock")
         return False
 
     logging.info(f"✅ Database pool created in {time.time() - start_time:.2f}s")

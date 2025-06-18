@@ -13,6 +13,7 @@ import signal
 import sys
 import time
 from datetime import datetime
+from typing import Any
 
 import fastapi
 import litellm
@@ -121,7 +122,10 @@ async def lifespan(app: fastapi.FastAPI):
             )
 
         # Initialize database
-        app.db = Database()
+        app.db = Database(config)
+
+        # Initialize cache with config
+        app.cache = DatabaseCache(app, config)
 
         # Test database connection by trying to create tables
         try:
@@ -161,7 +165,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.cache = DatabaseCache(app)
 
 # ------------------------------------------------------------------------------
 # UTILITY ENDPOINTS
@@ -1003,7 +1006,7 @@ async def create_chat_completion(
                                 html_strategy,
                                 content_outline,
                                 model,
-                                10,  # DEFAULT_CHUNK_SIZE
+                                app.controllers.longwriter.default_chunk_size,
                                 provider_chain,
                             ):
                                 # Accumulate content for word counting
@@ -1588,9 +1591,9 @@ parser.add_argument(
     "--verbose",
     action="store_true",
 )
-parser.add_argument("--workers", type=int, default=2)
+parser.add_argument("--workers", type=int, default=None)
 parser.add_argument("--config", type=str, default=None)
-parser.add_argument("--port", type=int, default=8080)
+parser.add_argument("--port", type=int, default=None)
 parser.add_argument(
     "--base-url",
     help="The base URL used for all LLM requests",
@@ -1615,10 +1618,33 @@ if args.verbose:
     # Verbose mode already handled above with reduced noise
     pass
 
+# ------------------------------------------------------------------
+# Launch the server, respecting YAML config and optional CLI overrides
+# ------------------------------------------------------------------
 if not asyncio.get_event_loop().is_running():
     print("Launching server")
-    config = uvicorn.Config(
-        "kavya.openai_server:app", port=args.port, host="0.0.0.0", workers=args.workers
+
+    # Load YAML config (if provided) to get server settings
+    yaml_cfg: dict[str, Any] = {}
+    if args.config:
+        try:
+            import yaml  # local import to avoid top-level dependency if CLI never used
+
+            with open(args.config, "r") as f:
+                yaml_cfg = yaml.safe_load(f) or {}
+        except Exception as e:
+            raise RuntimeError(f"Failed to load configuration file {args.config}: {e}")
+
+    server_yaml_cfg = yaml_cfg.get("server", {})
+
+    # Enforce presence of required keys if CLI override not supplied
+    port = args.port if args.port is not None else server_yaml_cfg["port"]
+    workers = args.workers if args.workers is not None else server_yaml_cfg["workers"]
+
+    uv_config = uvicorn.Config(
+        "kavya.openai_server:app",
+        port=port,
+        host="0.0.0.0",
+        workers=workers,
     )
-    server = uvicorn.Server(config)
-    server.run()
+    uvicorn.Server(uv_config).run()
