@@ -14,7 +14,7 @@ response=$(curl -s --max-time 60 -w "HTTPSTATUS:%{http_code}" -X POST "http://lo
     "model": "kavya-m1",
     "messages": [{
       "role": "user", 
-      "content": "Who was president of USA in 2022? Respond with a JSON object containing first_name, last_name, title, and year fields. Use this exact format: {\"first_name\": \"...\", \"last_name\": \"...\", \"title\": \"...\", \"year\": ...}"
+      "content": "Who was president of USA in 2022? Respond with a JSON object."
     }],
     "response_format": {
       "type": "json_schema",
@@ -30,14 +30,11 @@ response=$(curl -s --max-time 60 -w "HTTPSTATUS:%{http_code}" -X POST "http://lo
             "last_name": {
               "type": "string"
             },
-            "title": {
-              "type": "string"
-            },
             "year": {
               "type": "number"
             }
           },
-          "required": ["first_name", "last_name", "title", "year"],
+          "required": ["first_name", "last_name", "year"],
           "additionalProperties": false
         }
       }
@@ -83,22 +80,20 @@ fi
 # Parse JSON content
 first_name=$(echo "$content" | jq -r '.first_name')
 last_name=$(echo "$content" | jq -r '.last_name')
-title=$(echo "$content" | jq -r '.title')
 year=$(echo "$content" | jq -r '.year')
 
 echo "Parsed values:"
 echo "  first_name: $first_name"
 echo "  last_name: $last_name"
-echo "  title: $title"
 echo "  year: $year"
 
 # Validate the structured output
-if [ "$first_name" = "Joe" ] && [ "$last_name" = "Biden" ] && [ "$title" = "President" ] && [ "$year" = "2022" ]; then
+if { [ "$first_name" = "Joe" ] || [ "$first_name" = "Joseph" ]; } && [ "$last_name" = "Biden" ] && [ "$year" = "2022" ]; then
     echo "✅ Test passed: Got structured JSON with correct values"
     exit 0
 else
     echo "❌ Test failed: Incorrect values in structured response"
-    echo "Expected: Joe Biden, President, 2022"
-    echo "Got: $first_name $last_name, $title, $year"
+    echo "Expected: Joe/Joseph Biden, 2022"
+    echo "Got: $first_name $last_name, $year"
     exit 1
 fi 

@@ -441,6 +441,10 @@ class ChatCompletionRequest(BaseModel):
             - A dict representing an OpenAPI 3.0 schema
             - An enum class for constrained choices""",
     )
+    response_format: Optional[Union[Dict[str, Any], type]] = Field(
+        default=None,
+        description="OpenAI response_format parameter allowing callers to request strict JSON output or provide a JSON schema for structured responses. Accepts either a dictionary or a Pydantic model class.",
+    )
     seed: Optional[int] = Field(
         None, description="Random seed for deterministic results"
     )
@@ -481,6 +485,31 @@ class ChatCompletionRequest(BaseModel):
         ge=1,
         description="Word count threshold above which longwriter mode is activated (default: 1000)",
     )
+
+    @field_validator("response_format", mode="before")
+    @classmethod
+    def convert_response_format(cls, v):
+        """Convert Pydantic model classes to OpenAI response_format dictionary."""
+        if v is None:
+            return None
+
+        # If it's already a dictionary, return as-is
+        if isinstance(v, dict):
+            return v
+
+        # If it's a Pydantic model class, convert to OpenAI format
+        if isinstance(v, type) and issubclass(v, BaseModel):
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": v.__name__,
+                    "schema": v.model_json_schema(),
+                    "strict": True,
+                },
+            }
+
+        # For any other type, try to convert to string and return error-friendly format
+        return {"type": "text", "format": str(v)}
 
 
 # ######################
