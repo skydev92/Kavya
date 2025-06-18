@@ -7,12 +7,13 @@ import os
 import random
 import re
 import sys
+import time
 import warnings
 from dataclasses import dataclass
 from textwrap import dedent
 from threading import Lock
 from types import SimpleNamespace
-from typing import Any, AsyncGenerator, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 import litellm
 from litellm import (
@@ -610,16 +611,33 @@ class TokenAccumulator:
         return None, 0
 
 
+class ConversationContext:
+    """Isolated state container for a single longwriter conversation chain."""
+
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        self.content_writer_messages: Optional[List[Dict[str, str]]] = None
+        self.cost_tracker = RequestCostTracker()
+        self.created_at = time.time()
+
+    def __repr__(self):
+        return (
+            f"ConversationContext(user_id={self.user_id}, created_at={self.created_at})"
+        )
+
+
 class Longwriter(Controller):
     def __init__(self, **kwargs):
         # Constructor logic inherited from parent class
         super().__init__(**kwargs)
-        # Initialize content writer messages
-        self.content_writer_messages = None
-        self.cost_tracker = RequestCostTracker()
+        # No instance state - all state is now conversation-scoped
 
     async def get_content_strategy(
-        self, request: ContentRequest, model: str, provider_chain: ProviderChain = None
+        self,
+        request: ContentRequest,
+        model: str,
+        provider_chain: ProviderChain = None,
+        conversation_ctx: ConversationContext = None,
     ) -> ContentStrategy:
         logging.info(
             f"Making completion call for content strategy using model: {model}"
@@ -636,9 +654,9 @@ class Longwriter(Controller):
             logging.debug(
                 f"CONTENT_STRATEGY: Reset current_index to 0 for fresh method attempt"
             )
-        # Reset cost tracker for new request
-        self.cost_tracker = RequestCostTracker()
-        self.user = request.user
+        # Use conversation context instead of instance state
+        if not conversation_ctx:
+            conversation_ctx = ConversationContext(user_id=str(request.user))
         # First check if model supports response schema
         # Commented cos not reliable (e.g. mistral-medium)
         # if not supports_function_calling(model=model):
@@ -681,8 +699,10 @@ class Longwriter(Controller):
 
             # Update cost tracker with response usage
             if hasattr(response, "usage"):
-                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(
+                conversation_ctx.cost_tracker.update_prompt_tokens(
+                    response.usage.prompt_tokens
+                )
+                conversation_ctx.cost_tracker.update_completion_tokens(
                     response.usage.completion_tokens
                 )
 
@@ -707,6 +727,7 @@ class Longwriter(Controller):
         content_strategy: ContentStrategy = None,
         model: str = None,
         provider_chain: ProviderChain = None,
+        conversation_ctx: ConversationContext = None,
     ) -> HTMLTagStrategy:
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
@@ -747,9 +768,11 @@ class Longwriter(Controller):
             )
 
             # Update cost tracker with response usage
-            if hasattr(response, "usage"):
-                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(
+            if hasattr(response, "usage") and conversation_ctx:
+                conversation_ctx.cost_tracker.update_prompt_tokens(
+                    response.usage.prompt_tokens
+                )
+                conversation_ctx.cost_tracker.update_completion_tokens(
                     response.usage.completion_tokens
                 )
 
@@ -769,6 +792,7 @@ class Longwriter(Controller):
         html_strategy: HTMLTagStrategy,
         model: str,
         provider_chain: ProviderChain = None,
+        conversation_ctx: ConversationContext = None,
     ) -> ContentOutline:
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
@@ -815,9 +839,11 @@ class Longwriter(Controller):
             )
 
             # Update cost tracker with response usage
-            if hasattr(response, "usage"):
-                self.cost_tracker.update_prompt_tokens(response.usage.prompt_tokens)
-                self.cost_tracker.update_completion_tokens(
+            if hasattr(response, "usage") and conversation_ctx:
+                conversation_ctx.cost_tracker.update_prompt_tokens(
+                    response.usage.prompt_tokens
+                )
+                conversation_ctx.cost_tracker.update_completion_tokens(
                     response.usage.completion_tokens
                 )
 
@@ -840,6 +866,7 @@ class Longwriter(Controller):
         model: str,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         provider_chain: ProviderChain = None,
+        conversation_ctx: ConversationContext = None,
     ) -> AsyncGenerator:
         # Use original provider chain to preserve failed state from routing
         if provider_chain:
@@ -982,8 +1009,12 @@ class Longwriter(Controller):
         """
 
         # Initialize or update chat history (using the fully constructed prompt)
-        if self.content_writer_messages is None:
-            self.content_writer_messages = [
+        # CONTAMINATION FIX: Use conversation context instead of instance state
+        if not conversation_ctx:
+            conversation_ctx = ConversationContext(user_id=str(content_strategy.user))
+
+        if conversation_ctx.content_writer_messages is None:
+            conversation_ctx.content_writer_messages = [
                 {"role": "system", "content": content_writer_prompt},
                 {
                     "role": "user",
@@ -992,7 +1023,7 @@ class Longwriter(Controller):
             ]
         else:
             # For subsequent sections, use the same format
-            self.content_writer_messages.append(
+            conversation_ctx.content_writer_messages.append(
                 {
                     "role": "user",
                     "content": f"Write next section:\n{section.model_dump_json()}",
@@ -1003,7 +1034,7 @@ class Longwriter(Controller):
         # Use unified fallback system through self.acompletion with streaming
         response = await self.acompletion(
             model=model,
-            messages=self.content_writer_messages,
+            messages=conversation_ctx.content_writer_messages,
             stream=True,
             user=content_strategy.user,
             provider_chain=provider_chain,
@@ -1022,7 +1053,7 @@ class Longwriter(Controller):
                     yield accumulated, token_count
 
         # Add the complete response to message history
-        self.content_writer_messages.append(
+        conversation_ctx.content_writer_messages.append(
             {"role": "assistant", "content": full_response}
         )
 
@@ -1051,19 +1082,22 @@ class Longwriter(Controller):
             logging.error(error_msg)
             raise ValueError(error_msg)
 
-        # Reset content writer messages for new content
-        self.content_writer_messages = None
+        # CONTAMINATION FIX: Create isolated conversation context for this request
+        conversation_ctx = ConversationContext(user_id=str(user_id))
+        logging.info(
+            f"CONTAMINATION_FIX: Created isolated conversation context: {conversation_ctx}"
+        )
 
         content_strategy = await self.get_content_strategy(
-            request, model, provider_chain
+            request, model, provider_chain, conversation_ctx
         )
 
         # Instead of yielding formatted strings, yield tuples with special message type
         # Create a JSON string for the disclosure
         disclosure_json = json.dumps(
             kavya.models.create_cost_disclosure_dict(
-                prompt_tokens=self.cost_tracker.prompt_tokens,
-                completion_tokens=self.cost_tracker.completion_tokens,
+                prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
+                completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="Content strategy generation",
             )
         )
@@ -1076,27 +1110,28 @@ class Longwriter(Controller):
             content_strategy,
             model,
             provider_chain,
+            conversation_ctx,
         )
 
         # Disclose HTML strategy costs - using tuple format
         disclosure_json = json.dumps(
             kavya.models.create_cost_disclosure_dict(
-                prompt_tokens=self.cost_tracker.prompt_tokens,
-                completion_tokens=self.cost_tracker.completion_tokens,
+                prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
+                completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="HTML strategy generation",
             )
         )
         yield disclosure_json, 0
 
         content_outline = await self.get_content_outline(
-            content_strategy, html_strategy, model, provider_chain
+            content_strategy, html_strategy, model, provider_chain, conversation_ctx
         )
 
         # Disclose content outline costs - using tuple format
         disclosure_json = json.dumps(
             kavya.models.create_cost_disclosure_dict(
-                prompt_tokens=self.cost_tracker.prompt_tokens,
-                completion_tokens=self.cost_tracker.completion_tokens,
+                prompt_tokens=conversation_ctx.cost_tracker.prompt_tokens,
+                completion_tokens=conversation_ctx.cost_tracker.completion_tokens,
                 description="Content outline generation",
             )
         )
@@ -1111,6 +1146,7 @@ class Longwriter(Controller):
                 model,
                 DEFAULT_CHUNK_SIZE,
                 provider_chain,
+                conversation_ctx,
             ):
                 yield token, token_count
 
