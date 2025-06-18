@@ -1,3 +1,13 @@
+## Critical rules
+
+When we start the server locally for a test we always use this command: `kill -9 $(lsof -ti:8089); export $(grep -v '^#' .env.prod | xargs) && python -m kavya.openai_server --verbose --config config.yaml --port 8089`
+
+Always make sure the server is restarted before committing changes to ensure the pre-commit checks can run
+
+NEVER use --no-verify to bypass pre commit checks
+
+## Code rules
+
 If ENVIRONMENT=dev, then use the dev config with local PostgreSQL
 If ENVIRONMENT=prod, then use the prod config with Google Cloud SQL
 All SQL queries should be compatible with PostgreSQL
@@ -12,5 +22,3 @@ Always use async/await consistently throughout the entire call chain - never mix
 Handle all response types explicitly (dict, str, AsyncGenerator) with proper type checking and conversion fallbacks
 Use proper error recovery in streaming contexts - catch errors but maintain the stream where possible
 Ensure all async generators properly yield [DONE] messages to close streams
-
-When we start the server locally for a test we always use this command: `kill -9 $(lsof -ti:8089) && export $(grep -v '^#' .env.prod | xargs) && python -m kavya.openai_server --verbose --config config.yaml --port 8089`
