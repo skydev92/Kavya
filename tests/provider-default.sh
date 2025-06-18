@@ -39,10 +39,10 @@ if [ $? -ne 0 ] || [ -z "$model_name" ] || [ "$model_name" = "null" ]; then
     exit 1
 fi
 
-if echo "$model_name" | grep -qE "(claude|anthropic)"; then
-    echo "✅ Test passed: Got default Anthropic model ($model_name)"
+if echo "$model_name" | grep -qE "gpt-4o"; then
+    echo "✅ Test passed: Got default GPT-4o model ($model_name)"
     exit 0
 else
-    echo "❌ Test failed: Expected default Anthropic model, got $model_name"
+    echo "❌ Test failed: Expected default GPT-4o model, got $model_name"
     exit 1
 fi 

@@ -1,6 +1,6 @@
 model_translations:
-    default: anthropic/claude-sonnet-4-20250514
-    kavya-m1: anthropic/claude-sonnet-4-20250514
+    default: gpt-4o
+    kavya-m1: gpt-4o
     kavya-m1-eu: mistral/mistral-large-latest
 
 # Web search configuration
@@ -11,13 +11,13 @@ web_search:
 fallback_configs:
     kavya-m1:
         models:
-            - anthropic/claude-sonnet-4-20250514
             - gpt-4o
-            - gpt-4o-mini
-            - gemini/gemini-2.5-pro
-            - gemini/gemini-2.5-flash
-            - mistral/mistral-large-latest
             - xai/grok-3
+            - mistral/mistral-large-latest
+            - anthropic/claude-sonnet-4-20250514
+            - gemini/gemini-2.5-pro
+            - gpt-4o-mini
+            - gemini/gemini-2.5-flash
         max_retries: 1
         retry_delay: 1
     kavya-m1-eu:
