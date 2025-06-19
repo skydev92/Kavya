@@ -162,7 +162,7 @@ class Controller:
         # Ensure user ID is present and valid
         if "user" not in kwargs or not kwargs["user"]:
             error_msg = "CRITICAL: No user ID provided in completion request. Every request must be associated with a user."
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         try:
@@ -171,7 +171,7 @@ class Controller:
             error_msg = (
                 "CRITICAL: Invalid user ID format. User ID must be a valid integer."
             )
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         model = kwargs.get("model", "unspecified")
@@ -315,7 +315,7 @@ class Controller:
         # Ensure user ID is present and valid
         if "user" not in kwargs or not kwargs["user"]:
             error_msg = "CRITICAL: No user ID provided in acompletion request. Every request must be associated with a user."
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         try:
@@ -324,7 +324,7 @@ class Controller:
             error_msg = (
                 "CRITICAL: Invalid user ID format. User ID must be a valid integer."
             )
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         # Store original_model if provided, before any model selection logic
@@ -1073,7 +1073,7 @@ class Longwriter(Controller):
         logging.info("CONTENT_CREATION_AGENT: Starting content creation agent")
         if not hasattr(request, "user") or not request.user:
             error_msg = "CRITICAL: No user ID provided in content creation request. Every request must be associated with a user."
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         try:
@@ -1082,7 +1082,7 @@ class Longwriter(Controller):
             error_msg = (
                 "CRITICAL: Invalid user ID format. User ID must be a valid integer."
             )
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         # CONTAMINATION FIX: Create isolated conversation context for this request
@@ -1277,7 +1277,7 @@ class Controllers:
         user_id = request_data.get("user")
         if not user_id:
             error_msg = "CRITICAL: No user ID provided in request. Every request must be associated with a user."
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise ValueError(error_msg)
 
         # Get the default controller to use its methods
@@ -1519,7 +1519,7 @@ def update_token_usage(
 
             if not hasattr(app, "db") or not app.db:
                 error_msg = "CRITICAL: Database connection not available. Cannot proceed without updating token usage."
-                logging.error(error_msg)
+                logging.error(error_msg, exc_info=True)
                 raise RuntimeError(error_msg)
             logging.info(
                 "DEBUG : Updating cost in database from controllers.update_token_usage"
@@ -1533,7 +1533,7 @@ def update_token_usage(
             error_msg = (
                 f"CRITICAL: Failed to update token usage in database: {str(db_error)}"
             )
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise RuntimeError(error_msg) from db_error
 
 

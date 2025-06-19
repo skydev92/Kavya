@@ -53,7 +53,7 @@ class Database:
             )
         except Exception as e:
             error_msg = f"Failed to initialize database connection: {type(e).__name__}: {str(e)}"
-            logging.error(error_msg)
+            logging.error(error_msg, exc_info=True)
             raise RuntimeError(error_msg)
 
     def initialize_database(self) -> None:

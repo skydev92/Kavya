@@ -764,7 +764,7 @@ async def create_chat_completion(
             )
     except Exception as e:
         error_msg = f"Error checking token balance: {str(e)}"
-        logging.error(error_msg)
+        logging.error(error_msg, exc_info=True)
         return JSONResponse(
             content={
                 "error": {
@@ -1412,7 +1412,7 @@ async def create_chat_completion(
                             yield "data: [DONE]\n\n"
                         except litellm.RateLimitError as e:
                             error_msg = f"Rate limit exceeded, please try again in a moment: {str(e)}"
-                            logging.error(error_msg)
+                            logging.error(error_msg, exc_info=True)
                             # Send a more user-friendly error message for rate limits
                             yield f"data: {json.dumps({'error': {'message': 'The service is experiencing high demand. Please try again in a few moments.', 'type': 'rate_limit_error', 'code': 429}})}\n\n"
                             yield "data: [DONE]\n\n"
@@ -1542,7 +1542,7 @@ async def create_chat_completion(
 
     except Exception as e:
         error_msg = f"Error processing request: {str(e)}"
-        logging.error(error_msg)
+        logging.error(error_msg, exc_info=True)
         return JSONResponse(
             content={
                 "error": {
