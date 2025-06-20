@@ -30,7 +30,6 @@ import kavya.models
 from kavya.auth import JWTBearer
 from kavya.controller import ContentRequest, Controllers, RequestCostTracker
 from kavya.database import Database
-from kavya.database_cache import DatabaseCache
 from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
@@ -123,9 +122,6 @@ async def lifespan(app: fastapi.FastAPI):
 
         # Initialize database
         app.db = Database(config)
-
-        # Initialize cache with config
-        app.cache = DatabaseCache(app, config)
 
         # Test database connection by trying to create tables
         try:
@@ -726,7 +722,7 @@ async def create_chat_completion(
     # Check balance without updating
     try:
         logging.info("CHECKING BALANCE")
-        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
+        has_sufficient_balance, current_balance = app.db.check_sufficient_balance(
             account_id=user_id,
             prompt_tokens=int(estimated_prompt_tokens),
             completion_tokens=int(estimated_completion_tokens),
@@ -788,47 +784,6 @@ async def create_chat_completion(
             request, cost_tracker, provider_chain
         )
         logging.debug("controller_name: " + controller_name)
-
-        # After routing, check remaining balance without updating
-        routing_cost = cost_tracker.get_total()
-        remaining_prompt_tokens = estimated_prompt_tokens - routing_cost
-
-        has_sufficient_balance, current_balance = app.cache.check_sufficient_balance(
-            account_id=user_id,
-            prompt_tokens=int(remaining_prompt_tokens),
-            completion_tokens=int(estimated_completion_tokens),
-            word_count=estimated_word_count,
-        )
-        if not has_sufficient_balance:
-            error_msg = (
-                f"Insufficient remaining balance after routing. Please email jur@dxpr.com to request more tokens. Current balance: "
-                f"{current_balance['token_balance_in']} input tokens, "
-                f"{current_balance['token_balance_out']} output tokens, "
-                f"{current_balance['word_balance']} words. "
-                f"Required: {remaining_prompt_tokens} input tokens, "
-                f"{estimated_completion_tokens} output tokens, "
-                f"{estimated_word_count} words."
-            )
-            logging.error(f"Account {user_id}: {error_msg}")
-            return JSONResponse(
-                content={
-                    "error": {
-                        "message": error_msg,
-                        "type": "insufficient_balance",
-                        "param": None,
-                        "code": "insufficient_tokens",
-                    }
-                },
-                status_code=402,
-                headers={
-                    "X-Current-Balance-In": str(current_balance["token_balance_in"]),
-                    "X-Current-Balance-Out": str(current_balance["token_balance_out"]),
-                    "X-Current-Balance-Words": str(current_balance["word_balance"]),
-                    "X-Required-Tokens-In": str(remaining_prompt_tokens),
-                    "X-Required-Tokens-Out": str(estimated_completion_tokens),
-                    "X-Required-Words": str(estimated_word_count),
-                },
-            )
 
         if request.stream:
             if controller_name.startswith("longwriter"):
@@ -1024,7 +979,7 @@ async def create_chat_completion(
                         try:
                             logging.debug("Updating word count in database")
                             final_word_count = count_words(word_buffer)
-                            app.cache.update_usage_with_response(
+                            app.db.update_usage_with_response(
                                 account_id=int(user_id),
                                 prompt_tokens=app.controllers.longwriter.cost_tracker.prompt_tokens,
                                 completion_tokens=app.controllers.longwriter.cost_tracker.completion_tokens,
@@ -1393,7 +1348,7 @@ async def create_chat_completion(
 
                             # Update token usage in database
                             try:
-                                app.cache.update_usage_with_response(
+                                app.db.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
                                     completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
@@ -1531,7 +1486,7 @@ async def create_chat_completion(
             print(
                 f"Prompt tokens: {res.usage.prompt_tokens}, Completion tokens: {res.usage.completion_tokens}"
             )
-            app.cache.update_usage_with_response(
+            app.db.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=res.usage.prompt_tokens,
                 completion_tokens=res.usage.completion_tokens,

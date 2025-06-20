@@ -227,7 +227,7 @@ async def create_stream_response(
     # Update database with word count if we have a controller with user info
     if hasattr(controller, "user") and word_count > 0:
         try:
-            app.cache.update_usage_with_response(
+            app.db.update_usage_with_response(
                 account_id=int(controller.user),
                 prompt_tokens=initial_usage["prompt_tokens"],
                 completion_tokens=(

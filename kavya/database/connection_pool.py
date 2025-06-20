@@ -198,6 +198,8 @@ class PostgreSQLConnectionPool(DatabaseConnectionPool):
                             f"❌️ DB_CTX_ROLLBACK_ERROR: Thread-{thread_id} [ID: {transaction_id}] failed to rollback "
                             f"transaction: {rollback_error_type}: {rollback_error_msg}"
                         )
+
+                raise e
         except Exception as e:
             error_type = type(e).__name__
             error_msg = str(e)

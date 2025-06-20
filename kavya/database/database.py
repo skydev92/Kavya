@@ -171,9 +171,7 @@ class Database:
                     total_word_usage      = total_word_usage + %s,
                     last_updated          = CURRENT_TIMESTAMP
                 WHERE account_id = %s
-                  AND token_balance_in >= %s
-                  AND token_balance_out >= %s
-                  AND word_balance >= %s RETURNING token_balance_in, token_balance_out, word_balance, 
+                RETURNING token_balance_in, token_balance_out, word_balance, 
                           transactions, total_token_usage_in, total_token_usage_out, 
                           total_word_usage
                 """,
@@ -186,9 +184,6 @@ class Database:
                     completion_tokens,
                     word_count,
                     account_id,
-                    prompt_tokens,
-                    completion_tokens,
-                    word_count,
                 ),
             )
 
@@ -202,6 +197,16 @@ class Database:
                 raise RuntimeError(
                     f"Insufficient token balance for account {account_id}"
                 )
+
+            final_balance = {
+                "token_balance_in": float(result[0]),
+                "token_balance_out": float(result[1]),
+                "word_balance": int(result[2]),
+                "transactions": int(result[3]),
+                "total_token_usage_in": float(result[4]),
+                "total_token_usage_out": float(result[5]),
+                "total_word_usage": int(result[6]),
+            }
 
         # Now update the daily summary in a new transaction to avoid failures affecting the balance update
         try:
@@ -227,17 +232,6 @@ class Database:
             logging.warning(
                 f"[ID: {transaction_id}] Daily summary update failed but balance updated: {str(daily_error)}"
             )
-
-        # Success! Get the updated balance
-        final_balance = {
-            "token_balance_in": float(result[0]),
-            "token_balance_out": float(result[1]),
-            "word_balance": int(result[2]),
-            "transactions": int(result[3]),
-            "total_token_usage_in": float(result[4]),
-            "total_token_usage_out": float(result[5]),
-            "total_word_usage": int(result[6]),
-        }
 
         duration = time.time() - start_time
 

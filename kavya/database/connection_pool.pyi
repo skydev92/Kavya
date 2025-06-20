@@ -13,5 +13,9 @@ class DatabaseConnectionPool:
 
 class PostgreSQLConnectionPool(DatabaseConnectionPool):
     def __init__(
-        self, database_url, instance_connection_name=None, private_ip=False
+        self,
+        database_url,
+        instance_connection_name=None,
+        private_ip=False,
+        config: dict = None,
     ) -> None: ...
