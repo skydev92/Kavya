@@ -9,7 +9,7 @@ export $(grep -v '^#' .env | xargs)
 timestamp=$(date +"%Y-%m-%d_%H_%M_%S")
 
 # Define all providers to test
-providers=("anthropic" "gemini" "mistral" "openai" "xai")
+providers=("openai" "xai" "mistral" "gemini" "anthropic")
 
 # Loop through all providers
 for provider in "${providers[@]}"; do
@@ -18,8 +18,8 @@ for provider in "${providers[@]}"; do
     # Record start time
     start_time=$(date +%s)
 
-    # Make streaming request and capture output
-    output=$(curl -s --max-time 60 -X POST "http://localhost:8089/v1/chat/completions" \
+    # Make streaming request and capture raw response
+    raw_response=$(curl -s --max-time 300 -X POST "http://localhost:8089/v1/chat/completions" \
       -H "Authorization: Bearer $JWT_TEST_TOKEN" \
       -H "Content-Type: application/json" \
       -d "{
@@ -28,7 +28,10 @@ for provider in "${providers[@]}"; do
         \"longwriter_word_threshold\": 50,
         \"providers\": \"$provider\",
         \"stream\": true
-      }" | while IFS= read -r line; do
+      }")
+
+    # Process the raw response to extract content
+    output=$(echo "$raw_response" | while IFS= read -r line; do
         # Skip empty lines and non-data lines
         if [[ "$line" =~ ^data:\ (.*)$ ]]; then
             data="${BASH_REMATCH[1]}"
@@ -55,6 +58,10 @@ for provider in "${providers[@]}"; do
 
     # Output results for this provider
     echo "$provider: Time: ${duration}s, Words: ${word_count}"
+    if [ "$word_count" -eq 0 ]; then
+        echo "Full response for failed request:"
+        echo "$raw_response"
+    fi
     echo ""
 done
 

@@ -40,7 +40,7 @@ if [ $? -ne 0 ] || [ -z "$model_name" ] || [ "$model_name" = "null" ]; then
     exit 1
 fi
 
-if echo "$model_name" | grep -qE "(gpt|davinci|curie|babbage|ada)"; then
+if echo "$model_name" | grep -qE "(gpt|o4|o3|o1)"; then
     echo "✅ Test passed: Got OpenAI model ($model_name)"
     exit 0
 else
