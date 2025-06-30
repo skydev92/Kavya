@@ -84,6 +84,7 @@ cache:
 # Controller configuration
 controller:
     default_chunk_size: 10
+    longwriter_word_threshold: 1000
     longwriter_only_args:
         - "allowed_html_tags"
         - "allowed_html_classes"

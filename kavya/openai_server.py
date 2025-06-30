@@ -24,7 +24,12 @@ from dotenv import load_dotenv
 from fastapi import Depends
 from fastapi.concurrency import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 import kavya.models
 from kavya.auth import JWTBearer
@@ -840,15 +845,47 @@ async def create_chat_completion(
                             user=str(user_id),  # Add user ID to content request
                         )
 
+                        logging.debug("WEB_SEARCH: Announcing web search check")
+                        yield "data: " + json.dumps(
+                            kavya.models.create_status_response_dict(
+                                "research",
+                                1,
+                                1,
+                                "searching",
+                            )
+                        ) + "\n\n"
+
                         try:
                             logging.info(
                                 "WEB_SEARCH: Checking if web search enhancement is needed"
                             )
                             # Enhance messages directly on the content_request object
-                            content_request.messages = await enhance_with_web_search(
-                                app.controllers.longwriter, content_request.messages
+                            content_request.messages, search_results = (
+                                await enhance_with_web_search(
+                                    app.controllers.longwriter, content_request.messages
+                                )
+                            )
+
+                            logging.debug(
+                                "WEB_SEARCH: Search results for longwriter: "
+                                + str(search_results)
                             )
                             logging.info("WEB_SEARCH: Enhancement check complete")
+
+                            if search_results != []:
+                                # Flatten all sources from all searches
+                                all_sources = []
+                                for source_list in search_results:
+                                    if source_list:  # Check if not empty
+                                        all_sources.extend(source_list)
+
+                                yield "data: " + json.dumps(
+                                    kavya.models.create_search_disclosure_dict(
+                                        kavya.models.SearchDisclosure(
+                                            sources=all_sources
+                                        )
+                                    )
+                                ) + "\n\n"
                         except Exception as web_search_error:
                             logging.error(
                                 f"WEB_SEARCH: Error during enhancement: {web_search_error}",
@@ -1116,7 +1153,31 @@ async def create_chat_completion(
 
                         try:
                             # Call acompletion and handle the response differently based on its type
-                            res = await app.controllers.completion.acompletion(**kwargs)
+                            res, search_results = (
+                                await app.controllers.completion.acompletion(
+                                    use_research_agent=True, **kwargs
+                                )
+                            )
+
+                            logging.debug(
+                                f"OPENAI_SERVER: Search results: {search_results}"
+                            )
+
+                            if search_results != []:
+                                logging.debug("OPENAI_SERVER: Yielding search results")
+                                # Flatten all sources from all searches
+                                all_sources = []
+                                for source_list in search_results:
+                                    if source_list:  # Check if not empty
+                                        all_sources.extend(source_list)
+
+                                yield "data: " + json.dumps(
+                                    kavya.models.create_search_disclosure_dict(
+                                        kavya.models.SearchDisclosure(
+                                            sources=all_sources
+                                        )
+                                    )
+                                ) + "\n\n"
 
                             # Check if the result is an async generator (streaming)
                             if hasattr(res, "__aiter__"):
@@ -1438,9 +1499,15 @@ async def create_chat_completion(
                     )
                     kwargs["max_tokens"] = 4096
 
-            res = await app.controllers.response(
-                request, controller_name, "acompletion", **kwargs
+            res, search_results = await app.controllers.response(
+                request,
+                controller_name,
+                "acompletion",
+                use_research_agent=True,
+                **kwargs,
             )
+
+            logging.debug(f"OPENAI_SERVER: Search results: {search_results}")
 
             is_predefined = (
                 isinstance(res, dict) and res.get("model") == "predefined_prompt"
@@ -1450,7 +1517,6 @@ async def create_chat_completion(
                 if is_predefined
                 else res.model_dump()["original_model"]
             )
-
             # Get current token balance
             try:
                 current_balance = app.db.get_account_balance(account_id=user_id)
@@ -1481,6 +1547,16 @@ async def create_chat_completion(
                 else:
                     content = res.model_dump()
 
+            if search_results != []:
+                logging.debug(f"OPENAI_SERVER: Search results: {search_results}")
+                content["search_results"] = []
+                # Flatten all sources from all searches
+                for source_list in search_results:
+                    if source_list:  # Check if not empty
+                        for result in source_list:
+                            logging.debug(f"OPENAI_SERVER: Search result: {result}")
+                            content["search_results"].append(result.model_dump())
+
             print("Updating token usage...")
             # Update token usage
             print(
@@ -1491,6 +1567,7 @@ async def create_chat_completion(
                 prompt_tokens=res.usage.prompt_tokens,
                 completion_tokens=res.usage.completion_tokens,
             )
+
             return JSONResponse(
                 content=content, headers={"X-Chosen-Model": chosen_model}
             )
@@ -1509,6 +1586,16 @@ async def create_chat_completion(
             },
             status_code=500,
         )
+
+
+@app.get("/v1/run_tests")
+async def run_tests():
+    from kavya.tests.test_app import default_tests
+
+    if os.environ.get("ENABLE_TESTS") == "true":
+        return PlainTextResponse(content=default_tests(), status_code=200)
+    else:
+        return fastapi.HTTPException(status_code=403, detail="Tests are disabled")
 
 
 # ------------------------------------------------------------------------------

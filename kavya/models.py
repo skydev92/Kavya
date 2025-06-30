@@ -61,6 +61,7 @@ def _get_personality_message(message_key: str) -> str:
 
 
 # create status response https://spec.modelcontextprotocol.io/specification/basic/utilities/progress/
+# MCP
 def create_status_response_dict(
     status: str, step: int, total: int, phase: str
 ) -> Dict[str, Any]:
@@ -77,6 +78,33 @@ def create_status_response_dict(
             "step": step,
             "total_steps": total,
             "phase": phase,
+        },
+    }
+
+
+class SourceItem(BaseModel):
+    title: Optional[str] = Field(None, description="The title of the source item")
+    url: str = Field(..., description="The URL of the source item")
+
+
+class SearchDisclosure(BaseModel):
+    sources: Optional[List[SourceItem]] = Field(
+        None, description="A list of source items"
+    )
+    timestamp: str = Field(
+        default_factory=lambda: datetime.now().isoformat(),
+        description="The timestamp of the disclosure",
+    )
+
+
+def create_search_disclosure_dict(disclosure: SearchDisclosure) -> Dict[str, Any]:
+    logging.debug("create_search_disclosure")
+    return {
+        "jsonrpc": "2.0",
+        "method": "agent/web_source_disclosure",
+        "params": {
+            "sources": [source.model_dump() for source in disclosure.sources],
+            "timestamp": disclosure.timestamp,
         },
     }
 
@@ -433,6 +461,9 @@ class ChatCompletionResponse(BaseModel):
     total_spent_output_tokens: Optional[float] = Field(
         None, description="Total cumulative output tokens spent by the user"
     )
+    search_results: Optional[List[SourceItem]] = Field(
+        None, description="List of search results"
+    )
 
 
 class ChatCompletionRequest(BaseModel):
@@ -561,7 +592,7 @@ class RoutingAnalysis(BaseModel):
 
     length_score: float = Field(
         ...,
-        description="Probability (0.0-1.0) that response will be >1000 words",
+        description="Probability (0.0-1.0) that response will exceed the specified word threshold",
         # ge=0.0,
         # le=1.0
     )

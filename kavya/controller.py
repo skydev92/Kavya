@@ -123,6 +123,9 @@ class Controller:
         # Load controller configuration
         controller_config = self.config["controller"]  # hard fail if missing
         self.default_chunk_size = controller_config["default_chunk_size"]
+        self.longwriter_word_threshold = controller_config[
+            "longwriter_word_threshold"
+        ]  # hard fail if missing
         self.longwriter_only_args = controller_config["longwriter_only_args"]
 
         # Some Python magic to match the OpenAI Python SDK
@@ -309,6 +312,7 @@ class Controller:
 
     async def acompletion(
         self,
+        use_research_agent: bool = False,
         **kwargs,
     ):
         """Async completion method with unified ProviderChain-based fallbacks."""
@@ -352,6 +356,8 @@ class Controller:
             f"FALLBACK: Initial ProviderChain details - providers: {provider_chain.providers}, failed: {provider_chain.failed}, current_index: {provider_chain.current_index}"
         )
 
+        search_results = []  # Initialize empty search results
+
         if "messages" in kwargs:
             last_message = kwargs["messages"][-1]["content"]
             predefined_answer = self.check_predefined_prompt(last_message)
@@ -363,9 +369,13 @@ class Controller:
                     "model": "predefined_prompt",
                 }
 
-            # Add web search results
-            logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
-            kwargs["messages"] = await enhance_with_web_search(self, kwargs["messages"])
+            # Only perform web search if research agent is requested
+            if use_research_agent:
+                logging.info("WEB_SEARCH: Checking if web search enhancement is needed")
+                logging.info("WEB_SEARCH_STATUS: Searching the web")
+                kwargs["messages"], search_results = await enhance_with_web_search(
+                    self, kwargs["messages"]
+                )
 
         # Handle structured output configuration
         if "config" in kwargs and kwargs["config"]:
@@ -508,7 +518,11 @@ class Controller:
                     logging.debug(
                         f"FALLBACK: Final ProviderChain state after success: {provider_chain}"
                     )
-                    return response
+                    if use_research_agent:
+                        logging.info("WEB_SEARCH: Adding search results to response")
+                        return response, search_results
+                    else:
+                        return response
 
                 except litellm.RateLimitError as e:
                     logging.warning(
@@ -634,6 +648,23 @@ class Longwriter(Controller):
         super().__init__(**kwargs)
         # No instance state - all state is now conversation-scoped
 
+    def _filter_messages_to_user_only(self, request_messages):
+        """
+        Filter messages to only include user messages when there's a system+user pair.
+        Returns only user messages for 2-message system+user pairs, otherwise returns all messages.
+        """
+        if (
+            request_messages
+            and len(request_messages) == 2
+            and request_messages[0].get("role") == "system"
+            and request_messages[1].get("role") == "user"
+        ):
+            # Return only the user message to avoid system formatting noise
+            return [request_messages[1]]
+        else:
+            # Preserve all messages for other conversation formats
+            return request_messages if request_messages else []
+
     async def get_content_strategy(
         self,
         request: ContentRequest,
@@ -671,7 +702,7 @@ class Longwriter(Controller):
         - Trustworthiness of information
         - User engagement and value
         
-        Provide a content strategy that incorporates these principles without explicitly referencing them.
+        Provide a content strategy that incorporates these principles without explicitly referencing them. Focus on the user and their needs, find the user task and requirements in the prompt while ignoring irrelevant information like system prompts and other technical instructions.
         """
 
         # Prepare messages for the LLM call
@@ -680,13 +711,13 @@ class Longwriter(Controller):
             "role": "system",
             "content": str(dedent(content_strategist_prompt)),
         }
-        # Ensure request.messages is not None and is a list
-        llm_messages = [strategist_system_prompt] + (
-            request.messages if request.messages else []
-        )
 
-        # If request.messages was empty or didn't exist, add the prompt as a user message
-        if not request.messages:
+        # Filter messages to focus on user content
+        filtered_messages = self._filter_messages_to_user_only(request.messages)
+        llm_messages = [strategist_system_prompt] + filtered_messages
+
+        # If no messages after filtering, add the prompt as a user message
+        if not filtered_messages:
             llm_messages.append({"role": "user", "content": str(request.prompt)})
 
         try:
@@ -710,7 +741,7 @@ class Longwriter(Controller):
 
             # Get the content from the response
             content = response.choices[0].message.content
-            logging.debug(f"\033[96mContent Strategy Response:\n{content}\033[0m")
+            logging.debug(f"\033[97;40mContent Strategy Response:\n{content}\033[0m")
 
             strategy = ContentStrategy.model_validate_json(content)
             # Add the original messages and user ID to the strategy object
@@ -780,7 +811,7 @@ class Longwriter(Controller):
 
             # Get the content from the response
             content = response.choices[0].message.content
-            logging.debug(f"\033[96mHTML Strategy Response:\n{content}\033[0m")
+            logging.debug(f"\033[97;44mHTML Strategy Response:\n{content}\033[0m")
 
             return HTMLTagStrategy.model_validate_json(content)
 
@@ -851,7 +882,7 @@ class Longwriter(Controller):
 
             # Get the content from the response
             content = response.choices[0].message.content
-            logging.debug(f"\033[96mContent Outline Response:\n{content}\033[0m")
+            logging.debug(f"\033[97;45mContent Outline Response:\n{content}\033[0m")
 
             return ContentOutline.model_validate_json(content)
 
@@ -1176,6 +1207,9 @@ class Controllers:
 
         # Load controller configuration
         controller_config = config["controller"]  # hard fail if missing
+        self.longwriter_word_threshold = controller_config[
+            "longwriter_word_threshold"
+        ]  # hard fail if missing
         self.longwriter_only_args = controller_config["longwriter_only_args"]
 
         self.create_controller("default", **kwargs)
@@ -1230,7 +1264,12 @@ class Controllers:
     """
 
     async def response(
-        self, request: ChatCompletionRequest, id, amethod_name, **kwargs
+        self,
+        request: ChatCompletionRequest,
+        id,
+        amethod_name,
+        use_research_agent=False,
+        **kwargs,
     ):
         logging.info(
             f"DEBUG: response method called with id: {id}, method: {amethod_name}"
@@ -1244,7 +1283,10 @@ class Controllers:
         )
         logging.info(f"DEBUG: request dump: {request_dump}")
 
-        return await self.controllers[id].__getattribute__(amethod_name)(
+        response, search_results = await self.controllers[id].__getattribute__(
+            amethod_name
+        )(
+            use_research_agent,
             **{
                 k: v
                 for k, v in request.model_dump(
@@ -1254,6 +1296,8 @@ class Controllers:
             },
             **kwargs,
         )
+
+        return response, search_results
 
     async def basic_routing(
         self,
@@ -1288,8 +1332,11 @@ class Controllers:
         # Store the model in the request for later use
         request.model = routed_model
 
-        # Get longwriter word threshold from request or use default
-        word_threshold = getattr(request, "longwriter_word_threshold", None) or 1000
+        # Get longwriter word threshold from request or use config default
+        word_threshold = (
+            getattr(request, "longwriter_word_threshold", None)
+            or self.longwriter_word_threshold
+        )
 
         # Trim long prompts for basic router analysis
         prompt = request_data["messages"][-1]["content"]
@@ -1441,6 +1488,7 @@ For the needs_structure field specifically:
 
             # Add debug output for routing decision
             logging.debug("\033[95m=== Routing Analysis ===\033[0m")
+            logging.debug(f"\033[94mWord Threshold: {word_threshold}\033[0m")
             logging.debug(f"\033[94mLength Score: {analysis.length_score}\033[0m")
             logging.debug(f"\033[94mNeeds Structure: {analysis.needs_structure}\033[0m")
             logging.debug(f"\033[94mIs Data Dump: {analysis.is_data_dump}\033[0m")
@@ -1456,7 +1504,7 @@ For the needs_structure field specifically:
             )
 
             logging.debug(
-                f"\033[93mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m"
+                f"\033[94mDecision: {'Using Longwriter' if use_longwriter else 'Using Standard Completion'}\033[0m"
             )
             logging.debug("\033[95m=====================\033[0m")
 

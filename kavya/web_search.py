@@ -9,7 +9,7 @@ from typing import List, Optional
 import litellm
 import yaml
 
-from kavya.models import MultipleQueryResponse, WebSearchAnalysisResponse
+from kavya.models import MultipleQueryResponse, SourceItem, WebSearchAnalysisResponse
 
 
 def get_web_search_config():
@@ -205,7 +205,7 @@ async def enhance_with_web_search(controller, messages):
     # Check if the Perplexity API key is set for LiteLLM to use
     perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
     if not perplexity_api_key_present:
-        return messages  # Skip if key is missing
+        return messages, []  # Skip if key is missing
 
     try:
         # --- Part 1: Analysis ---
@@ -214,7 +214,7 @@ async def enhance_with_web_search(controller, messages):
             logging.warning(
                 "WEB_SEARCH: Failed to get analysis result. Skipping web search."
             )
-            return messages
+            return messages, []
 
         # Get threshold from config
         config = get_web_search_config()
@@ -225,7 +225,7 @@ async def enhance_with_web_search(controller, messages):
             logging.info(
                 f"WEB_SEARCH: Need score {analysis_result.need_web_search} <= threshold {threshold}. Skipping search."
             )
-            return messages
+            return messages, []
 
         logging.info(
             f"WEB_SEARCH: Need score {analysis_result.need_web_search} > threshold {threshold}. Proceeding with {analysis_result.web_search_count} search(es)."
@@ -239,7 +239,7 @@ async def enhance_with_web_search(controller, messages):
             logging.error(
                 "WEB_SEARCH: Could not extract user message for query generation."
             )
-            return messages  # Cannot proceed without user message
+            return messages, []  # Cannot proceed without user message
 
         # Extract user ID (do this once, use for all subsequent calls)
         user_id = next(
@@ -283,7 +283,7 @@ async def enhance_with_web_search(controller, messages):
             logging.warning(
                 "WEB_SEARCH: No search queries were generated. Skipping search execution."
             )
-            return messages
+            return messages, []
 
         # --- Part 3: Concurrent Execution ---
         logging.info(
@@ -307,10 +307,16 @@ async def enhance_with_web_search(controller, messages):
 
         if not successful_results:
             logging.warning("WEB_SEARCH: No successful search results obtained.")
-            return messages
+            return messages, []
 
         # Aggregate results (simple concatenation with separator)
-        aggregated_results = "\n\n---\n\n".join(successful_results)
+        aggregated_results = "\n\n---\n\n".join(
+            [result[0] for result in successful_results]
+        )
+        titles_urls = [result[1] for result in successful_results]
+        logging.debug(
+            f"WEB_SEARCH: Search results: {[result[1] for result in successful_results]}"
+        )
 
         # Add results in a simple web_search_results tag
         context = f"<web_search_results>\n{aggregated_results}\n</web_search_results>"
@@ -337,7 +343,7 @@ async def enhance_with_web_search(controller, messages):
             logging.info(
                 f"WEB_SEARCH: Appended combined search context to last user message at index {last_user_msg_index}"
             )
-            return new_msgs
+            return new_msgs, titles_urls
         else:
             # Hard fail if no user message found - don't use fallback
             logging.error(
@@ -352,7 +358,7 @@ async def enhance_with_web_search(controller, messages):
             f"WEB_SEARCH: Error during multi-query search enhancement: {str(e)}",
             exc_info=True,
         )
-        return messages
+        return messages, []
 
 
 async def generate_search_query(controller, user_msg: str) -> str:
@@ -456,7 +462,7 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
         return user_msg[:150]  # Fallback to truncated original message
 
 
-async def search_web(query: str, user: str) -> Optional[str]:
+async def search_web(query: str, user: str):
     """Search the web using Perplexity AI API via LiteLLM and return text response."""
     logging.info(
         f"PERPLEXITY_SEARCH: Searching for: '{query}' via LiteLLM for user: {user}"
@@ -468,6 +474,7 @@ async def search_web(query: str, user: str) -> Optional[str]:
         # {"role": "system", "content": "Provide concise and factual search results."},
         {"role": "user", "content": query}
     ]
+    pydantic_search_results = []
 
     try:
         # LiteLLM handles retries based on its configuration.
@@ -485,6 +492,15 @@ async def search_web(query: str, user: str) -> Optional[str]:
             and response["choices"][0].get("message")
         ):
             result_text = response["choices"][0]["message"]["content"].strip()
+            logging.debug(
+                "PERPLEXITY_SEARCH: Search results " + str(response["search_results"])
+            )
+            search_results = response["search_results"]
+
+            for result in search_results:
+                if "date" in result:
+                    del result["date"]
+                pydantic_search_results.append(SourceItem(**result))
         else:
             logging.warning(
                 f"PERPLEXITY_SEARCH: Received unexpected response structure from LiteLLM: {response}"
@@ -501,7 +517,7 @@ async def search_web(query: str, user: str) -> Optional[str]:
         logging.info(
             f"PERPLEXITY_SEARCH: Successfully retrieved search results ({len(result_text)} chars)"
         )
-        return result_text
+        return result_text, pydantic_search_results
 
     except Exception as e:
         # Handle potential exceptions from LiteLLM
