@@ -859,7 +859,7 @@ async def create_chat_completion(
                         logging.debug("Creating content strategy")
                         yield "data: " + json.dumps(
                             kavya.models.create_status_response_dict(
-                                "Creating content strategy", 1, 3, "planning"
+                                "content_strategy", 1, 3, "planning"
                             )
                         ) + "\n\n"
                         # Get provider_chain from the request_data for unified fallback
@@ -881,7 +881,7 @@ async def create_chat_completion(
                         logging.debug("Creating HTML strategy")
                         yield "data: " + json.dumps(
                             kavya.models.create_status_response_dict(
-                                "Creating HTML strategy", 2, 3, "planning"
+                                "html_strategy", 2, 3, "planning"
                             )
                         ) + "\n\n"
                         html_strategy = (
@@ -905,7 +905,7 @@ async def create_chat_completion(
                         logging.debug("Creating Content outline")
                         yield "data: " + json.dumps(
                             kavya.models.create_status_response_dict(
-                                "Creating Content outline", 3, 3, "planning"
+                                "content_outline", 3, 3, "planning"
                             )
                         ) + "\n\n"
                         content_outline = (

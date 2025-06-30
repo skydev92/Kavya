@@ -1,12 +1,17 @@
 import json
 import logging
+import os
+import random
 import re
 import sys
 import time
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Union
 
 import shortuuid
+import yaml
 from litellm import CustomStreamWrapper
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,11 +30,45 @@ logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
+@lru_cache(maxsize=1)
+def _load_personality_data() -> Dict[str, List[str]]:
+    """Load personality data from YAML file with caching."""
+    try:
+        personality_path = Path(__file__).parent.parent / "personality.yaml"
+        if personality_path.exists():
+            with personality_path.open("r", encoding="utf-8") as file:
+                return yaml.safe_load(file) or {}
+    except Exception as e:
+        logging.warning(f"Could not load personality messages: {e}")
+    return {}
+
+
+def _get_personality_message(message_key: str) -> str:
+    """Get a random personality message for the given key."""
+    personality_data = _load_personality_data()
+    messages = personality_data.get(message_key, [])
+
+    if messages:
+        return random.choice(messages)
+
+    # Fallback to original messages
+    fallbacks = {
+        "content_strategy": "Creating content strategy",
+        "html_strategy": "Creating HTML strategy",
+        "content_outline": "Creating Content outline",
+    }
+    return fallbacks.get(message_key, "Processing")
+
+
 # create status response https://spec.modelcontextprotocol.io/specification/basic/utilities/progress/
 def create_status_response_dict(
     status: str, step: int, total: int, phase: str
 ) -> Dict[str, Any]:
     logging.debug("create_status_response")
+
+    # Get personality message directly using the key
+    status = _get_personality_message(status)
+
     return {
         "jsonrpc": "2.0",
         "method": "agent/status",
