@@ -145,6 +145,7 @@ jobs:
         run_test "web search streaming test" "tests/web-search-streaming.sh" "web_search_streaming_output.txt" "web_search_streaming_status"
         run_test "web search non-streaming test" "tests/web-search-non-streaming.sh" "web_search_non_streaming_output.txt" "web_search_non_streaming_status"
         run_test "moderation test" "tests/moderation.sh" "moderation_output.txt" "moderation_status"
+        run_test "multilingual word counting test" "tests/multilingual-word-counting.sh" "multilingual_word_counting_output.txt" "multilingual_word_counting_status"
 
         # --- Build Summary ---
 
@@ -418,8 +419,22 @@ jobs:
         echo "**Description:** Verifies that account balance tracking works correctly by comparing values before and after all API tests" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
+        # Multilingual Word Counting
+        echo "## 🌍 Multilingual Word Counting Test" >> $GITHUB_STEP_SUMMARY
+        echo "$multilingual_word_counting_status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Description:** Tests word counting accuracy across multiple languages and scripts including emoji support" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "<details><summary>📋 Full Test Output</summary>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        cat multilingual_word_counting_output.txt >> $GITHUB_STEP_SUMMARY
+        echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+        echo "</details>" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
         # Summary
-        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_go_status" == *"FAILED"* ]] || [[ "$provider_fallback_sgo_status" == *"FAILED"* ]] || [[ "$provider_fallback_lgo_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]] || [[ "$balance_status" == *"FAILED"* ]]; then
+        if [[ "$streaming_status" == *"FAILED"* ]] || [[ "$nonstreaming_status" == *"FAILED"* ]] || [[ "$structured_status" == *"FAILED"* ]] || [[ "$image_status" == *"FAILED"* ]] || [[ "$provider_openai_status" == *"FAILED"* ]] || [[ "$provider_anthropic_status" == *"FAILED"* ]] || [[ "$provider_default_status" == *"FAILED"* ]] || [[ "$provider_mistral_status" == *"FAILED"* ]] || [[ "$provider_gemini_status" == *"FAILED"* ]] || [[ "$provider_xai_status" == *"FAILED"* ]] || [[ "$provider_fallback_ao_status" == *"FAILED"* ]] || [[ "$provider_fallback_all_status" == *"FAILED"* ]] || [[ "$provider_fallback_go_status" == *"FAILED"* ]] || [[ "$provider_fallback_sgo_status" == *"FAILED"* ]] || [[ "$provider_fallback_lgo_status" == *"FAILED"* ]] || [[ "$web_search_streaming_status" == *"FAILED"* ]] || [[ "$web_search_non_streaming_status" == *"FAILED"* ]] || [[ "$balance_status" == *"FAILED"* ]] || [[ "$multilingual_word_counting_status" == *"FAILED"* ]]; then
           echo "## ❌ Test Suite Failed" >> $GITHUB_STEP_SUMMARY
           echo "One or more tests failed. Check the detailed outputs above." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

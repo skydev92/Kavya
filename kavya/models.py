@@ -30,6 +30,84 @@ logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
+def count_words(text: str) -> int:
+    """Count words in text after stripping HTML tags and attributes.
+
+    This function provides a reasonable word count for multiple languages
+    by removing HTML markup and counting remaining text tokens.
+    """
+    # Remove HTML comments
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+    # Remove script and style content
+    text = re.sub(
+        r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE
+    )
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
+
+    # Remove all HTML tags (including attributes)
+    text = re.sub(r"<[^>]+>", " ", text)
+
+    # Decode common HTML entities
+    text = text.replace("&nbsp;", " ")
+    text = text.replace("&amp;", "&")
+    text = text.replace("&lt;", "<")
+    text = text.replace("&gt;", ">")
+    text = text.replace("&quot;", '"')
+    text = text.replace("&#39;", "'")
+
+    # Handle various Unicode spaces and normalize whitespace
+    text = re.sub(
+        r"[\s\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+", " ", text
+    )
+
+    # For better multilingual support, split on whitespace and punctuation first
+    # This handles word boundaries properly for all scripts
+
+    # First extract and count emojis separately as they are expensive tokens
+    # Count each individual emoji character, not sequences
+    emoji_pattern = r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002600-\U000027BF\U0001F900-\U0001F9FF\U0001F7E0-\U0001F7FF]"
+    emojis = re.findall(emoji_pattern, text, re.UNICODE)
+    # Remove emojis from text to avoid double counting
+    text_without_emojis = re.sub(emoji_pattern, " ", text, flags=re.UNICODE)
+
+    # Split on whitespace and common punctuation, but preserve contractions
+    # Don't split on apostrophes when they're between letters (contractions)
+    tokens = re.split(
+        r'[\s,\.;:!?\(\)\[\]{}"]+|(?<!\w)\'|\'(?!\w)', text_without_emojis
+    )
+    words = []
+
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+
+        # Check if token contains actual word characters
+        if re.search(
+            r"\w|[\u0900-\u097f\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]",
+            token,
+            re.UNICODE,
+        ):
+            # For CJK scripts, each character is typically a word
+            if re.search(
+                r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]", token
+            ):
+                # Count CJK characters individually
+                cjk_chars = re.findall(
+                    r"[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]", token
+                )
+                words.extend(cjk_chars)
+            else:
+                # For other scripts (Latin, Devanagari, etc.), count as single word
+                words.append(token)
+
+    # Add emojis as individual words (each emoji sequence counts as one word)
+    words.extend(emojis)
+
+    return len(words)
+
+
 @lru_cache(maxsize=1)
 def _load_personality_data() -> Dict[str, List[str]]:
     """Load personality data from YAML file with caching."""
@@ -200,14 +278,6 @@ async def create_stream_response(
     word_buffer = ""
     word_count = 0
 
-    def count_words(text: str) -> int:
-        """Count words in text after stripping HTML tags."""
-        # Remove HTML tags using regex
-        text_without_html = re.sub(r"<[^>]+>", "", text)
-        # Split on whitespace and filter out empty strings
-        words = [word for word in text_without_html.split() if word.strip()]
-        return len(words)
-
     # First chunk with role and initial prompt token usage - only once per stream
     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': initial_usage})}\n\n"
 
@@ -257,12 +327,16 @@ async def create_stream_response(
                                 completion_tokens
                             )
 
-                        # Report only the new tokens for this chunk
+                        # Report cumulative tokens and word count for UI updates
                         usage = {
-                            "completion_tokens": completion_tokens,
+                            "completion_tokens": (
+                                controller.cost_tracker.completion_tokens
+                                if hasattr(controller, "cost_tracker")
+                                else 1
+                            ),  # Cumulative completion tokens
                             "word_count": count_words(
                                 word_buffer
-                            ),  # Count total words so far
+                            ),  # Cumulative word count
                         }
 
                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"

@@ -35,6 +35,7 @@ import kavya.models
 from kavya.auth import JWTBearer
 from kavya.controller import ContentRequest, Controllers, RequestCostTracker
 from kavya.database import Database
+from kavya.models import count_words
 from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
@@ -976,18 +977,6 @@ async def create_chat_completion(
                         # Initialize word buffer for tracking total words
                         word_buffer = ""
 
-                        def count_words(text: str) -> int:
-                            """Count words in text after stripping HTML tags."""
-                            # Remove HTML tags using regex
-                            text_without_html = re.sub(r"<[^>]+>", "", text)
-                            # Split on whitespace and filter out empty strings
-                            words = [
-                                word
-                                for word in text_without_html.split()
-                                if word.strip()
-                            ]
-                            return len(words)
-
                         for section in content_outline.sections:
                             async for (
                                 token,
@@ -1003,12 +992,13 @@ async def create_chat_completion(
                             ):
                                 # Accumulate content for word counting
                                 word_buffer += token
-                                current_word_count = count_words(word_buffer)
 
-                                # Send content chunk with word count
+                                # Send content chunk with cumulative counts for UI updates
                                 usage = {
-                                    "completion_tokens": token_count,
-                                    "word_count": current_word_count,
+                                    "completion_tokens": app.controllers.longwriter.cost_tracker.completion_tokens,  # Cumulative completion tokens
+                                    "word_count": count_words(
+                                        word_buffer
+                                    ),  # Cumulative word count
                                 }
                                 yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}], 'usage': usage})}\n\n"
 
@@ -1028,8 +1018,13 @@ async def create_chat_completion(
                                 exc_info=True,
                             )
 
-                        # Send final stop message
-                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
+                        # Send final stop message with word count
+                        final_word_count = count_words(word_buffer)
+                        final_usage = {
+                            "completion_tokens": app.controllers.longwriter.cost_tracker.completion_tokens,
+                            "word_count": final_word_count,
+                        }
+                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': actual_model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': final_usage})}\n\n"
                         yield "data: [DONE]\n\n"
                     except Exception as e:
                         error_msg = f"Error during streaming: {str(e)}"
@@ -1111,6 +1106,7 @@ async def create_chat_completion(
 
                 # Make the API call asynchronously
                 async def generate_stream():
+                    word_buffer = ""  # Initialize word buffer for all streaming types
                     try:
                         # First yield router usage information if available
                         if router_usage:
@@ -1266,10 +1262,8 @@ async def create_chat_completion(
                                     if isinstance(token, str) and not token.startswith(
                                         '{"jsonrpc"'
                                     ):
-                                        # Simple word count approximation by splitting on whitespace
-                                        words = token.split()
-                                        if words:
-                                            accumulated_word_count += len(words)
+                                        # Accumulate content for proper word counting
+                                        word_buffer += token
 
                                     # Process regular token as before
                                     # Convert to stream response format
@@ -1287,13 +1281,16 @@ async def create_chat_completion(
                                             }
                                         ],
                                         "usage": {
-                                            "completion_tokens": token_count,
-                                            "word_count": 1,  # Approximate word count
+                                            "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,  # Cumulative completion tokens
+                                            "word_count": count_words(
+                                                word_buffer
+                                            ),  # Cumulative word count
                                         },
                                     }
                                     yield f"data: {json.dumps(chunk_response)}\n\n"
 
-                                # Send final stop message
+                                # Send final stop message with proper word count
+                                final_word_count = count_words(word_buffer)
                                 final_chunk = {
                                     "id": response_id,
                                     "object": "chat.completion.chunk",
@@ -1309,7 +1306,7 @@ async def create_chat_completion(
                                     ],
                                     "usage": {
                                         "completion_tokens": app.controllers.completion.cost_tracker.completion_tokens,
-                                        "word_count": accumulated_word_count,  # Use accumulated word count
+                                        "word_count": final_word_count,  # Use properly counted words
                                     },
                                 }
                                 yield f"data: {json.dumps(final_chunk)}\n\n"
@@ -1367,6 +1364,9 @@ async def create_chat_completion(
                                         "content", ""
                                     )
 
+                                # Store content in word_buffer for proper word counting
+                                word_buffer = content
+
                                 # Get usage information
                                 usage = res.get(
                                     "usage",
@@ -1396,8 +1396,11 @@ async def create_chat_completion(
                                         # Content chunk
                                         yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
 
-                                        # Final chunk with finish reason and updated usage
-                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
+                                        # Final chunk with finish reason and updated usage including word count
+                                        word_count = count_words(content)
+                                        final_usage = usage.copy()
+                                        final_usage["word_count"] = word_count
+                                        yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': final_usage, 'total_spent_input_tokens': total_spent_input_tokens, 'total_spent_output_tokens': total_spent_output_tokens})}\n\n"
                                 except Exception as e:
                                     logging.error(
                                         f"Error getting token balance: {str(e)}"
@@ -1405,15 +1408,22 @@ async def create_chat_completion(
                                     # Yield chunks without balance information
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'role': 'assistant'}, 'finish_reason': None}], 'usage': usage})}\n\n"
                                     yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': None}], 'usage': usage})}\n\n"
-                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': usage})}\n\n"
+
+                                    # Final chunk with word count
+                                    word_count = count_words(content)
+                                    final_usage = usage.copy()
+                                    final_usage["word_count"] = word_count
+                                    yield f"data: {json.dumps({'id': response_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}], 'usage': final_usage})}\n\n"
 
                             # Update token usage in database
                             try:
+                                # Use the properly counted word count
+                                final_word_count = count_words(word_buffer)
                                 app.db.update_usage_with_response(
                                     account_id=int(app.controllers.completion.user),
                                     prompt_tokens=app.controllers.completion.cost_tracker.prompt_tokens,
                                     completion_tokens=app.controllers.completion.cost_tracker.completion_tokens,
-                                    word_count=accumulated_word_count,
+                                    word_count=final_word_count,
                                 )
                             except Exception as e:
                                 logging.error(
@@ -1562,10 +1572,27 @@ async def create_chat_completion(
             print(
                 f"Prompt tokens: {res.usage.prompt_tokens}, Completion tokens: {res.usage.completion_tokens}"
             )
+
+            # Calculate word count from the response content
+            response_content = ""
+            if is_predefined:
+                # For predefined responses, get content from the dict
+                response_content = (
+                    res.get("choices", [{}])[0].get("message", {}).get("content", "")
+                )
+            else:
+                # For regular responses, get content from the response object
+                if hasattr(res, "choices") and res.choices:
+                    response_content = res.choices[0].message.content or ""
+
+            word_count = count_words(response_content)
+            logging.info(f"Non-streaming response word count: {word_count}")
+
             app.db.update_usage_with_response(
                 account_id=user_id,
                 prompt_tokens=res.usage.prompt_tokens,
                 completion_tokens=res.usage.completion_tokens,
+                word_count=word_count,
             )
 
             return JSONResponse(
