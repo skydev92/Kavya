@@ -18,7 +18,7 @@ response=$(curl -s --max-time 300 -w "HTTPSTATUS:%{http_code}" -X POST "http://l
       },
       {
         "role": "user",
-        "content": "Create a 100-word structured article with multiple sections about a fictional robot first encounter with music. Use proper HTML formatting with headings, subheadings, and paragraphs. This is creative fiction requiring no real-time information. Do not use web search."
+        "content": "Create a 350-word structured article with multiple sections about a fictional robot first encounter with music. Use proper HTML formatting with headings, subheadings, and paragraphs. This is creative fiction requiring no real-time information. Do not use web search."
       }
     ],
     "stream": true,
@@ -62,9 +62,9 @@ word_count=$(echo "$content" | sed 's/<[^>]*>//g' | wc -w | tr -d ' ')
 echo "Generated content length: ${#content} characters"
 echo "Word count (excluding HTML): $word_count words"
 
-# Check if content has more than 100 words (longwriter threshold)
-if [ "$word_count" -gt 100 ]; then
-    echo "✅ Test passed: Longwriter generated $word_count words (>100)"
+# Check if content has more than 300 words (longwriter threshold)
+if [ "$word_count" -gt 300 ]; then
+    echo "✅ Test passed: Longwriter generated $word_count words (>300)"
     
     # Additional check for structured content (should contain HTML elements)
     if echo "$content" | grep -q "<h[1-6]>\|<p>\|<ul>\|<ol>\|<li>"; then
@@ -75,7 +75,7 @@ if [ "$word_count" -gt 100 ]; then
     
     exit 0
 else
-    echo "❌ Test failed: Expected >100 words for longwriter, got $word_count words"
+    echo "❌ Test failed: Expected >300 words for longwriter, got $word_count words"
     echo "Content preview (first 200 chars): ${content:0:200}..."
     exit 1
 fi 
