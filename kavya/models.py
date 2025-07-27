@@ -630,8 +630,8 @@ class ChatCompletionRequest(BaseModel):
         description="Word count threshold above which longwriter mode is activated (default: 1000)",
     )
     prediction: Optional[Dict[str, Any]] = Field(
-        None, 
-        description="Static predicted output content for faster response generation"
+        None,
+        description="Static predicted output content for faster response generation",
     )
 
     @field_validator("response_format", mode="before")
