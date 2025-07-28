@@ -35,7 +35,7 @@ import kavya.models
 from kavya.auth import JWTBearer
 from kavya.controller import ContentRequest, Controllers, RequestCostTracker
 from kavya.database import Database
-from kavya.models import count_words
+from kavya.models import count_words, AccountDebitRequest, AccountDebitResponse
 from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
@@ -430,7 +430,13 @@ async def get_account_balance(user_id: int = Depends(JWTBearer())):
                         balance.word_balance if hasattr(balance, "word_balance") else 0
                     ),
                     "transactions": balance.transactions,
+                    "total_token_usage_in": balance.total_token_usage_in,
+                    "total_token_usage_out": balance.total_token_usage_out,
+                    "total_word_usage": balance.total_word_usage,
                 },
+                "last_updated": (
+                    balance.last_updated.isoformat() if balance.last_updated else None
+                ),
                 "monthly_usage": {
                     "month": f"{today.year}-{today.month:02d}",
                     "prompt_tokens": monthly_totals["prompt_tokens"],
@@ -453,6 +459,110 @@ async def get_account_balance(user_id: int = Depends(JWTBearer())):
                     "message": f"Failed to retrieve account balance: {error_msg}",
                     "type": error_type,
                     "code": "balance_retrieval_failed",
+                }
+            },
+            status_code=500,
+        )
+
+
+@app.post("/v1/account/debit")
+async def debit_account_usage(
+    request: AccountDebitRequest, user_id: int = Depends(JWTBearer())
+):
+    """
+    Securely debit account usage for tokens and words.
+
+    Security features:
+    - JWT authentication required
+    - Input validation prevents negative values and overflow
+    - Comprehensive error handling
+    - Transaction logging
+    """
+    logging.info(
+        f"Account debit request for user {user_id}: "
+        f"tokens_in={request.tokens_in}, tokens_out={request.tokens_out}, words={request.word_count}"
+    )
+
+    try:
+        # Perform the debit operation
+        updated_balance = app.db.debit_account_usage(
+            account_id=user_id,
+            tokens_in=request.tokens_in,
+            tokens_out=request.tokens_out,
+            word_count=request.word_count,
+        )
+
+        # Create response
+        response = AccountDebitResponse(
+            account_id=user_id,
+            debited={
+                "tokens_in": request.tokens_in,
+                "tokens_out": request.tokens_out,
+                "word_count": request.word_count,
+            },
+            new_balance={
+                "token_balance_in": updated_balance.token_balance_in,
+                "token_balance_out": updated_balance.token_balance_out,
+                "word_balance": updated_balance.word_balance,
+                "transactions": updated_balance.transactions,
+                "total_token_usage_in": updated_balance.total_token_usage_in,
+                "total_token_usage_out": updated_balance.total_token_usage_out,
+                "total_word_usage": updated_balance.total_word_usage,
+            },
+            timestamp=updated_balance.last_updated or datetime.now(),
+        )
+
+        logging.info(
+            f"Account {user_id} successfully debited: "
+            f"new_balance_in={updated_balance.token_balance_in}, "
+            f"new_balance_out={updated_balance.token_balance_out}, "
+            f"new_word_balance={updated_balance.word_balance}"
+        )
+
+        return JSONResponse(
+            content=response.model_dump(),
+            status_code=200,
+        )
+
+    except ValueError as e:
+        # Client errors (invalid input, insufficient balance)
+        error_msg = str(e)
+        logging.warning(f"Invalid debit request for user {user_id}: {error_msg}")
+
+        # Determine appropriate error code based on error message
+        if "non-negative" in error_msg or "exceed" in error_msg:
+            error_code = "invalid_debit_amount"
+            status_code = 400
+        elif "Insufficient" in error_msg:
+            error_code = "insufficient_balance"
+            status_code = 402  # Payment Required
+        else:
+            error_code = "invalid_request"
+            status_code = 400
+
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"Debit operation failed: {error_msg}",
+                    "type": "ValueError",
+                    "code": error_code,
+                }
+            },
+            status_code=status_code,
+        )
+
+    except Exception as e:
+        # Server errors
+        error_type = type(e).__name__
+        error_msg = str(e)
+        logging.error(f"Error debiting account {user_id}: {error_type}: {error_msg}")
+
+        return JSONResponse(
+            content={
+                "error": {
+                    "message": f"Failed to debit account usage: {error_msg}",
+                    "type": error_type,
+                    "code": "debit_operation_failed",
                 }
             },
             status_code=500,

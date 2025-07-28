@@ -859,6 +859,9 @@ class AccountTokenBalance(BaseModel):
         ..., ge=0, description="Total words streamed historically"
     )
     transactions: int = Field(..., ge=0, description="Total number of transactions")
+    last_updated: Optional[datetime] = Field(
+        None, description="Timestamp of last update"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -1051,3 +1054,62 @@ class KavyaRequest(BaseModel):
         ge=1,
         description="Word count threshold above which longwriter mode is activated (default: 1000)",
     )
+
+
+class AccountDebitRequest(BaseModel):
+    """Request model for debiting account usage with security constraints."""
+
+    tokens_in: int = Field(
+        ...,
+        ge=0,
+        le=999999999,  # Prevent overflow: max ~1B tokens
+        description="Number of input tokens to debit (must be non-negative)",
+    )
+    tokens_out: int = Field(
+        ...,
+        ge=0,
+        le=999999999,  # Prevent overflow: max ~1B tokens
+        description="Number of output tokens to debit (must be non-negative)",
+    )
+    word_count: int = Field(
+        ...,
+        ge=0,
+        le=999999999,  # Prevent overflow: max ~1B words
+        description="Number of words to debit (must be non-negative)",
+    )
+
+    @field_validator("tokens_in", "tokens_out", "word_count")
+    @classmethod
+    def validate_positive_integers(cls, v):
+        """Ensure values are non-negative integers to prevent credit operations."""
+        if v < 0:
+            raise ValueError("Value must be non-negative (no crediting allowed)")
+        return v
+
+
+class AccountDebitResponse(BaseModel):
+    """Response model for account debit operations."""
+
+    account_id: int = Field(..., description="Account ID that was debited")
+    debited: Dict[str, int] = Field(..., description="Amounts debited from account")
+    new_balance: Dict[str, Union[int, float]] = Field(
+        ..., description="Updated account balance after debit"
+    )
+    timestamp: datetime = Field(..., description="Timestamp of the debit operation")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "account_id": 12345,
+                "debited": {"tokens_in": 150, "tokens_out": 50, "word_count": 200},
+                "new_balance": {
+                    "token_balance_in": 2999850.0,
+                    "token_balance_out": 999950.0,
+                    "word_balance": 9800,
+                    "total_token_usage_in": 150.0,
+                    "total_token_usage_out": 50.0,
+                    "total_word_usage": 200,
+                },
+                "timestamp": "2025-07-28T09:30:45.123456",
+            }
+        }

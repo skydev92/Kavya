@@ -386,7 +386,8 @@ class Database:
                        transactions,
                        total_token_usage_in,
                        total_token_usage_out,
-                       total_word_usage
+                       total_word_usage,
+                       last_updated
                 FROM account_totals
                 WHERE account_id = %s
                 """,
@@ -407,6 +408,7 @@ class Database:
                     total_token_usage_in=0.0,
                     total_token_usage_out=0.0,
                     total_word_usage=0,
+                    last_updated=None,
                 )
 
             return AccountTokenBalance(
@@ -418,6 +420,7 @@ class Database:
                 total_token_usage_in=float(result[4]),
                 total_token_usage_out=float(result[5]),
                 total_word_usage=int(result[6]),
+                last_updated=result[7],
             )
 
     def get_daily_usage_model(
@@ -467,6 +470,200 @@ class Database:
                 )
 
             return results
+
+    def debit_account_usage(
+        self, account_id: int, tokens_in: int, tokens_out: int, word_count: int
+    ) -> "AccountTokenBalance":
+        """
+        Securely debit account usage and return updated balance.
+
+        Security features:
+        - Uses transactions for consistency
+        - Input validation prevents negative values
+        - Prevents balance from going negative
+        - Uses advisory locks to prevent race conditions
+        - Comprehensive error handling
+        """
+        import logging
+        from datetime import datetime
+
+        # Additional security validation (defense in depth)
+        if tokens_in < 0 or tokens_out < 0 or word_count < 0:
+            raise ValueError("Debit amounts must be non-negative")
+
+        # Prevent overflow attacks
+        MAX_VALUE = 999999999
+        if tokens_in > MAX_VALUE or tokens_out > MAX_VALUE or word_count > MAX_VALUE:
+            raise ValueError(f"Debit amounts cannot exceed {MAX_VALUE}")
+
+        transaction_id = self._generate_transaction_id()
+        max_retries = 3
+        retry_count = 0
+
+        while retry_count < max_retries:
+            try:
+                with self.pool.open_session(True) as cursor:
+                    # Use advisory lock to prevent concurrent modifications
+                    cursor.execute("SELECT pg_advisory_lock(%s)", (account_id,))
+
+                    try:
+                        # Ensure account exists
+                        _ensure_account_exists(
+                            cursor,
+                            account_id,
+                            self.default_token_balance_in,
+                            self.default_token_balance_out,
+                            self.default_word_balance,
+                        )
+
+                        # Get current balance to check if debit is possible
+                        cursor.execute(
+                            """
+                            SELECT token_balance_in, token_balance_out, word_balance,
+                                   transactions, total_token_usage_in, total_token_usage_out,
+                                   total_word_usage, last_updated
+                            FROM account_totals
+                            WHERE account_id = %s
+                            """,
+                            (account_id,),
+                        )
+
+                        result = cursor.fetchone()
+                        if not result:
+                            raise ValueError(f"Account {account_id} not found")
+
+                        current_balance_in = float(result[0])
+                        current_balance_out = float(result[1])
+                        current_word_balance = int(result[2])
+
+                        # Check if debit would result in negative balance
+                        if current_balance_in < tokens_in:
+                            raise ValueError(
+                                f"Insufficient token balance in: {current_balance_in} < {tokens_in}"
+                            )
+                        if current_balance_out < tokens_out:
+                            raise ValueError(
+                                f"Insufficient token balance out: {current_balance_out} < {tokens_out}"
+                            )
+                        if current_word_balance < word_count:
+                            raise ValueError(
+                                f"Insufficient word balance: {current_word_balance} < {word_count}"
+                            )
+
+                        # Perform the debit operation
+                        cursor.execute(
+                            """
+                            UPDATE account_totals
+                            SET token_balance_in = token_balance_in - %s,
+                                token_balance_out = token_balance_out - %s,
+                                word_balance = word_balance - %s,
+                                total_token_usage_in = total_token_usage_in + %s,
+                                total_token_usage_out = total_token_usage_out + %s,
+                                total_word_usage = total_word_usage + %s,
+                                transactions = transactions + 1,
+                                last_updated = CURRENT_TIMESTAMP
+                            WHERE account_id = %s
+                            """,
+                            (
+                                tokens_in,
+                                tokens_out,
+                                word_count,
+                                tokens_in,
+                                tokens_out,
+                                word_count,
+                                account_id,
+                            ),
+                        )
+
+                        # Verify the update was successful
+                        if cursor.rowcount != 1:
+                            raise RuntimeError(f"Failed to update account {account_id}")
+
+                        # Update daily summary
+                        today = datetime.now().strftime("%Y-%m-%d")
+                        cursor.execute(
+                            """
+                            INSERT INTO account_daily_summary
+                            (account_id, date, transaction_count, daily_token_usage_in,
+                             daily_token_usage_out, daily_word_usage)
+                            VALUES (%s, %s, 1, %s, %s, %s)
+                            ON CONFLICT (account_id, date)
+                            DO UPDATE SET
+                                transaction_count = account_daily_summary.transaction_count + 1,
+                                daily_token_usage_in = account_daily_summary.daily_token_usage_in + %s,
+                                daily_token_usage_out = account_daily_summary.daily_token_usage_out + %s,
+                                daily_word_usage = account_daily_summary.daily_word_usage + %s
+                            """,
+                            (
+                                account_id,
+                                today,
+                                tokens_in,
+                                tokens_out,
+                                word_count,
+                                tokens_in,
+                                tokens_out,
+                                word_count,
+                            ),
+                        )
+
+                        # Get updated balance
+                        cursor.execute(
+                            """
+                            SELECT token_balance_in, token_balance_out, word_balance,
+                                   transactions, total_token_usage_in, total_token_usage_out,
+                                   total_word_usage, last_updated
+                            FROM account_totals
+                            WHERE account_id = %s
+                            """,
+                            (account_id,),
+                        )
+
+                        updated_result = cursor.fetchone()
+                        if not updated_result:
+                            raise RuntimeError("Failed to retrieve updated balance")
+
+                        logging.info(
+                            f"[ID: {transaction_id}] Account {account_id} debited: "
+                            f"tokens_in={tokens_in}, tokens_out={tokens_out}, words={word_count}"
+                        )
+
+                        return AccountTokenBalance(
+                            account_id=account_id,
+                            token_balance_in=float(updated_result[0]),
+                            token_balance_out=float(updated_result[1]),
+                            word_balance=int(updated_result[2]),
+                            transactions=int(updated_result[3]),
+                            total_token_usage_in=float(updated_result[4]),
+                            total_token_usage_out=float(updated_result[5]),
+                            total_word_usage=int(updated_result[6]),
+                            last_updated=updated_result[7],
+                        )
+
+                    finally:
+                        # Always release the advisory lock
+                        cursor.execute("SELECT pg_advisory_unlock(%s)", (account_id,))
+
+            except Exception as e:
+                retry_count += 1
+                error_analysis = _analyze_error(e, retry_count)
+
+                if retry_count >= max_retries or not error_analysis["is_retryable"]:
+                    logging.error(
+                        f"[ID: {transaction_id}] Failed to debit account {account_id} "
+                        f"after {retry_count} attempts: {str(e)}"
+                    )
+                    raise
+
+                # Wait before retry
+                if error_analysis["wait_time_seconds"] > 0:
+                    import time
+
+                    time.sleep(error_analysis["wait_time_seconds"])
+
+                logging.warning(
+                    f"[ID: {transaction_id}] Retrying debit operation for account {account_id} "
+                    f"(attempt {retry_count}/{max_retries}): {error_analysis['error_category']}"
+                )
 
 
 def _ensure_account_exists(
