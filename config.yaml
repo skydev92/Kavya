@@ -2,6 +2,7 @@ model_translations:
     default: gpt-4o
     kavya-m1: gpt-4o
     kavya-m1-eu: mistral/mistral-large-latest
+    kavya-m1-fast: gemini/gemini-2.5-flash
 
 # Web search configuration
 web_search:
@@ -25,6 +26,13 @@ fallback_configs:
             - mistral/mistral-large-latest   # Primary model
             - mistral/mistral-medium-latest  # First fallback
             - mistral/mistral-small-latest   # Second fallback
+        max_retries: 1
+        retry_delay: 1
+    kavya-m1-fast:
+        models:
+            - gemini/gemini-2.5-flash
+            - mistral/mistral-small-latest
+            - anthropic/claude-3-5-haiku-latest
         max_retries: 1
         retry_delay: 1
 

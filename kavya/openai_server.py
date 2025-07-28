@@ -69,11 +69,21 @@ async def lifespan(app: fastapi.FastAPI):
     """Initialize and cleanup application state"""
 
     try:
-        # Load config
-        config = yaml.safe_load(open(args.config, "r")) if args.config else None
+        # Load config - handle case when running tests (args not available)
+        try:
+            config = yaml.safe_load(open(args.config, "r")) if args.config else None
+        except NameError:
+            # Running in test mode, load default config
+            try:
+                config = yaml.safe_load(open("config.yaml", "r"))
+            except FileNotFoundError:
+                config = None
 
         # Get default model from config or command line arguments
-        default_model = args.model
+        try:
+            default_model = args.model
+        except NameError:
+            default_model = None
 
         logging.info(f"Default model in arguments: {default_model}")
 
@@ -87,27 +97,35 @@ async def lifespan(app: fastapi.FastAPI):
 
         logging.info(f"Default model after checking config: {default_model}")
 
+        # Handle args references for testing
+        try:
+            api_base = args.base_url
+            api_key = args.api_key
+        except NameError:
+            api_base = None
+            api_key = None
+            
         app.controllers = Controllers(
             config=config,
             model=default_model,
-            api_base=args.base_url,
-            api_key=args.api_key,
+            api_base=api_base,
+            api_key=api_key,
             progress_bar=True,
         )
         app.controllers.create_controller(
             "completion",
             config=config,
             model=default_model,
-            api_base=args.base_url,
-            api_key=args.api_key,
+            api_base=api_base,
+            api_key=api_key,
             progress_bar=True,
         )
         app.controllers.create_controller(
             "longwriter",
             config=config,
             model=default_model,
-            api_base=args.base_url,
-            api_key=args.api_key,
+            api_base=api_base,
+            api_key=api_key,
             progress_bar=True,
         )
         logging.debug(
@@ -311,7 +329,7 @@ async def list_models(user_id: int = Depends(JWTBearer())):
         # Add additional models from config if available
         if hasattr(app, "model_translations") and app.model_translations:
             for model_name in app.model_translations.keys():
-                if model_name not in ["kavya-m1", "kavya-m1-eu", "default"]:
+                if model_name not in ["default"] and not any(model["id"] == model_name for model in kavya_models):
                     kavya_models.append(
                         {
                             "id": model_name,
@@ -1763,67 +1781,68 @@ logging.getLogger("root").setLevel(logging.DEBUG)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-parser = argparse.ArgumentParser(
-    description="An OpenAI-compatible API server for LLM routing."
-)
-parser.add_argument(
-    "--verbose",
-    action="store_true",
-)
-parser.add_argument("--workers", type=int, default=None)
-parser.add_argument("--config", type=str, default=None)
-parser.add_argument("--port", type=int, default=None)
-parser.add_argument(
-    "--base-url",
-    help="The base URL used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument(
-    "--api-key",
-    help="The API key used for all LLM requests",
-    type=str,
-    default=None,
-)
-parser.add_argument(
-    "--model",
-    type=str,
-    default=None,
-    help="The model to use (can be overridden by config.yaml)",
-)
-args = parser.parse_args()
-
-if args.verbose:
-    # Verbose mode already handled above with reduced noise
-    pass
-
-# ------------------------------------------------------------------
-# Launch the server, respecting YAML config and optional CLI overrides
-# ------------------------------------------------------------------
-if not asyncio.get_event_loop().is_running():
-    print("Launching server")
-
-    # Load YAML config (if provided) to get server settings
-    yaml_cfg: dict[str, Any] = {}
-    if args.config:
-        try:
-            import yaml  # local import to avoid top-level dependency if CLI never used
-
-            with open(args.config, "r") as f:
-                yaml_cfg = yaml.safe_load(f) or {}
-        except Exception as e:
-            raise RuntimeError(f"Failed to load configuration file {args.config}: {e}")
-
-    server_yaml_cfg = yaml_cfg.get("server", {})
-
-    # Enforce presence of required keys if CLI override not supplied
-    port = args.port if args.port is not None else server_yaml_cfg["port"]
-    workers = args.workers if args.workers is not None else server_yaml_cfg["workers"]
-
-    uv_config = uvicorn.Config(
-        "kavya.openai_server:app",
-        port=port,
-        host="0.0.0.0",
-        workers=workers,
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="An OpenAI-compatible API server for LLM routing."
     )
-    uvicorn.Server(uv_config).run()
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+    )
+    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument(
+        "--base-url",
+        help="The base URL used for all LLM requests",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--api-key",
+        help="The API key used for all LLM requests",
+        type=str,
+        default=None,
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="The model to use (can be overridden by config.yaml)",
+    )
+    args = parser.parse_args()
+
+    if args.verbose:
+        # Verbose mode already handled above with reduced noise
+        pass
+
+    # ------------------------------------------------------------------
+    # Launch the server, respecting YAML config and optional CLI overrides
+    # ------------------------------------------------------------------
+    if not asyncio.get_event_loop().is_running():
+        print("Launching server")
+
+        # Load YAML config (if provided) to get server settings
+        yaml_cfg: dict[str, Any] = {}
+        if args.config:
+            try:
+                import yaml  # local import to avoid top-level dependency if CLI never used
+
+                with open(args.config, "r") as f:
+                    yaml_cfg = yaml.safe_load(f) or {}
+            except Exception as e:
+                raise RuntimeError(f"Failed to load configuration file {args.config}: {e}")
+
+        server_yaml_cfg = yaml_cfg.get("server", {})
+
+        # Enforce presence of required keys if CLI override not supplied
+        port = args.port if args.port is not None else server_yaml_cfg["port"]
+        workers = args.workers if args.workers is not None else server_yaml_cfg["workers"]
+
+        uv_config = uvicorn.Config(
+            "kavya.openai_server:app",
+            port=port,
+            host="0.0.0.0",
+            workers=workers,
+        )
+        uvicorn.Server(uv_config).run()
