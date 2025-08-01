@@ -755,6 +755,10 @@ class OutlineSection(BaseModel):
     """Section in the content outline."""
 
     title: str = Field(..., description="Section title")
+    section_type: str = Field(
+        ...,
+        description="Type of section (e.g., Hero, Introduction, Body, Conclusion, etc.)",
+    )
     description: str = Field(..., description="Detailed description of section content")
     content_ideas: List[str] = Field(
         ..., description="List of content ideas and key points for the section"

@@ -848,6 +848,7 @@ class Longwriter(Controller):
         html_strategist_prompt = f"""
         You are an HTML strategist. Given a constraint of allowed HTML tags, allowed HTML classes, and a content strategy, 
         provide a list of HTML tags and classes that would be most effective for structuring the content.
+        IMPORTANT: We are only writing the body of the content, do not include navigation, footer, sidebars, and other peripheral content.
         """
 
         try:
@@ -940,6 +941,22 @@ class Longwriter(Controller):
         2. Be creative and avoid archaic structures unless appropriate
         3. Each section should have clear, actionable content ideas
         4. Include multimedia suggestions based on available HTML tags
+        5. For each section, specify an appropriate section_type that matches the content and purpose
+        
+        Section Type Guidelines:
+        Choose appropriate section_type values that fit the subject and content type being created.
+        Common section types include: Hero, Title, Subtitle, Introduction, Body, Subsection, Conclusion, 
+        Media, Pullquote, Sidebar, Feature List, Benefits, Social Proof, Testimonials, Pricing, 
+        Call to Action, FAQ, Resources, Contact. Don't limit yourself to these; use any section type
+        that fits your content strategy.
+        
+        Important: The section_type should guide the content writer's approach:
+        - Hero sections should be concise and compelling (20-50 words typically)
+        - Title/Subtitle sections should be brief and impactful
+        - Introduction sections set context (50-150 words)
+        - Body sections contain main content (200+ words)
+        - Call to Action sections should be focused and brief (20-100 words)
+        - Choose types that make sense for your specific content strategy
         """
 
         try:
@@ -1106,15 +1123,16 @@ class Longwriter(Controller):
 
         Key points:
         1. Use ONLY these HTML tags: {", ".join(html_strategy.tags)}
-        2. Do NOT use <!DOCTYPE>, <html>, <head>, or <body> tags
-        3. Start directly with content using allowed tags
-        4. Follow the content strategy and address key questions
-        5. Aim for {section.target_word_count} words
-        6. Be creative and engaging
-        7. Ensure continuity with previous sections, avoid repetitive phrases
-        8. Keep in mind the overall structure of the article as outlined
-        9. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
-        10. Only use the specified HTML tags for formatting{tone_instruction}
+        2. Use ONLY these HTML classes: {", ".join(html_strategy.classes) if html_strategy.classes else "no specific classes recommended"}
+        3. Do NOT use <!DOCTYPE>, <html>, <head>, or <body> tags
+        4. Start directly with content using allowed tags
+        5. Follow the content strategy and address key questions
+        6. Aim for {section.target_word_count} words
+        7. Be creative and engaging
+        8. Ensure continuity with previous sections, avoid repetitive phrases
+        9. Keep in mind the overall structure of the article as outlined
+        10. Do NOT use any markdown formatting (no *, _, #, -,``` etc.)
+        11. Only use the specified HTML tags and classes for formatting{tone_instruction}
         {search_context_section}
         """  # End of main instruction block
 
@@ -1147,6 +1165,7 @@ class Longwriter(Controller):
         {outline.model_dump_json()}
 
         Now, write the next section: {section.title}
+        Remember to write content appropriate for the section type and target word count specified in the section details.
         """
 
         # Initialize or update chat history (using the fully constructed prompt)

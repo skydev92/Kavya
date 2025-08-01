@@ -55,7 +55,13 @@ async def analyze_web_search_request(
     )
     if not user_id and hasattr(controller, "user"):
         user_id = controller.user
-    user_id = user_id or "system_web_search_analyzer"
+
+    # Critical: Don't fallback to system ID - this breaks cost tracking
+    if not user_id:
+        logging.error(
+            "WEB_SEARCH: No user ID found - skipping analysis to prevent billing errors"
+        )
+        return None
 
     # Get current date for prompt context
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -287,9 +293,14 @@ async def enhance_with_web_search(controller, messages):
         )
         if not user_id and hasattr(controller, "user"):
             user_id = controller.user
-        user_id = (
-            user_id or "system_web_search_process"
-        )  # Fallback user for the process
+
+        # Critical: Don't fallback to system ID - this breaks cost tracking
+        if not user_id:
+            logging.error(
+                "WEB_SEARCH: No user ID found - aborting to prevent billing errors"
+            )
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
+            return messages, []
 
         # --- Part 2: Query Generation ---
         search_queries: List[str] = []
@@ -443,7 +454,16 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
 """
 
     # Get user ID for tracking
-    user_id = getattr(controller, "user", "system_query_generator")
+    user_id = getattr(controller, "user", None)
+
+    # Critical: Don't fallback to system ID - this breaks cost tracking
+    if not user_id:
+        logging.error(
+            "WEB_SEARCH: No user ID found - cannot generate query without proper attribution"
+        )
+        raise ValueError(
+            "User ID required for cost tracking - cannot proceed with system fallback"
+        )
 
     try:
         # Use the model to generate the query
