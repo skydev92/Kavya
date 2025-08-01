@@ -20,7 +20,6 @@
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
-- [Database Setup](#database-setup)
 
 ---
 
@@ -53,8 +52,8 @@
 
 - **Operating System**: Windows, macOS, or Linux
 - **Python**: 3.11 or higher
-- **Docker**: Latest stable version
-- **PostgreSQL**: 17 or higher (for development)
+- **Docker**: Latest stable version (optional)
+- **PostgreSQL**: 15 or higher
 
 ### Steps to Install and Run Kavya
 
@@ -64,21 +63,29 @@
    cd kavya
    ```
 
-2. **Set Up Development Environment**
+2. **Set Up PostgreSQL Database**
 
    a. **Install PostgreSQL** (macOS)
    ```bash
-   # Install PostgreSQL 17
-   brew install postgresql@17
+   # Install PostgreSQL 15 or higher
+   brew install postgresql@15
    
    # Start PostgreSQL service
-   brew services start postgresql@17
+   brew services start postgresql@15
    
    # Verify installation
    postgres --version
    ```
 
-   b. **Set Up Local Database**
+   b. **Install PostgreSQL** (Ubuntu/Debian)
+   ```bash
+   sudo apt-get update
+   sudo apt-get install postgresql-15 postgresql-contrib
+   sudo systemctl start postgresql
+   sudo systemctl enable postgresql
+   ```
+
+   c. **Set Up Local Database**
    ```bash
    # Run the database setup script
    python scripts/setup_local_db.py
@@ -90,7 +97,7 @@
    # - Create/update your .env file
    ```
 
-   c. **Test Database Connection**
+   d. **Test Database Connection**
    ```bash
    # Connect to the database
    psql -h localhost -U kavya_user -d kavya_db
@@ -101,121 +108,44 @@
    # Type \q to exit
    ```
 
-3. **Run Kavya**
-
-   **Development Mode** (with local PostgreSQL)
+3. **Install Dependencies**
    ```bash
-   # First ensure PostgreSQL is running
-   brew services start postgresql@17
-
-   # Run with local source code mounting for fast development
-   docker run --rm -it \
-     --name kavya-dev \
-     -p 8089:${PORT:-8080} \
-     -v $(pwd)/Kavya:/app/Kavya \
-     --env-file .env \
-     -e ENVIRONMENT=dev \
-     kavya
-
-   # Now you can:
-   # - Edit Python files locally
-   # - Ctrl+C to stop the container
-   # - Run the same command to restart with new code
-   # - No rebuild needed for Python code changes
-   # - Container will be named 'kavya-dev' for easy reference
-   ```
-
-   **Production Mode** (with Google Cloud SQL)
-   
-   Without Docker (Direct Python):
-   ```bash
-   # Install Cloud SQL Proxy first: brew install cloud-sql-proxy (macOS) or gcloud components install cloud-sql-proxy
-   
-   # First start the Cloud SQL Proxy in the background
-   ./cloud-sql-proxy kavya-437313:europe-west4:kavya &
-
-   # Then load production environment variables and start server
-   export $(grep -v '^#' .env.prod | xargs) && python -m kavya.openai_server --verbose --config config.yaml --port 8089
-
-
-   # Required environment variables in .env.prod:
-   # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
-   # - DB_USER=postgres
-   # - DB_PASS=<database-password>
-   # - DB_NAME=postgres
-   # - JWT_PUBLIC_KEY_B64=<base64-encoded-public-key>
-   ```
-
-   With Docker:
-   ```bash
-   # Run without source mounting, using Google Cloud SQL
-   docker run -d \
-     --name kavya-prod \
-     -p 8080:${PORT:-8080} \
-     --env-file .env.prod \
-     kavya
-
-   # Required environment variables for production:
-   # - INSTANCE_CONNECTION_NAME=<project>:<region>:<instance>
-   # - DB_PASS=<database-password>
-   # 
-   # Optional environment variables (with defaults):
-   # - DB_USER=kavya
-   # - DB_NAME=kavya
-   # - DB_SOCKET_DIR=/cloudsql
-   ```
-
-   **Useful Docker Commands**
-   ```bash
-   # View logs
-   docker logs kavya-dev    # For development
-   docker logs kavya-prod   # For production
-
-   # Stop container
-   docker stop kavya-dev    # For development
-   docker stop kavya-prod   # For production
-
-   # Remove container
-   docker rm kavya-dev     # For development
-   docker rm kavya-prod    # For production
-   ```
-
-   **When to Rebuild Docker Image**
-   - Changes to `requirements.txt`
-   - Changes to `Dockerfile`
-   - Changes to files outside `kavya/` directory
-
-4. **Access Kavya**
-   - Development: `http://localhost:8089`
-   - Production: `http://localhost:8080`
-
-### Alternative: Running Without Docker
-
-If you prefer not to use Docker, you can set up a virtual environment and run Kavya directly:
-
-1. **Create and Activate a Virtual Environment**
-   ```bash
+   # Create and activate virtual environment (recommended)
    python -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-   ```
-
-2. **Install Dependencies**
-   ```bash
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   
+   # Install Python dependencies
    pip install -r requirements.txt
    ```
 
-3. **Set Up Database** (if not done already)
-   ```bash
-   python scripts/setup_local_db.py
-   ```
-
 4. **Run Kavya**
+
+   **Option 1: Direct Python (Recommended for Development)**
    ```bash
+   # Ensure PostgreSQL is running
+   brew services start postgresql@15  # macOS
+   # or
+   sudo systemctl start postgresql    # Linux
+   
+   # Start Kavya server
    python -m kavya.openai_server --verbose --config config.yaml --port 8089
    ```
 
+   **Option 2: Docker (Optional)**
+   ```bash
+   # Build the Docker image
+   docker build -t kavya .
+   
+   # Run with Docker (ensure PostgreSQL is accessible)
+   docker run --rm -it \
+     --name kavya \
+     -p 8089:8089 \
+     --env-file .env \
+     kavya
+   ```
+
 5. **Access Kavya**
-   Open your web browser and navigate to `http://localhost:8080` to start using Kavya.
+   Open your web browser and navigate to `http://localhost:8089` to start using Kavya.
 
 ### Troubleshooting
 
@@ -223,8 +153,13 @@ If you encounter database issues:
 
 1. **Check PostgreSQL Service**
    ```bash
-   brew services list          # Check if PostgreSQL is running
-   brew services start postgresql@17  # Start if not running
+   # macOS
+   brew services list | grep postgresql
+   brew services start postgresql@15
+   
+   # Linux
+   sudo systemctl status postgresql
+   sudo systemctl start postgresql
    ```
 
 2. **Test Connection**
@@ -236,7 +171,8 @@ If you encounter database issues:
 3. **Common Solutions**
    - Ensure PostgreSQL service is running
    - Verify your `.env` file has the correct `DATABASE_URL`
-   - For production, check that Cloud SQL Proxy is running
+   - Check that the database user and database exist
+   - Ensure firewall allows connections to PostgreSQL (port 5432)
 
 ---
 
@@ -254,16 +190,13 @@ Kavya leverages models together to create advanced multi-model, multi-prompt seq
 ### How to Use Advanced Features
 
 1. **Enable Advanced Mode**
-
    - In your project settings, toggle on **Advanced Mode**.
 
 2. **Configure Your Workflow**
-
    - Use the visual editor to arrange and configure prompt sequences.
    - Select from available AI models and tools.
 
 3. **Generate Content**
-
    - Run the workflow to generate content.
    - Review and adjust as needed.
 
@@ -368,90 +301,32 @@ Authorization: Bearer YOUR_API_KEY
 
   The system will use the first model from the first provider as the primary model, with subsequent models as fallbacks. This gives you control over which models are used and in what order.
 
-## Database Setup
-
-### Development Environment
-
-The development environment uses a local PostgreSQL database. Setup is automated:
-
-1. **Install PostgreSQL** (if not already installed):
-   ```bash
-   # macOS
-   brew install postgresql@17
-   brew services start postgresql@17
-   
-   # Ubuntu/Debian
-   sudo apt-get update
-   sudo apt-get install postgresql-15
-   ```
-
-2. **Run the Setup Script**
-   ```bash
-   python scripts/setup_local_db.py
-   ```
-   This script will:
-   - Create the database user and database
-   - Set up the correct permissions
-   - Create/update your `.env` file with the correct configuration
-   - Test the connection
-
-3. **Verify Setup**
-   ```bash
-   # Test database connection
-   psql -h localhost -U kavya_user -d kavya_db
-   # Password: postgres
-   ```
-
-### Production Environment
-
-The production environment uses Google Cloud SQL. Required configuration in `.env.prod`:
-
-```bash
-ENVIRONMENT=prod
-INSTANCE_CONNECTION_NAME=your-project:region:instance
-DATABASE_URL=postgresql://kavya_user:your-prod-password@localhost:5432/kavya_db
-PRIVATE_IP=true  # Optional, set to true if using private IP
-```
-
-Note: `JWT_PUBLIC_KEY_B64` is required for both development and production environments.
-
-### Troubleshooting
-
-If you encounter database issues:
-
-1. **Check PostgreSQL Service**
-   ```bash
-   brew services list          # Check if PostgreSQL is running
-   brew services start postgresql@17  # Start if not running
-   ```
-
-2. **Test Connection**
-   ```bash
-   psql -h localhost -U kavya_user -d kavya_db
-   # Password: postgres
-   ```
-
-3. **Common Solutions**
-   - Ensure PostgreSQL service is running
-   - Verify your `.env` file has the correct `DATABASE_URL`
-   - For production, check that Cloud SQL Proxy is running
-
 ---
 
 ## Configuration
 
-### Environment Variables
+### Environment Variables (.env file)
 
-- **ENVIRONMENT**: Set to `dev` for development or `prod` for production.
-- **INSTANCE_CONNECTION_NAME**: The connection name for Google Cloud SQL.
-- **DB_USER**: The database user.
-- **DB_PASS**: The database password.
-- **DB_NAME**: The database name.
-- **PRIVATE_IP**: Optional, set to true if using private IP (default: false).
+Kavya uses a local PostgreSQL database. The required environment variables are:
+
+```bash
+# Database Configuration
+DATABASE_URL=postgresql://kavya_user:postgres@localhost:5432/kavya_db
+
+# JWT Configuration (required)
+JWT_PUBLIC_KEY_B64=<base64-encoded-public-key>
+
+# Optional: Environment setting
+ENVIRONMENT=dev
+```
 
 ### Configuration File
 
-The configuration file is located at `config.yaml`. 
+The main configuration is in `config.yaml`. This file contains:
+- Model configurations
+- Provider settings
+- Server settings
+- Database connection pooling options
 
 ---
 

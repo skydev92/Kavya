@@ -39,16 +39,10 @@ class Database:
         if not database_url:
             raise ValueError("DATABASE_URL environment variable is required")
 
-        # Get environment-specific configuration
-        instance_connection_name = os.getenv("INSTANCE_CONNECTION_NAME")
-        private_ip = bool(os.getenv("PRIVATE_IP"))
-
-        # If we already have a connection, close it properly
+        # Initialize PostgreSQL connection pool
         try:
             self.pool = PostgreSQLConnectionPool(
                 database_url=database_url,
-                instance_connection_name=instance_connection_name,
-                private_ip=private_ip,
                 config=self.config,
             )
         except Exception as e:
@@ -496,7 +490,7 @@ class Database:
         if tokens_in > MAX_VALUE or tokens_out > MAX_VALUE or word_count > MAX_VALUE:
             raise ValueError(f"Debit amounts cannot exceed {MAX_VALUE}")
 
-        transaction_id = self._generate_transaction_id()
+        transaction_id = generate_transaction_id()
         max_retries = 3
         retry_count = 0
 
@@ -645,7 +639,7 @@ class Database:
 
             except Exception as e:
                 retry_count += 1
-                error_analysis = _analyze_error(e, retry_count)
+                error_analysis = _check_error_message(type(e), str(e), 0.1, retry_count)
 
                 if retry_count >= max_retries or not error_analysis["is_retryable"]:
                     logging.error(

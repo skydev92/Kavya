@@ -11,6 +11,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
+    - name: Set up PostgreSQL
+      uses: ikalnytskyi/action-setup-postgres@v7
+      with:
+        username: testuser
+        password: testpassword
+        database: testdb
+        port: 5432
+    
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -26,12 +34,7 @@ jobs:
         echo "JWT_TEST_TOKEN=${{ secrets.JWT_TEST_TOKEN }}" >> .env
         echo "JWT_PUBLIC_KEY_B64=${{ secrets.JWT_PUBLIC_KEY_B64 }}" >> .env
         echo "ENVIRONMENT=dev" >> .env
-        echo "DATABASE_URL=postgresql://${{ secrets.DB_USER }}:${{ secrets.DB_PASS }}@localhost:5432/${{ secrets.DB_NAME }}" >> .env
-        echo "INSTANCE_CONNECTION_NAME=${{ secrets.INSTANCE_CONNECTION_NAME }}" >> .env
-        echo "DB_USER=${{ secrets.DB_USER }}" >> .env
-        echo "DB_PASS=${{ secrets.DB_PASS }}" >> .env
-        echo "DB_NAME=${{ secrets.DB_NAME }}" >> .env
-        echo "DB_SOCKET_DIR=${{ secrets.DB_SOCKET_DIR }}" >> .env
+        echo "DATABASE_URL=postgresql://testuser:testpassword@localhost:5432/testdb" >> .env
         echo "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" >> .env
         echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> .env
         echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" >> .env
@@ -43,22 +46,6 @@ jobs:
         echo "LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}" >> .env
         echo "LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}" >> .env
         echo "LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}" >> .env
-    
-    - name: Download Cloud SQL Proxy
-      run: |
-        curl -o cloud-sql-proxy https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.16.0/cloud-sql-proxy.linux.amd64
-        chmod +x cloud-sql-proxy
-    
-    - name: Set up Google Cloud Authentication
-      run: |
-        echo '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}' > /tmp/gcp-key.json
-        export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json
-        echo "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-key.json" >> $GITHUB_ENV
-    
-    - name: Start Cloud SQL Proxy
-      run: |
-        ./cloud-sql-proxy ${{ secrets.INSTANCE_CONNECTION_NAME }} &
-        sleep 10  # Wait for proxy to start
     
     - name: Start server
       run: |

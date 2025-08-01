@@ -35,7 +35,7 @@ import kavya.models
 from kavya.auth import JWTBearer
 from kavya.controller import ContentRequest, Controllers, RequestCostTracker
 from kavya.database import Database
-from kavya.models import count_words, AccountDebitRequest, AccountDebitResponse
+from kavya.models import AccountDebitRequest, AccountDebitResponse, count_words
 from kavya.provider_chain import ProviderChain
 from kavya.web_search import enhance_with_web_search
 
@@ -104,7 +104,7 @@ async def lifespan(app: fastapi.FastAPI):
         except NameError:
             api_base = None
             api_key = None
-            
+
         app.controllers = Controllers(
             config=config,
             model=default_model,
@@ -329,7 +329,9 @@ async def list_models(user_id: int = Depends(JWTBearer())):
         # Add additional models from config if available
         if hasattr(app, "model_translations") and app.model_translations:
             for model_name in app.model_translations.keys():
-                if model_name not in ["default"] and not any(model["id"] == model_name for model in kavya_models):
+                if model_name not in ["default"] and not any(
+                    model["id"] == model_name for model in kavya_models
+                ):
                     kavya_models.append(
                         {
                             "id": model_name,
@@ -1831,13 +1833,17 @@ if __name__ == "__main__":
                 with open(args.config, "r") as f:
                     yaml_cfg = yaml.safe_load(f) or {}
             except Exception as e:
-                raise RuntimeError(f"Failed to load configuration file {args.config}: {e}")
+                raise RuntimeError(
+                    f"Failed to load configuration file {args.config}: {e}"
+                )
 
         server_yaml_cfg = yaml_cfg.get("server", {})
 
         # Enforce presence of required keys if CLI override not supplied
         port = args.port if args.port is not None else server_yaml_cfg["port"]
-        workers = args.workers if args.workers is not None else server_yaml_cfg["workers"]
+        workers = (
+            args.workers if args.workers is not None else server_yaml_cfg["workers"]
+        )
 
         uv_config = uvicorn.Config(
             "kavya.openai_server:app",
