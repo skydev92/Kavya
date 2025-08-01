@@ -22,6 +22,12 @@ from litellm import (
 )
 from pydantic import BaseModel
 
+from kavya.constants import AgentType, ObservationName
+from kavya.langfuse_helpers import (
+    create_controller_metadata,
+    create_langfuse_metadata,
+    observation_manager,
+)
 from kavya.models import (
     ChatCompletionRequest,
     ContentOutline,
@@ -259,20 +265,37 @@ class Controller:
             if key in kwargs:
                 del kwargs[key]
 
+        # Extract existing metadata if present
+        existing_metadata = kwargs.pop("metadata", {})
+
+        # Create standardized metadata using helper
+        metadata = create_controller_metadata(
+            user_id=kwargs.get("user"),
+            controller_class=self.__class__.__name__,
+            model_requested=(
+                self.original_model
+                if hasattr(self, "original_model")
+                else kwargs.get("model")
+            ),
+            model_actual=kwargs.get("model"),
+            is_sync=True,
+            additional_metadata=existing_metadata,
+        )
+
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
                 response = completion(
                     api_base=self.api_base,
                     api_key=self.api_key,
-                    metadata={"trace_user_id": kwargs["user"]},
+                    metadata=metadata,
                     **kwargs,
                 )
         else:
             response = completion(
                 api_base=self.api_base,
                 api_key=self.api_key,
-                metadata={"trace_user_id": kwargs["user"]},
+                metadata=metadata,
                 **kwargs,
             )
 
@@ -454,20 +477,45 @@ class Controller:
                         await asyncio.sleep(delay)
 
                     # Make the completion request
+                    # Extract existing metadata if present
+                    existing_metadata = kwargs.pop("metadata", {})
+
+                    # Create standardized metadata using helper
+                    metadata = create_controller_metadata(
+                        user_id=kwargs.get("user"),
+                        controller_class=self.__class__.__name__,
+                        model_requested=(
+                            self.original_model
+                            if hasattr(self, "original_model")
+                            else kwargs.get("model")
+                        ),
+                        model_actual=current_model,
+                        is_retry=(retry > 0),
+                        is_fallback=(loop_count > 1),
+                        retry_attempt=retry + 1,
+                        additional_metadata={
+                            **existing_metadata,
+                            "provider_chain": (
+                                str(provider_chain) if provider_chain else None
+                            ),
+                            "loop_count": loop_count,
+                        },
+                    )
+
                     if self.suppress_warnings:
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore", category=UserWarning)
                             response = await acompletion(
                                 api_base=self.api_base,
                                 api_key=self.api_key,
-                                metadata={"trace_user_id": kwargs["user"]},
+                                metadata=metadata,
                                 **kwargs,
                             )
                     else:
                         response = await acompletion(
                             api_base=self.api_base,
                             api_key=self.api_key,
-                            metadata={"trace_user_id": kwargs["user"]},
+                            metadata=metadata,
                             **kwargs,
                         )
 
@@ -672,6 +720,9 @@ class Longwriter(Controller):
         provider_chain: ProviderChain = None,
         conversation_ctx: ConversationContext = None,
     ) -> ContentStrategy:
+        # Create a parent observation for the entire longwriter workflow
+        observation_manager.create_observation_id(ObservationName.LONGWRITER)
+
         logging.info(
             f"Making completion call for content strategy using model: {model}"
         )
@@ -680,7 +731,7 @@ class Longwriter(Controller):
         if provider_chain:
             logging.debug(f"CONTENT_STRATEGY: Received ProviderChain: {provider_chain}")
             logging.debug(
-                f"CONTENT_STRATEGY: Using original chain to preserve failed state from routing"
+                "CONTENT_STRATEGY: Using original chain to preserve failed state from routing"
             )
             # Reset current_index to allow trying all non-failed providers for this method
             provider_chain.current_index = 0
@@ -728,6 +779,21 @@ class Longwriter(Controller):
                 response_format=ContentStrategy,
                 user=request.user,
                 provider_chain=provider_chain,
+                metadata=create_langfuse_metadata(
+                    agent_type=AgentType.CONTENT_WRITER,
+                    step="generate_content_strategy",
+                    generation_name="content_strategy_generator",
+                    user_id=request.user,
+                    trace_name="longwriter_workflow",
+                    additional_metadata={
+                        "prompt_length": len(str(request.prompt)),
+                    },
+                    tags=[
+                        "agent:content_writer",
+                        "step:strategy",
+                        "longwriter",
+                    ],
+                ),
             )
 
             # Update cost tracker with response usage
@@ -798,6 +864,27 @@ class Longwriter(Controller):
                 response_format=HTMLTagStrategy,
                 user=content_strategy.user,
                 provider_chain=provider_chain,
+                metadata=create_langfuse_metadata(
+                    agent_type=AgentType.CONTENT_WRITER,
+                    step="generate_html_strategy",
+                    generation_name="html_strategy_generator",
+                    user_id=content_strategy.user,
+                    parent_observation_id=observation_manager.get_observation_id(
+                        ObservationName.LONGWRITER
+                    ),
+                    additional_metadata={
+                        "html_formatting_options_count": (
+                            len(allowed_html_tags.split(","))
+                            if allowed_html_tags
+                            else 0
+                        ),
+                    },
+                    tags=[
+                        "agent:content_writer",
+                        "step:html_strategy",
+                        "longwriter",
+                    ],
+                ),
             )
 
             # Update cost tracker with response usage
@@ -869,6 +956,27 @@ class Longwriter(Controller):
                 response_format=ContentOutline,
                 user=content_strategy.user,
                 provider_chain=provider_chain,
+                metadata=create_langfuse_metadata(
+                    agent_type=AgentType.CONTENT_WRITER,
+                    step="generate_content_outline",
+                    generation_name="content_outline_generator",
+                    user_id=content_strategy.user,
+                    parent_observation_id=observation_manager.get_observation_id(
+                        ObservationName.LONGWRITER
+                    ),
+                    additional_metadata={
+                        "content_structure_sections_planned": (
+                            content_strategy.sections_count
+                            if hasattr(content_strategy, "sections_count")
+                            else None
+                        ),
+                    },
+                    tags=[
+                        "agent:content_writer",
+                        "step:outline",
+                        "longwriter",
+                    ],
+                ),
             )
 
             # Update cost tracker with response usage
@@ -1064,6 +1172,9 @@ class Longwriter(Controller):
             )
 
         # --- Rest of the function (LLM call, streaming, history update) updated for unified fallback ---
+        # Use provided chunk_size or default from config
+        effective_chunk_size = chunk_size or self.default_chunk_size
+
         # Use unified fallback system through self.acompletion with streaming
         response = await self.acompletion(
             model=model,
@@ -1071,10 +1182,30 @@ class Longwriter(Controller):
             stream=True,
             user=content_strategy.user,
             provider_chain=provider_chain,
+            metadata=create_langfuse_metadata(
+                agent_type=AgentType.CONTENT_WRITER,
+                step="write_content",
+                generation_name="content_writer_streaming",
+                user_id=content_strategy.user,
+                parent_observation_id=observation_manager.get_observation_id(
+                    "longwriter"
+                ),
+                additional_metadata={
+                    "planned_content_length": content_strategy.recommended_word_count,
+                    "content_sections_total": (len(outline.sections) if outline else 0),
+                    "streaming_chunk_size": effective_chunk_size,
+                    "is_streaming_response": True,
+                },
+                tags=[
+                    "agent:content_writer",
+                    "step:write",
+                    "longwriter",
+                    "streaming",
+                    f"planned_length:{content_strategy.recommended_word_count}",
+                ],
+            ),
         )
 
-        # Use provided chunk_size or default from config
-        effective_chunk_size = chunk_size or self.default_chunk_size
         accumulator = TokenAccumulator(chunk_size=effective_chunk_size)
         full_response = ""
 
@@ -1185,6 +1316,9 @@ class Longwriter(Controller):
                 conversation_ctx,
             ):
                 yield token, token_count
+
+        # Clean up the longwriter observation when workflow completes
+        observation_manager.clear_observation(ObservationName.LONGWRITER)
 
 
 class Controllers:
@@ -1417,6 +1551,22 @@ For the needs_structure field specifically:
                 response_format=RoutingAnalysis,
                 user=routing_request.user,  # Pass through the user ID
                 provider_chain=routing_provider_chain,
+                metadata=create_langfuse_metadata(
+                    agent_type=AgentType.ROUTER,
+                    step="route_to_controller",
+                    generation_name="controller_router",
+                    user_id=routing_request.user,
+                    trace_name="routing_workflow",
+                    additional_metadata={
+                        "decision_making_model": default_controller.model,
+                        "controller_options_available": list(self.controllers.keys()),
+                    },
+                    tags=[
+                        "agent:router",
+                        "routing",
+                        f"controllers:{len(self.controllers)}",
+                    ],
+                ),
             )
 
             # After routing analysis, update the original provider_chain with any failures from routing
@@ -1441,7 +1591,23 @@ For the needs_structure field specifically:
                 api_key=default_controller.api_key,
                 response_format=RoutingAnalysis,
                 user=routing_request.user,  # Pass through the user ID
-                metadata={"trace_user_id": routing_request.user},
+                metadata=create_langfuse_metadata(
+                    agent_type=AgentType.ROUTER,
+                    step="route_to_controller",
+                    generation_name="controller_router_fallback",
+                    user_id=routing_request.user,
+                    trace_name="routing_workflow",
+                    additional_metadata={
+                        "decision_making_model": default_controller.model,
+                        "controller_options_available": list(self.controllers.keys()),
+                    },
+                    tags=[
+                        "agent:router",
+                        "routing",
+                        "fallback",
+                        f"controllers:{len(self.controllers)}",
+                    ],
+                ),
             )
 
         # Add logging for routing analysis response and usage
@@ -1703,23 +1869,36 @@ litellm.success_callback = [custom_cost_usage_callback]
 logging.info("Registered custom_cost_usage_callback with litellm")
 
 
-# Example usage for non-streaming completion
-def make_non_streaming_completion(prompt):
+# Example usage for non-streaming completion with proper Langfuse integration
+def make_non_streaming_completion(prompt, user_id="example_user"):
     response = litellm.completion(
-        model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}]
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
+        user=user_id,
+        metadata={
+            "trace_user_id": user_id,
+            "generation_name": "example_non_streaming",
+            "tags": ["example", "non_streaming"],
+        },
     )
     return response
 
 
-# Example usage for streaming completion
-def make_streaming_completion(prompt):
+# Example usage for streaming completion with proper Langfuse integration
+def make_streaming_completion(prompt, user_id="example_user"):
     response = litellm.completion(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
         stream=True,
         stream_options={
             "include_usage": True
-        },  # Important for getting usage info in streaming,
+        },  # Important for getting usage info in streaming
+        user=user_id,
+        metadata={
+            "trace_user_id": user_id,
+            "generation_name": "example_streaming",
+            "tags": ["example", "streaming"],
+        },
     )
 
     # Process streaming response

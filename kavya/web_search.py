@@ -9,6 +9,8 @@ from typing import List, Optional
 import litellm
 import yaml
 
+from kavya.constants import AgentType, ObservationName
+from kavya.langfuse_helpers import create_langfuse_metadata, observation_manager
 from kavya.models import MultipleQueryResponse, SourceItem, WebSearchAnalysisResponse
 
 
@@ -83,6 +85,19 @@ Examples:
             response_format={"type": "json_object"},  # Ask for JSON string
             temperature=0.1,
             user=user_id,
+            metadata=create_langfuse_metadata(
+                agent_type=AgentType.WEB_SEARCH,
+                step="analyze_search_need",
+                generation_name="web_search_need_analyzer",
+                user_id=user_id,
+                trace_name="web_search_workflow",
+                additional_metadata={
+                    "originating_controller": controller.__class__.__name__,
+                },
+                tags=[
+                    f"model:{controller.model}",
+                ],
+            ),
         )
 
         # Manually parse and validate the response
@@ -161,6 +176,23 @@ Examples:
             response_format={"type": "json_object"},  # Ask for JSON string
             temperature=0.2,
             user=user_id,
+            metadata=create_langfuse_metadata(
+                agent_type=AgentType.WEB_SEARCH,
+                step="generate_search_queries",
+                generation_name="web_search_query_generator",
+                user_id=user_id,
+                parent_observation_id=observation_manager.get_observation_id(
+                    ObservationName.WEB_SEARCH
+                ),
+                additional_metadata={
+                    "search_queries_to_generate": count,
+                    "originating_controller": controller.__class__.__name__,
+                },
+                tags=[
+                    f"query_count:{count}",
+                    f"model:{controller.model}",
+                ],
+            ),
         )
 
         # Manually parse and validate the response
@@ -202,9 +234,13 @@ Examples:
 async def enhance_with_web_search(controller, messages):
     """Add web search results to messages if web search need is above threshold.
     May perform multiple searches concurrently for complex requests."""
+    # Create a parent observation for the entire web search workflow
+    observation_manager.create_observation_id(ObservationName.WEB_SEARCH)
+
     # Check if the Perplexity API key is set for LiteLLM to use
     perplexity_api_key_present = os.environ.get("PERPLEXITYAI_API_KEY") is not None
     if not perplexity_api_key_present:
+        observation_manager.clear_observation(ObservationName.WEB_SEARCH)
         return messages, []  # Skip if key is missing
 
     try:
@@ -214,6 +250,7 @@ async def enhance_with_web_search(controller, messages):
             logging.warning(
                 "WEB_SEARCH: Failed to get analysis result. Skipping web search."
             )
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
             return messages, []
 
         # Get threshold from config
@@ -225,6 +262,7 @@ async def enhance_with_web_search(controller, messages):
             logging.info(
                 f"WEB_SEARCH: Need score {analysis_result.need_web_search} <= threshold {threshold}. Skipping search."
             )
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
             return messages, []
 
         logging.info(
@@ -239,6 +277,7 @@ async def enhance_with_web_search(controller, messages):
             logging.error(
                 "WEB_SEARCH: Could not extract user message for query generation."
             )
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
             return messages, []  # Cannot proceed without user message
 
         # Extract user ID (do this once, use for all subsequent calls)
@@ -255,7 +294,7 @@ async def enhance_with_web_search(controller, messages):
         # --- Part 2: Query Generation ---
         search_queries: List[str] = []
         if analysis_result.web_search_count <= 1:
-            logging.info(f"WEB_SEARCH: Generating 1 search query.")
+            logging.info("WEB_SEARCH: Generating 1 search query.")
             single_query = await generate_search_query(controller, user_msg)
             if single_query:
                 search_queries = [single_query]
@@ -343,12 +382,15 @@ async def enhance_with_web_search(controller, messages):
             logging.info(
                 f"WEB_SEARCH: Appended combined search context to last user message at index {last_user_msg_index}"
             )
+            # Clean up the web search observation when workflow completes successfully
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
             return new_msgs, titles_urls
         else:
             # Hard fail if no user message found - don't use fallback
             logging.error(
                 "WEB_SEARCH: No user message found to append search context to. Cannot proceed."
             )
+            observation_manager.clear_observation(ObservationName.WEB_SEARCH)
             raise RuntimeError(
                 "No user message found in conversation history. Web search results cannot be attached."
             )
@@ -358,6 +400,8 @@ async def enhance_with_web_search(controller, messages):
             f"WEB_SEARCH: Error during multi-query search enhancement: {str(e)}",
             exc_info=True,
         )
+        # Clean up observation on error
+        observation_manager.clear_observation(ObservationName.WEB_SEARCH)
         return messages, []
 
 
@@ -408,6 +452,21 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             user=user_id,
+            metadata=create_langfuse_metadata(
+                agent_type=AgentType.WEB_SEARCH,
+                step="generate_single_query",
+                generation_name="web_search_single_query",
+                user_id=user_id,
+                parent_observation_id=observation_manager.get_observation_id(
+                    ObservationName.WEB_SEARCH
+                ),
+                additional_metadata={
+                    "originating_controller": controller.__class__.__name__,
+                },
+                tags=[
+                    f"model:{controller.model}",
+                ],
+            ),
         )
 
         # Extract and clean the generated query
@@ -415,9 +474,7 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
 
         # Use original user message as fallback if generation fails
         if not generated_query:
-            logging.warning(
-                f"WEB_SEARCH: Empty query generated, using original message"
-            )
+            logging.warning("WEB_SEARCH: Empty query generated, using original message")
             return user_msg[:150]  # Limit to 150 chars just in case
 
         # Remove any quotes around the entire query if present
@@ -483,6 +540,23 @@ async def search_web(query: str, user: str):
             model=model_name,
             messages=messages,
             user=user,
+            metadata=create_langfuse_metadata(
+                agent_type=AgentType.WEB_SEARCH,
+                step="execute_search",
+                generation_name="perplexity_web_search",
+                user_id=user,
+                parent_observation_id=observation_manager.get_observation_id(
+                    ObservationName.WEB_SEARCH
+                ),
+                additional_metadata={
+                    "query_text": query,
+                    "search_engine_provider": "perplexity",
+                },
+                tags=[
+                    "provider:perplexity",
+                    f"model:{model_name}",
+                ],
+            ),
         )
 
         # Extract result (check LiteLLM response structure - assuming standard format)
@@ -511,7 +585,7 @@ async def search_web(query: str, user: str):
         if len(result_text) > 200000:
             result_text = result_text[:200000]
             logging.info(
-                f"PERPLEXITY_SEARCH: Truncated response text to 200000 characters"
+                "PERPLEXITY_SEARCH: Truncated response text to 200000 characters"
             )
 
         logging.info(

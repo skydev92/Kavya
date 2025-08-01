@@ -46,7 +46,8 @@ os.environ["LANGFUSE_SECRET_KEY"] = os.getenv("LANGFUSE_SECRET_KEY")
 os.environ["LANGFUSE_HOST"] = os.getenv("LANGFUSE_HOST")
 
 # set langfuse as a callback, litellm will send the data to langfuse
-# litellm.success_callback = ["langfuse"]
+litellm.success_callback = ["langfuse"]
+litellm.failure_callback = ["langfuse"]  # logs errors to langfuse
 # ------------------------------------------------------------------------------
 # APPLICATION INITIALIZATION
 # ------------------------------------------------------------------------------

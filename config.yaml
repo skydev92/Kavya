@@ -8,6 +8,7 @@ model_translations:
 web_search:
     need_threshold: 30  # Score above this threshold triggers web search
 
+
 # Fallback configurations for different models
 fallback_configs:
     kavya-m1:

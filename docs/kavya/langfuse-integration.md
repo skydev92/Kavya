@@ -1,7 +1,10 @@
-# Langfuse Integration Plan
+# Kavya Langfuse Integration
+
+> **⚠️ Important**: This is Kavya's custom Langfuse integration documentation.  
+> For general Langfuse documentation, see [langfuse.com/docs](https://langfuse.com/docs)
 
 ## Overview
-This document outlines our plan to integrate Langfuse into our existing AI application. Langfuse will provide observability, evaluation, and analytics for our AI interactions, enabling us to better understand user satisfaction, monitor errors, and generate insightful reports.
+This document covers Kavya's specific implementation of Langfuse integration for comprehensive LLM observability, cost tracking, and performance monitoring.
 
 ## Core Features
 This integration focuses on three key features:
@@ -112,6 +115,100 @@ Potential future improvements to consider:
 - Create a real-time error dashboard with advanced filtering
 - Expand weekend reports to include cost analysis and optimization recommendations
 - Set up automated evaluation of AI responses using Langfuse's evaluation framework
+
+## Observation Hierarchy Implementation
+
+### Trace and Observation Structure
+
+Langfuse **Observations** are used to group related LLM calls that belong to the same agentic feature. We've implemented a proper hierarchy where:
+
+- **Traces** represent entire user requests
+- **Parent Observations** represent agentic workflows (longwriter, web_search, routing)  
+- **Child Generations** represent individual LLM calls within each workflow
+
+#### Observation Hierarchy
+
+1. **Longwriter Workflow**
+   - Parent Observation: `longwriter` (trace_name: "longwriter_workflow")
+   - Child Generations:
+     - `content_strategy_generator` (step: generate_content_strategy)
+     - `html_strategy_generator` (step: generate_html_strategy) 
+     - `content_outline_generator` (step: generate_content_outline)
+     - `content_writer_streaming` (step: write_content)
+
+2. **Web Search Workflow**
+   - Parent Observation: `web_search` (trace_name: "web_search_workflow")
+   - Child Generations:
+     - `web_search_need_analyzer` (step: analyze_search_need)
+     - `web_search_query_generator` (step: generate_search_queries)
+     - `perplexity_web_search` (step: execute_search)
+
+3. **Routing Workflow**
+   - Parent Observation: `router` (trace_name: "routing_workflow")
+   - Child Generations:
+     - `controller_router` (step: route_to_controller)
+
+### Benefits
+
+In the Langfuse UI, you can now:
+- View the **Observations** tab to see grouped agentic workflows
+- Analyze performance and costs by complete workflows rather than individual calls
+- Track how often each agentic feature is used
+- Debug multi-step workflows more easily
+
+## Tag Implementation
+
+### Overview
+Tags have been implemented across all completion calls to enable better filtering and analysis in Langfuse. Tags are hierarchical and follow a consistent naming convention.
+
+### Tag Structure
+
+#### Base Tags (All Calls)
+- `controller:{ControllerClassName}` - The controller handling the request
+- `model:{model_name}` - The actual model used for completion
+- `env:{environment}` - The deployment environment (development/staging/production)
+- `retry:{attempt_number}` - Added when retrying failed requests
+- `fallback` - Added when using fallback models
+
+#### Agent-Specific Tags
+
+**Web Search Agent**
+- `agent:web_search` - Identifies web search operations
+- `step:analyze_need` - Analyzing if search is needed
+- `step:generate_queries` - Generating search queries
+- `step:single_query` - Generating a single query
+- `step:execute` - Executing the search
+- `provider:perplexity` - When using Perplexity for search
+- `query_count:{n}` - Number of queries generated
+
+**Content Writer Agent**
+- `agent:content_writer` - Identifies content writing operations
+- `step:strategy` - Generating content strategy
+- `step:html_strategy` - Generating HTML structure
+- `step:outline` - Creating content outline
+- `step:write` - Writing the actual content
+- `longwriter` - Identifies long-form content generation
+- `streaming` - For streaming responses
+- `words:{count}` - Target word count
+
+**Router Agent**
+- `agent:router` - Identifies routing operations
+- `routing` - General routing tag
+- `controllers:{n}` - Number of available controllers
+
+### Using Tags in Langfuse
+
+#### Filtering Examples
+1. Find all web searches: Filter by tag `agent:web_search`
+2. Find all retries: Filter by tag contains `retry:`
+3. Find all streaming requests: Filter by tag `streaming`
+4. Find all production errors: Filter by tags `env:production` AND level `ERROR`
+
+#### Analytics Use Cases
+- **Performance by Agent**: Group by `agent:*` tags
+- **Fallback Analysis**: Filter by `fallback` tag
+- **Model Usage**: Group by `model:*` tags
+- **Retry Patterns**: Analyze `retry:*` tags
 
 ## Resources
 
