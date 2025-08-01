@@ -385,12 +385,8 @@ def postgresql_connect(db: "PostgreSQLConnectionPool") -> None:
     logging.info(f"🚀 Connecting to local PostgreSQL at {db.db_host}:{db.db_port}")
 
     # Define common connection options for local PostgreSQL
-    # psycopg2 uses different parameter names than pg8000
-    connect_args = {
-        "connect_timeout": int(
-            db.connect_timeout / 1000
-        ),  # Convert from ms to seconds for psycopg2
-    }
+    # psycopg2 doesn't support connect_timeout parameter
+    connect_args = {}
 
     db.engine = create_engine(
         db.database_url,
