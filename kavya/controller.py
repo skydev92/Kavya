@@ -849,6 +849,11 @@ class Longwriter(Controller):
         You are an HTML strategist. Given a constraint of allowed HTML tags, allowed HTML classes, and a content strategy, 
         provide a list of HTML tags and classes that would be most effective for structuring the content.
         IMPORTANT: We are only writing the body of the content, do not include navigation, footer, sidebars, and other peripheral content.
+        
+        For dynamic content like landing pages, homepages, and marketing content, consider using these Bootstrap classes for visual impact:
+        Background classes: bg-primary, bg-primary-subtle, bg-secondary, bg-secondary-subtle, bg-light, bg-light-subtle, bg-dark, bg-dark-subtle, bg-body-secondary, bg-body-tertiary, bg-body, bg-black, bg-white, bg-transparent
+        Text classes: text-primary, text-primary-emphasis, text-secondary, text-secondary-emphasis, text-light, text-light-emphasis, text-dark, text-dark-emphasis, text-body, text-body-emphasis, text-body-secondary, text-body-tertiary, text-black, text-white
+        Button classes: btn, btn-primary, btn-secondary, btn-success, btn-danger, btn-warning, btn-info, btn-light, btn-dark, btn-link, btn-outline-primary, btn-outline-secondary, btn-outline-success, btn-outline-danger, btn-outline-warning, btn-outline-info, btn-outline-light, btn-outline-dark, btn-lg, btn-sm, w-100
         """
 
         try:
