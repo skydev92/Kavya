@@ -1726,6 +1726,12 @@ async def create_chat_completion(
                 word_count=word_count,
             )
 
+            # Fix null completion_tokens_details values
+            if content.get("usage", {}).get("completion_tokens_details"):
+                for k, v in content["usage"]["completion_tokens_details"].items():
+                    if v is None:
+                        content["usage"]["completion_tokens_details"][k] = 0
+
             return JSONResponse(
                 content=content, headers={"X-Chosen-Model": chosen_model}
             )
