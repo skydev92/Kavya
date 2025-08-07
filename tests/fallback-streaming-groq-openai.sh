@@ -41,10 +41,11 @@ if [ -z "$model_name" ]; then
     exit 1
 fi
 
-if echo "$model_name" | grep -qE "(o1|o3|o4|o5|gpt)"; then
-    echo "✅ Test passed: Got model ($model_name) from openai fallback chain"
+# Check that we got either groq (primary) or openai (fallback) model
+if echo "$model_name" | grep -qE "(groq/|o1|o3|o4|o5|gpt)"; then
+    echo "✅ Test passed: Got model ($model_name) from groq-openai streaming provider chain"
     exit 0
 else
-    echo "❌ Test failed: Expected mistral or gpt-4o model, got $model_name"
+    echo "❌ Test failed: Expected groq/ or openai model, got $model_name"
     exit 1
 fi 

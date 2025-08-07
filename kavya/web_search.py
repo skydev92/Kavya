@@ -84,14 +84,14 @@ Examples:
 """
 
     try:
-        # Use response_format=json_object instead of response_model
-        raw_response = await litellm.acompletion(
-            model=controller.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},  # Ask for JSON string
-            temperature=0.1,
-            user=user_id,
-            metadata=create_langfuse_metadata(
+        # Build kwargs for acompletion
+        acompletion_kwargs = {
+            "model": controller.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},  # Ask for JSON string
+            "temperature": 0.1,
+            "user": user_id,
+            "metadata": create_langfuse_metadata(
                 agent_type=AgentType.WEB_SEARCH,
                 step="analyze_search_need",
                 generation_name="web_search_need_analyzer",
@@ -104,7 +104,14 @@ Examples:
                     f"model:{controller.model}",
                 ],
             ),
-        )
+        }
+
+        # Add reasoning_effort for models that support it
+        if litellm.supports_reasoning(controller.model):
+            acompletion_kwargs["reasoning_effort"] = "low"
+
+        # Use response_format=json_object instead of response_model
+        raw_response = await litellm.acompletion(**acompletion_kwargs)
 
         # Manually parse and validate the response
         if raw_response and raw_response.choices:
@@ -175,14 +182,14 @@ Examples:
 """
 
     try:
-        # Use response_format=json_object instead of response_model
-        raw_response = await litellm.acompletion(
-            model=controller.model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},  # Ask for JSON string
-            temperature=0.2,
-            user=user_id,
-            metadata=create_langfuse_metadata(
+        # Build kwargs for acompletion
+        acompletion_kwargs = {
+            "model": controller.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},  # Ask for JSON string
+            "temperature": 0.2,
+            "user": user_id,
+            "metadata": create_langfuse_metadata(
                 agent_type=AgentType.WEB_SEARCH,
                 step="generate_search_queries",
                 generation_name="web_search_query_generator",
@@ -199,7 +206,14 @@ Examples:
                     f"model:{controller.model}",
                 ],
             ),
-        )
+        }
+
+        # Add reasoning_effort for models that support it
+        if litellm.supports_reasoning(controller.model):
+            acompletion_kwargs["reasoning_effort"] = "low"
+
+        # Use response_format=json_object instead of response_model
+        raw_response = await litellm.acompletion(**acompletion_kwargs)
 
         # Manually parse and validate the response
         if raw_response and raw_response.choices:
@@ -466,13 +480,13 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
         )
 
     try:
-        # Use the model to generate the query
-        response = await litellm.acompletion(
-            model=controller.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            user=user_id,
-            metadata=create_langfuse_metadata(
+        # Build kwargs for acompletion
+        acompletion_kwargs = {
+            "model": controller.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+            "user": user_id,
+            "metadata": create_langfuse_metadata(
                 agent_type=AgentType.WEB_SEARCH,
                 step="generate_single_query",
                 generation_name="web_search_single_query",
@@ -487,7 +501,14 @@ Return ONLY the search query - no explanation, no formatting, no quote marks.
                     f"model:{controller.model}",
                 ],
             ),
-        )
+        }
+
+        # Add reasoning_effort for models that support it
+        if litellm.supports_reasoning(controller.model):
+            acompletion_kwargs["reasoning_effort"] = "low"
+
+        # Use the model to generate the query
+        response = await litellm.acompletion(**acompletion_kwargs)
 
         # Extract and clean the generated query
         generated_query = response["choices"][0]["message"]["content"].strip()
@@ -554,13 +575,12 @@ async def search_web(query: str, user: str):
     pydantic_search_results = []
 
     try:
-        # LiteLLM handles retries based on its configuration.
-        # Add other relevant LiteLLM parameters if needed (e.g., temperature=0.3)
-        response = await litellm.acompletion(
-            model=model_name,
-            messages=messages,
-            user=user,
-            metadata=create_langfuse_metadata(
+        # Build kwargs for acompletion
+        acompletion_kwargs = {
+            "model": model_name,
+            "messages": messages,
+            "user": user,
+            "metadata": create_langfuse_metadata(
                 agent_type=AgentType.WEB_SEARCH,
                 step="execute_search",
                 generation_name="perplexity_web_search",
@@ -577,7 +597,15 @@ async def search_web(query: str, user: str):
                     f"model:{model_name}",
                 ],
             ),
-        )
+        }
+
+        # Add reasoning_effort for models that support it
+        if litellm.supports_reasoning(model_name):
+            acompletion_kwargs["reasoning_effort"] = "low"
+
+        # LiteLLM handles retries based on its configuration.
+        # Add other relevant LiteLLM parameters if needed (e.g., temperature=0.3)
+        response = await litellm.acompletion(**acompletion_kwargs)
 
         # Extract result (check LiteLLM response structure - assuming standard format)
         if (

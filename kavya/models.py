@@ -633,6 +633,10 @@ class ChatCompletionRequest(BaseModel):
         None,
         description="Static predicted output content for faster response generation",
     )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description="Reasoning effort level for models that support it (low, medium, high)",
+    )
 
     @field_validator("response_format", mode="before")
     @classmethod
@@ -718,6 +722,10 @@ class ContentRequest(BaseModel):
         None, description="Optional chat messages for context"
     )
     user: Optional[str] = Field(None, description="User ID for token tracking")
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description="Reasoning effort level for models that support it (low, medium, high)",
+    )
 
 
 class ContentStrategy(BaseModel):
@@ -1057,6 +1065,10 @@ class KavyaRequest(BaseModel):
         None,
         ge=1,
         description="Word count threshold above which longwriter mode is activated (default: 1000)",
+    )
+    reasoning_effort: Optional[str] = Field(
+        None,
+        description="Reasoning effort level for models that support it (low, medium, high)",
     )
 
 

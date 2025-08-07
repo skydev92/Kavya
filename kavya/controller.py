@@ -282,6 +282,11 @@ class Controller:
             additional_metadata=existing_metadata,
         )
 
+        # Add reasoning_effort for models that support it
+        model = kwargs.get("model", "")
+        if litellm.supports_reasoning(model) and "reasoning_effort" not in kwargs:
+            kwargs["reasoning_effort"] = "low"
+
         if self.suppress_warnings:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=UserWarning)
@@ -501,6 +506,13 @@ class Controller:
                             "loop_count": loop_count,
                         },
                     )
+
+                    # Add reasoning_effort for models that support it
+                    if (
+                        litellm.supports_reasoning(current_model)
+                        and "reasoning_effort" not in kwargs
+                    ):
+                        kwargs["reasoning_effort"] = "low"
 
                     if self.suppress_warnings:
                         with warnings.catch_warnings():
@@ -1608,14 +1620,16 @@ For the needs_structure field specifically:
         else:
             # Fallback to direct acompletion if no ProviderChain
             logging.warning("ROUTING: No ProviderChain found, using direct acompletion")
-            response = await acompletion(
-                model=default_controller.model,  # Use model for routing decision
-                messages=routing_request.messages,
-                api_base=default_controller.api_base,
-                api_key=default_controller.api_key,
-                response_format=RoutingAnalysis,
-                user=routing_request.user,  # Pass through the user ID
-                metadata=create_langfuse_metadata(
+
+            # Build kwargs for acompletion
+            acompletion_kwargs = {
+                "model": default_controller.model,  # Use model for routing decision
+                "messages": routing_request.messages,
+                "api_base": default_controller.api_base,
+                "api_key": default_controller.api_key,
+                "response_format": RoutingAnalysis,
+                "user": routing_request.user,  # Pass through the user ID
+                "metadata": create_langfuse_metadata(
                     agent_type=AgentType.ROUTER,
                     step="route_to_controller",
                     generation_name="controller_router_fallback",
@@ -1632,7 +1646,13 @@ For the needs_structure field specifically:
                         f"controllers:{len(self.controllers)}",
                     ],
                 ),
-            )
+            }
+
+            # Add reasoning_effort for models that support it
+            if litellm.supports_reasoning(default_controller.model):
+                acompletion_kwargs["reasoning_effort"] = "low"
+
+            response = await acompletion(**acompletion_kwargs)
 
         # Add logging for routing analysis response and usage
         prompt_preview = format_prompt_preview(routing_request.messages[-1]["content"])
