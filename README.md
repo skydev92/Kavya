@@ -318,32 +318,3 @@ JWT_PUBLIC_KEY_B64=<base64-encoded-public-key>
 
 # Optional: Environment setting
 ENVIRONMENT=dev
-```
-
-### Configuration File
-
-The main configuration is in `config.yaml`. This file contains:
-- Model configurations
-- Provider settings
-- Server settings
-- Database connection pooling options
-
----
-
-## Contributing
-
-We welcome contributions from the community. Please read our [Contribution Guidelines](CONTRIBUTING.md) for more information on how to contribute to Kavya.
-
----
-
-## License
-
-Kavya is licensed under the MIT License. See [LICENSE](LICENSE) for more information.
-
----
-
-## Contact
-
-For any questions or support, please contact us at [contact@kavya.com](mailto:contact@kavya.com).
-
----
